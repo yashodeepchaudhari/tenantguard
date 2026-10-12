@@ -168,7 +168,7 @@ def engine(host_config):
         return httpx.Response(200, json={"Warnings": []})
 
     e = EngineDocker.__new__(EngineDocker)
-    e.socket_path = "test"
+    e.socket_path, e.service, e.resolved = "test", "spare", {}
     e.client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://docker/v1.41")
     return e, seen
 
@@ -195,3 +195,25 @@ def test_make_prover_switch(tmp_path, monkeypatch):
     assert isinstance(run(make_prover("auto", p, v)), NullProver)            # no socket -> null, no error
     with pytest.raises(RuntimeError):
         run(make_prover("docker", p, v))                                     # explicitly asked: fail loudly
+
+
+def test_engine_finds_the_spare_by_compose_label_when_the_name_differs():
+    seen = []
+
+    def handler(r: httpx.Request):
+        seen.append((r.method, r.url.path, r.url.params.get("filters")))
+        if r.url.path == "/v1.41/containers/codeastra-spare-1/json":
+            return httpx.Response(404, json={"message": "No such container"})
+        if r.url.path == "/v1.41/containers/json":
+            return httpx.Response(200, json=[{"Id": "abc123"}])
+        if r.url.path == "/v1.41/containers/abc123/json":
+            return httpx.Response(200, json={"HostConfig": {"NanoCpus": 500_000_000}})
+        return httpx.Response(200, json={})
+
+    e = EngineDocker.__new__(EngineDocker)
+    e.socket_path, e.service, e.resolved = "test", "spare", {}
+    e.client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://docker/v1.41")
+    assert run(e.get_cpus("codeastra-spare-1")) == 0.5
+    run(e.set_cpus("codeastra-spare-1", 1.0))
+    assert seen[-1][:2] == ("POST", "/v1.41/containers/abc123/update")
+    assert any("com.docker.compose.service=spare" in (f or "") for _, _, f in seen)

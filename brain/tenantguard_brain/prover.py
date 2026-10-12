@@ -24,6 +24,7 @@ them with scripted readings and a virtual clock.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from dataclasses import dataclass, field
 from statistics import mean
@@ -128,10 +129,30 @@ class DockerControl(Protocol):
 class EngineDocker:
     """Minimal Docker Engine API client over the unix socket (no SDK needed in the image)."""
 
-    def __init__(self, socket_path: str = "/var/run/docker.sock", api: str = "v1.41"):
+    def __init__(self, socket_path: str = "/var/run/docker.sock", api: str = "v1.41", service: str = SPARE):
         self.socket_path = socket_path
+        self.service = service
+        self.resolved: Dict[str, str] = {}
         self.client = httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=socket_path),
                                         base_url=f"http://docker/{api}", timeout=5.0)
+
+    async def _resolve(self, container: str) -> str:
+        """The container's real id: by name, else by its compose service label (the compose project name on
+        the Docker host may not be what COMPOSE_PROJECT says)."""
+        if container in self.resolved:
+            return self.resolved[container]
+        r = await self.client.get(f"/containers/{container}/json")
+        if r.status_code == 200:
+            self.resolved[container] = container
+            return container
+        flt = json.dumps({"label": [f"com.docker.compose.service={self.service}"]})
+        r = await self.client.get("/containers/json", params={"filters": flt})
+        r.raise_for_status()
+        found = r.json()
+        if not found:
+            raise RuntimeError(f"no container {container} and none labelled compose service={self.service}")
+        self.resolved[container] = found[0]["Id"]
+        return found[0]["Id"]
 
     async def ping(self) -> bool:
         try:
@@ -141,6 +162,7 @@ class EngineDocker:
             return False
 
     async def _host_config(self, container: str) -> dict:
+        container = await self._resolve(container)
         r = await self.client.get(f"/containers/{container}/json")
         r.raise_for_status()
         return r.json().get("HostConfig", {}) or {}
@@ -159,7 +181,7 @@ class EngineDocker:
             body = {"CpuQuota": int(cores * 100_000), "CpuPeriod": 100_000}
         else:
             body = {"NanoCpus": int(cores * 1e9)}
-        r = await self.client.post(f"/containers/{container}/update", json=body)
+        r = await self.client.post(f"/containers/{await self._resolve(container)}/update", json=body)
         r.raise_for_status()
 
     async def aclose(self) -> None:

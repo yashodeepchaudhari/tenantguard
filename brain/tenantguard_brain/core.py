@@ -765,7 +765,8 @@ class Brain:
             "sent": {t: vars(s) for t, s in self.sent.items()},
             "open_incidents": {t: i.incident_id for t, i in self.book.open.items()},
             "servers": {s: {"source": h.source, "level_ms": h.level_ms, "peer_ms": h.peer_ms,
-                            "peer_ratio": round(h.peer_ratio, 3), "slow_now": h.slow_now, "slow": h.slow}
+                            "peer_ratio": round(h.peer_ratio, 3), "excess_ms": round(h.excess_ms, 2),
+                            "tenants_used": h.tenants_used, "slow_now": h.slow_now, "slow": h.slow}
                         for s, h in self.s3.health.servers.items()},
             "decoding": ({"culprits": [vars(c) for c in self.s3.decoding.culprits],
                           "host_suspects": self.s3.decoding.host_suspects,
