@@ -44,6 +44,11 @@ Product/design background: `docs/FINAL-PLAN.md` (scope tiers, demo), `enhanced-p
 10a. **No AI attribution in git (user rule):** never add `Co-Authored-By: Claude…`, "Generated with Claude Code", or any AI/assistant name to commit messages, PR bodies or files. Plain commit messages only.
 11. **Offline-first:** no external network at runtime except the optional Claude narrator (which has a template fallback).
 12. **Numbers on slides come only from measured runs** (`lab/results/*.json`).
+12a. **This laptop is NOT a Docker host (user rule, 2026-10-12: the laptop hung).**
+  - No docker build/compose/containers here; Docker runs only on the friend's laptop.
+  - Locally run at most **3 workers + gateway + brain**, and kill every process right after each proof run.
+  - Only one session runs a local stack at a time; ask the coordinator first.
+  - The laptop has 8 cores / 7.8 GB, and the Claude sessions themselves use most of the RAM.
 13. **Machine quirks:** Windows 11; PowerShell plus Git Bash. Docker Desktop must be running before any `docker compose` (it was found stopped on 2026-10-12). Use `127.0.0.1`, not `localhost`. Some peers run in "prompting" mode, so permission prompts may appear in their terminals. **Never rewrite UTF-8 files with Windows PowerShell 5 `Get-Content -Raw`/`Set-Content`**: it mis-decodes them and garbles `→ × ≥ §` (this happened on 2026-10-12). Use the Edit tool or Python with `encoding="utf-8"`.
 
 ## §3 Ownership
