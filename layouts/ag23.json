@@ -8,7 +8,7 @@
     {"id": "C", "name": "Chitra Studio",      "tier": "free",       "servers": ["w6", "w7", "w8"], "api_key": "tk_C_demo", "monthly_revenue_rs": 0},
     {"id": "D", "name": "DhanSetu Payments",  "tier": "enterprise", "servers": ["w0", "w3", "w6"], "api_key": "tk_D_demo", "monthly_revenue_rs": 1200000, "protected": true},
     {"id": "E", "name": "Ekalavya Learn",     "tier": "pro",        "servers": ["w1", "w4", "w7"], "api_key": "tk_E_demo", "monthly_revenue_rs": 200000},
-    {"id": "F", "name": "FitPadosi",          "tier": "free",       "servers": ["w2", "w5", "w8"], "api_key": "tk_F_demo", "monthly_revenue_rs": 0},
+    {"id": "F", "name": "FitZone",          "tier": "free",       "servers": ["w2", "w5", "w8"], "api_key": "tk_F_demo", "monthly_revenue_rs": 0},
     {"id": "G", "name": "GaadiGo",            "tier": "enterprise", "servers": ["w0", "w4", "w8"], "api_key": "tk_G_demo", "monthly_revenue_rs": 800000},
     {"id": "H", "name": "HisaabBooks",        "tier": "pro",        "servers": ["w1", "w5", "w6"], "api_key": "tk_H_demo", "monthly_revenue_rs": 150000},
     {"id": "I", "name": "IdliExpress",        "tier": "free",       "servers": ["w2", "w3", "w7"], "api_key": "tk_I_demo", "monthly_revenue_rs": 0},

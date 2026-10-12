@@ -1,29 +1,29 @@
-# Final Plan: Padosi (Merged & De-risked)
+# Final Plan: TenantGuard (Merged & De-risked)
 **CODEASTRA 2.0 · Cloud Computing & Distributed Systems · PS 3: Multi-Tenant Isolation and Noisy-Neighbor Defense**
 4 members · 24 hours
 
 This plan merges two earlier plans:
 - **Plan S:** the session plan (`docs/Architecture.pdf`): FastAPI + Redis + Postgres + Docker cgroups + graduated throttling.
-- **Plan P:** the Padosi master plan (`enhanced-prompts/padosi-master-plan.md` + `padosi-build-prompt.md`): Go gateway + Python brain + barcode detection + relocation proof + five verdicts + many showcase features.
+- **Plan P:** the TenantGuard master plan (`enhanced-prompts/tenantguard-master-plan.md` + `tenantguard-build-prompt.md`): Go gateway + Python brain + barcode detection + relocation proof + five verdicts + many showcase features.
 
-**Decision in one line:** use **Padosi's idea and architecture** (it is what wins) with **Plan S's scope discipline** (it is what finishes). Build in strict tiers, so that something complete and impressive exists at every hour.
+**Decision in one line:** use **TenantGuard's idea and architecture** (it is what wins) with **Plan S's scope discipline** (it is what finishes). Build in strict tiers, so that something complete and impressive exists at every hour.
 
 ---
 
 ## 1. Side-by-side comparison
 
-| Dimension | Plan S (session) | Plan P (Padosi) | Final choice |
+| Dimension | Plan S (session) | Plan P (TenantGuard) | Final choice |
 |---|---|---|---|
-| **Core idea** | Quotas + fair queue + cgroups + detector + AIMD throttle | Prevent → rescue → name → prove → resolve → explain | **Padosi loop.** Plan S is what most teams will build. |
-| **Detection** | Usage share vs fair share × victim impact (EWMA / z-score) | Shuffle-sharded "barcodes" (AG(2,3)) + peer ratio + relocation test | **Padosi barcode.** It names the culprit even when it can't be measured directly (black-box work). Keep Plan S's share-based score as a second signal. |
-| **Response to a noisy tenant** | Warn → throttle → deprioritize → quarantine | "Move, don't punish" + five verdicts + decision matrix | **Padosi ordering**, plus Plan S's explicit throttle ladder as the "contain" path. The PS literally asks for *adaptive throttling*, so it must be visible. |
-| **"Not just a rate limit" proof** | CPU-ms budget catches the "few but heavy" attack | Black-box bomb + 3-mode scorecard (OFF / Industry / Padosi) | **3-mode scorecard.** This is the strongest possible answer to the judges' constraint. |
+| **Core idea** | Quotas + fair queue + cgroups + detector + AIMD throttle | Prevent → rescue → name → prove → resolve → explain | **TenantGuard loop.** Plan S is what most teams will build. |
+| **Detection** | Usage share vs fair share × victim impact (EWMA / z-score) | Shuffle-sharded "barcodes" (AG(2,3)) + peer ratio + relocation test | **TenantGuard barcode.** It names the culprit even when it can't be measured directly (black-box work). Keep Plan S's share-based score as a second signal. |
+| **Response to a noisy tenant** | Warn → throttle → deprioritize → quarantine | "Move, don't punish" + five verdicts + decision matrix | **TenantGuard ordering**, plus Plan S's explicit throttle ladder as the "contain" path. The PS literally asks for *adaptive throttling*, so it must be visible. |
+| **"Not just a rate limit" proof** | CPU-ms budget catches the "few but heavy" attack | Black-box bomb + 3-mode scorecard (OFF / Industry / TenantGuard) | **3-mode scorecard.** This is the strongest possible answer to the judges' constraint. |
 | **Gateway language** | Python FastAPI | Go | **Go if M2 has shipped Go before; otherwise Python.** Hard switch rule at H3 (see §9). |
 | **State store** | Redis (Lua token buckets, Streams) | In-memory in the gateway | **In-memory.** There is one gateway, so Redis adds a moving part for no demo benefit. Put Redis on the roadmap slide for multi-gateway. |
 | **Data isolation** | Postgres + Row-Level Security | SQLite file per tenant + namespaced cache | **SQLite per tenant + namespaced cache.** Simpler and isolated by construction. |
-| **Compute isolation** | Docker cgroups + penalty-box container | 9 workers + spare + quarantine, `docker update --cpus` | **Padosi's**, with a 6-worker fallback layout if the laptop can't hold 9. |
+| **Compute isolation** | Docker cgroups + penalty-box container | 9 workers + spare + quarantine, `docker update --cpus` | **TenantGuard's**, with a 6-worker fallback layout if the laptop can't hold 9. |
 | **Observability** | Prometheus + Grafana + React | Prometheus `/metrics` + React | **React dashboard primary**, `/metrics` exposed, Grafana optional. |
-| **Admin API** | Explicit tenant / quota CRUD, isolation toggle | Control API (brain → gateway), mode toggle; **no tenant / quota admin** | **Add the admin API.** It is a listed PS deliverable and Padosi is missing it. |
+| **Admin API** | Explicit tenant / quota CRUD, isolation toggle | Control API (brain → gateway), mode toggle; **no tenant / quota admin** | **Add the admin API.** It is a listed PS deliverable and TenantGuard is missing it. |
 | **Showcase extras** | None | Phone play via Azure, AI narrator, billing / refunds, ₹ panel, flow animation, Scenario Director, hash chain, Event Calendar, 40-run drill | **Tiered** (§3). Most are COULD items: built only after the core is frozen and stable. |
 | **Infra** | One laptop | 2 laptops + wired LAN + Azure VM | **2 laptops (cheap and valuable).** The Azure VM is a COULD item, except as a standby for the "deployment" surprise challenge. |
 | **Timeline realism** | Realistic | Overloaded: H14–H18 holds about 15 features in 4 night hours | **Re-timed** (§8), with feature freeze at H17. |
@@ -68,7 +68,7 @@ This plan merges two earlier plans:
 | Noisy-neighbor detector | Peer-ratio health + barcode decoder + usage-share score + relocation proof |
 | Adaptive throttling | Gradient concurrency limiter + escalation ladder (limit → quarantine → block) with TTL / auto-undo |
 | Admin API / dashboard | `/admin/*` (tenants, quotas, mode, actions, events) + Control Room UI |
-| "Not just a rate limit" | 3-mode scorecard: OFF vs Industry (rate limit + cgroups + fair queue) vs Padosi |
+| "Not just a rate limit" | 3-mode scorecard: OFF vs Industry (rate limit + cgroups + fair queue) vs TenantGuard |
 
 ---
 
@@ -95,7 +95,7 @@ If only this exists, you can still place well.
    - `/admin/fault`
 4. **Spare + quarantine containers.** The brain resizes the spare with `docker update --cpus`.
 5. **Brain, primary flow:** health (peer ratio) → **rescue** (route-around) → **decoder** (barcode + stuck signal) → **relocation prover** → **3 verdicts** (costly pattern / honest growth / host fault) → action with TTL.
-6. **Mode toggle:** OFF / Industry / Padosi.
+6. **Mode toggle:** OFF / Industry / TenantGuard.
 7. **Admin API:** `GET/POST /admin/tenants`, `PATCH /admin/tenants/{id}/quota`, `POST /admin/mode`, `GET /admin/events`.
 8. **Traffic lab:** 12 calm tenants (Poisson) + attacks `flood`, `whale`, `blackbox_bomb`, `faulty_server`, `honest_spike`.
 9. **UI Control Room:**
@@ -106,7 +106,7 @@ If only this exists, you can still place well.
    - suspect confidence bars
    - mode toggle
 
-**H10 gate:** the black-box bomb in Industry mode turns victims red, and in Padosi mode it is rescued → named → proved → resolved, end to end, 3 times in a row.
+**H10 gate:** the black-box bomb in Industry mode turns victims red, and in TenantGuard mode it is rescued → named → proved → resolved, end to end, 3 times in a row.
 
 ### 🟧 SHOULD: H10–H17
 10. **Escalation ladder + safety:**
@@ -193,7 +193,7 @@ STS(13) / AG(2,5) layouts and cells, Redis-backed multi-gateway, Postgres RLS, E
 |---|---|---|
 | Gateway | **Go 1.22+** (`net/http`, `httputil.ReverseProxy`, `nhooyr.io/websocket`) | Fallback: Python FastAPI + httpx if not routing by H3 |
 | Workers | Python 3.12, FastAPI, uvicorn, SQLite, psutil, `multiprocessing` | Sync handlers, so `time.thread_time()` = request CPU |
-| Brain | Python 3.12 asyncio, httpx, websockets, numpy, pydantic, PyYAML, `docker` SDK | All thresholds in `padosi.yaml` |
+| Brain | Python 3.12 asyncio, httpx, websockets, numpy, pydantic, PyYAML, `docker` SDK | All thresholds in `tenantguard.yaml` |
 | Narrator | `anthropic` SDK, `claude-opus-5-5`, structured output | Template-first; never in the decision path |
 | Traffic lab | Python asyncio + httpx | Crash-test writes JSON for the Scorecard |
 | UI | React 18 + Vite + TypeScript + Tailwind + Recharts | WebSocket push from the brain |
@@ -205,13 +205,13 @@ STS(13) / AG(2,5) layouts and cells, Redis-backed multi-gateway, Postgres RLS, E
 ## 6. Repository layout
 
 ```
-padosi/
-  docker-compose.yml           docker-compose.lab.yml      padosi.yaml
+tenantguard/
+  docker-compose.yml           docker-compose.lab.yml      tenantguard.yaml
   layouts/ag23.json            layouts/pairs6.json          # fallback
   contracts/*.schema.json      contracts/fixtures/*.json
   gateway/   cmd/gateway  internal/{identity,fingerprint,admission,sched,limiter,router,telemetry,control,admin}
   worker/app/  main.py routes.py tenancy.py cache.py store.py jobs.py blackbox.py meter.py stats.py
-  brain/padosi_brain/  main.py ingest.py health.py rescue.py decoder.py prover.py classifier.py
+  brain/tenantguard_brain/  main.py ingest.py health.py rescue.py decoder.py prover.py classifier.py
                        actions.py policy.py events.py docker_ctl.py narrator.py profile.py
   brain/tests/
   integrations/  handoff.py  identity.py            # pick one at H6
@@ -246,7 +246,7 @@ Pairing points:
 | 10:30–11:30 | H0–H1 | Repo, 5 contracts + fixtures, Compose with 9 workers, `ag23.json`, UI wireframe | `docker compose up` runs on both laptops |
 | 11:30–13:30 | H1–H3 | **Walking skeleton:** gateway routes by barcode → workers → lab calm traffic → tiles show live p95 | Live tiles from real data |
 | 13:30 | H3 | **Language checkpoint:** Go gateway routing + streaming telemetry? If not, switch to the Python gateway now | Decision made |
-| 13:30–14:15 | H3–H4 | **Calibration:** 15 min of calm traffic → thresholds into `padosi.yaml`; run a quiet test | No false incidents in 5 calm minutes |
+| 13:30–14:15 | H3–H4 | **Calibration:** 15 min of calm traffic → thresholds into `tenantguard.yaml`; run a quiet test | No false incidents in 5 calm minutes |
 | 14:15–16:30 | H4–H6 | Admission + DRR + Industry mode; attacks flood, whale, blackbox_bomb; admin API | Industry stops flood / whale, **fails on the black-box bomb** (that's the point) |
 | 15:30 | H5 | Mentoring 1 | Notes captured |
 | 16:30 | H6 | **Convergence:** pick the partner, agree on the 2 calls, send sample payloads | Contract agreed |
@@ -281,14 +281,14 @@ Pairing points:
 1. **Calm (15 s):** 12 green tiles, 3×3 grid, utilization ~30%, fairness index ~0.99.
 2. **OFF (30 s):** flood → everyone red. "This is the noisy-neighbor problem."
 3. **Industry (45 s):** the flood is handled ✅. Now the **black-box bomb**: the rate limiter sees nothing and the victims turn red. "This is where every rate-limiter solution stops."
-4. **Padosi (75 s):** same bomb.
+4. **TenantGuard (75 s):** same bomb.
    - Victims recover in about 1 s (rescue).
    - The barcode lights up and the suspect is named with a confidence %.
    - It moves to the spare and the slowdown follows it (proof).
    - Verdict: costly pattern. Only the guilty request class goes to the heavy lane.
 5. **Faulty server (20 s):** drained, "host fault, no tenant blamed".
 6. **Honest spike (20 s):** an Enterprise tenant on sale day gets a burst lane, with no throttling.
-7. **Scorecard + explain (25 s):** the OFF / Industry / Padosi table, then the incident report.
+7. **Scorecard + explain (25 s):** the OFF / Industry / TenantGuard table, then the incident report.
 8. **Close (10 s):** "Every tenant gets its fair share. Every slowdown gets a name."
 
 Backups: the recorded video; the 6-worker layout; the Python gateway; the template reports.

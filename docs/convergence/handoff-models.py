@@ -1,10 +1,10 @@
-"""PROPOSAL: Padosi <-> Web PS3 (Digital Handoff) contract models.
+"""PROPOSAL: TenantGuard <-> Web PS3 (Digital Handoff) contract models.
 
 Not part of common/ yet. The coordinator moves these into
-common/padosi_common/contracts.py at the start of Wave 3.
+common/tenantguard_common/contracts.py at the start of Wave 3.
 
-Matches docs/convergence/cases/*.json (Padosi -> POST {WEB_URL}/cases) and
-docs/convergence/case-update-examples.json (Web -> POST {PADOSI_URL}/control/case-update).
+Matches docs/convergence/cases/*.json (TenantGuard -> POST {WEB_URL}/cases) and
+docs/convergence/case-update-examples.json (Web -> POST {TENANTGUARD_URL}/control/case-update).
 
 Unlike the rest of contracts.py, times here are wall-clock "HH:MM:SS" strings
 (same day, IST), as agreed with the Web team, not unix epoch floats.
@@ -30,7 +30,7 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-# ---------- Padosi -> Web: POST {WEB_URL}/cases ----------
+# ---------- TenantGuard -> Web: POST {WEB_URL}/cases ----------
 
 class CaseContext(_Strict):
     verdict: Verdict
@@ -51,7 +51,7 @@ class HistoryItem(_Strict):
 
 
 class Case(_Strict):
-    case_id: str = Field(pattern=r"^INC-\d{4}$")   # = Padosi incident_id; re-sent on every change
+    case_id: str = Field(pattern=r"^INC-\d{4}$")   # = TenantGuard incident_id; re-sent on every change
     title: str
     severity: Severity
     status: CaseStatus
@@ -60,7 +60,7 @@ class Case(_Strict):
     history: List[HistoryItem]
 
 
-# ---------- Web -> Padosi: POST {PADOSI_URL}/control/case-update ----------
+# ---------- Web -> TenantGuard: POST {TENANTGUARD_URL}/control/case-update ----------
 
 class CaseUpdateOwner(_Strict):
     case_id: str = Field(pattern=r"^INC-\d{4}$")

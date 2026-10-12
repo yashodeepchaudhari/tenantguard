@@ -3,10 +3,10 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "padosi-common"
+name = "tenantguard-common"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = ["pydantic>=2.5", "PyYAML>=6"]
 
 [tool.setuptools]
-packages = ["padosi_common"]
+packages = ["tenantguard_common"]

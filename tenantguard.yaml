@@ -1,7 +1,7 @@
 # Every tunable lives here. Never hard-code these in services.
 layout: layouts/ag23.json
 
-# Server name -> base URL. Local dev defaults; docker-compose overrides via PADOSI_WORKER_URLS.
+# Server name -> base URL. Local dev defaults; docker-compose overrides via TENANTGUARD_WORKER_URLS.
 workers:
   w0: http://127.0.0.1:8100
   w1: http://127.0.0.1:8101
@@ -32,7 +32,7 @@ tiers:
     quota: {rate_rps: 20, burst: 40, cost_ms_per_s: 150, concurrency: 4}
 
 gateway:
-  default_mode: padosi
+  default_mode: tenantguard
   tick_ms: 250
   max_queue_wait_ms: {interactive: 1000, batch: 5000}
   cost_bucket_s: 2              # cost bucket capacity = cost_ms_per_s * this
@@ -58,7 +58,7 @@ brain:
     hold_s: {warn: 2, throttle: 2, deprioritize: 4, quarantine: 6, recover: 10}
     throttle_factor: 0.5        # AIMD multiplicative decrease
     recover_step: 0.1           # additive increase per recovery tick
-  # Stage 3: Padosi (calibrated at H3-H4)
+  # Stage 3: TenantGuard (calibrated at H3-H4)
   health:
     probe_window_ticks: 8
     slow_peer_ratio: 1.6

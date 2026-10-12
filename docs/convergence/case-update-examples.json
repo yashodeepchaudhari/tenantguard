@@ -1,28 +1,28 @@
 {
-  "endpoint": "POST {PADOSI_URL}/control/case-update",
+  "endpoint": "POST {TENANTGUARD_URL}/control/case-update",
   "examples": [
     {
-      "description": "Handoff: Rahul acknowledged INC-0104 and is now the owner. Padosi shows 'Owner: Rahul' on the incident timeline.",
+      "description": "Handoff: Rahul acknowledged INC-0104 and is now the owner. TenantGuard shows 'Owner: Rahul' on the incident timeline.",
       "body": { "case_id": "INC-0104", "type": "owner", "owner": "Rahul", "time": "15:03:30" }
     },
     {
-      "description": "approve: Padosi runs the pending action (here: move KaamKaro's bulk-ingest requests to the heavy lane).",
+      "description": "approve: TenantGuard runs the pending action (here: move KaamKaro's bulk-ingest requests to the heavy lane).",
       "body": { "case_id": "INC-0104", "type": "decision", "action_id": "A1", "decision": "approve", "by": "Rahul" }
     },
     {
-      "description": "reject: Padosi does not run the pending action; the case stays open and the timer-based safe default applies.",
+      "description": "reject: TenantGuard does not run the pending action; the case stays open and the timer-based safe default applies.",
       "body": { "case_id": "INC-0105", "type": "decision", "action_id": "A1", "decision": "reject", "by": "Priya" }
     },
     {
-      "description": "extend: Padosi keeps the current action running past its timer (here: JhatpatMart stays on the VIP lane until the sale ends).",
+      "description": "extend: TenantGuard keeps the current action running past its timer (here: JhatpatMart stays on the VIP lane until the sale ends).",
       "body": { "case_id": "INC-0106", "type": "decision", "action_id": "A1", "decision": "extend", "by": "Rahul" }
     },
     {
-      "description": "release: Padosi undoes the current action now (here: return server w4 to service).",
+      "description": "release: TenantGuard undoes the current action now (here: return server w4 to service).",
       "body": { "case_id": "INC-0107", "type": "decision", "action_id": "A1", "decision": "release", "by": "Priya" }
     },
     {
-      "description": "resolve: Padosi closes the incident; no further actions.",
+      "description": "resolve: TenantGuard closes the incident; no further actions.",
       "body": { "case_id": "INC-0108", "type": "decision", "action_id": "A1", "decision": "resolve", "by": "Rahul" }
     }
   ]

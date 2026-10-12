@@ -7,7 +7,7 @@ x-worker: &worker
   pids_limit: 128
   restart: unless-stopped
   environment: &worker-env
-    PADOSI_ROOT: /app
+    TENANTGUARD_ROOT: /app
 
 x-worker-urls: &worker-urls >-
   w0=http://w0:8100,w1=http://w1:8100,w2=http://w2:8100,w3=http://w3:8100,w4=http://w4:8100,w5=http://w5:8100,w6=http://w6:8100,w7=http://w7:8100,w8=http://w8:8100,spare=http://spare:8100,quarantine=http://quarantine:8100
@@ -36,17 +36,17 @@ services:
     build: {context: ., dockerfile: gateway/Dockerfile}
     ports: ["8000:8000"]
     environment:
-      PADOSI_ROOT: /app
-      PADOSI_WORKER_URLS: *worker-urls
+      TENANTGUARD_ROOT: /app
+      TENANTGUARD_WORKER_URLS: *worker-urls
     depends_on: [w0, w1, w2, w3, w4, w5, w6, w7, w8, spare, quarantine]
 
   brain:
     build: {context: ., dockerfile: brain/Dockerfile}
     ports: ["8200:8200"]
     environment:
-      PADOSI_ROOT: /app
-      PADOSI_WORKER_URLS: *worker-urls
-      PADOSI_GATEWAY_URL: http://gateway:8000
+      TENANTGUARD_ROOT: /app
+      TENANTGUARD_WORKER_URLS: *worker-urls
+      TENANTGUARD_GATEWAY_URL: http://gateway:8000
       COMPOSE_PROJECT: codeastra
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
@@ -57,8 +57,8 @@ services:
     build: {context: ., dockerfile: lab/Dockerfile}
     ports: ["8300:8300"]
     environment:
-      PADOSI_ROOT: /app
-      PADOSI_GATEWAY_URL: http://gateway:8000
-      PADOSI_WORKER_URLS: *worker-urls
+      TENANTGUARD_ROOT: /app
+      TENANTGUARD_GATEWAY_URL: http://gateway:8000
+      TENANTGUARD_WORKER_URLS: *worker-urls
     depends_on: [gateway]
     profiles: ["lab"]

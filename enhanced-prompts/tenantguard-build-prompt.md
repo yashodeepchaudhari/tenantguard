@@ -1,7 +1,7 @@
 ## Enhanced Implementation Prompt
 
 ### Objective
-Build **Padosi**, a multi-tenant isolation and noisy-neighbour defense platform. A Go gateway enforces fair, cost-based per-tenant admission and scheduling. A Python brain detects interference, rescues victims within about a second, names the culprit with shuffle-sharded "barcodes", proves it with a relocation test, picks one of five verdicts, acts with auto-undo, and explains every incident (fair billing, "Why was I slow?", grounded Claude-written reports). A React dashboard shows it live, including a blind phone test and an OFF / Industry / Padosi scorecard.
+Build **TenantGuard**, a multi-tenant isolation and noisy-neighbour defense platform. A Go gateway enforces fair, cost-based per-tenant admission and scheduling. A Python brain detects interference, rescues victims within about a second, names the culprit with shuffle-sharded "barcodes", proves it with a relocation test, picks one of five verdicts, acts with auto-undo, and explains every incident (fair billing, "Why was I slow?", grounded Claude-written reports). A React dashboard shows it live, including a blind phone test and an OFF / Industry / TenantGuard scorecard.
 
 ### Context
 - **Tech stack:**
@@ -15,10 +15,10 @@ Build **Padosi**, a multi-tenant isolation and noisy-neighbour defense platform.
   - The Azure VM runs Caddy, the relay (phones → Laptop A via an outbound WebSocket from Laptop A) and a standby copy of the full stack.
 - **Greenfield repository.** Create this layout:
   ```
-  padosi/
+  tenantguard/
     docker-compose.yml            # platform (Laptop A / VM)
     docker-compose.lab.yml        # traffic lab + UI (Laptop B)
-    padosi.yaml                   # thresholds, tiers, policy, action budget
+    tenantguard.yaml                   # thresholds, tiers, policy, action budget
     layouts/ag23.json             # 9 servers, 12 tenants (table below)
     layouts/sts13.json            # 13 servers, 26 tenants
     contracts/*.schema.json       # the 5 JSON contracts
@@ -34,7 +34,7 @@ Build **Padosi**, a multi-tenant isolation and noisy-neighbour defense platform.
       internal/control/           # POST /control/* with TTL handling, mode switch, fail-static
     worker/app/                   # Python FastAPI
       main.py routes.py tenancy.py cache.py store.py jobs.py blackbox.py meter.py stats.py
-    brain/padosi_brain/
+    brain/tenantguard_brain/
       main.py ingest.py health.py rescue.py decoder.py prover.py classifier.py actions.py
       ledger.py evidence.py billing.py narrator.py policy.py events.py docker_ctl.py
     brain/tests/
@@ -44,7 +44,7 @@ Build **Padosi**, a multi-tenant isolation and noisy-neighbour defense platform.
   ```
 - **Related patterns:**
   - Every cross-service message follows a JSON schema in `contracts/`.
-  - Every tunable value lives in `padosi.yaml`, never hard-coded.
+  - Every tunable value lives in `tenantguard.yaml`, never hard-coded.
   - Every control action carries `incident_id` and `ttl_s`.
   - Python uses Pydantic models for all contract types. Go uses structs with JSON tags that mirror the same schemas.
 
@@ -65,7 +65,7 @@ Build **Padosi**, a multi-tenant isolation and noisy-neighbour defense platform.
    - Per-tenant concurrency cap.
    - Retry budget (≤ 10% of a tenant's requests). A request counts as a retry if it repeats an `Idempotency-Key` or matches (tenant, class, body-hash) within 10 s.
 7. Rejections return 429 with an accurate `Retry-After` plus the `RateLimit-Policy` / `RateLimit` headers.
-8. Request class: `X-Padosi-Class: batch` or a route listed in config marks a request batch; everything else is interactive.
+8. Request class: `X-TenantGuard-Class: batch` or a route listed in config marks a request batch; everything else is interactive.
 9. Scheduler:
    - Per-tenant queues served by deficit round robin, weighted by tier, with quantum in cost units.
    - Express lane for classes whose reference cost is below the configured threshold.
@@ -78,12 +78,12 @@ Build **Padosi**, a multi-tenant isolation and noisy-neighbour defense platform.
     - Overrides expire at their TTL.
 12. Telemetry: per (tenant, server) count, p50, p95, errors and shed; queue depth and wait per tenant; limiter window per server. Streamed every 250 ms on `GET /internal/telemetry` (WebSocket), plus Prometheus `/metrics`.
 13. Control API: `POST /control/{route_weights|relocate|limits|lane|drain|mode|reference_costs}`.
-    - `mode` switches between `off` (FIFO, no limits, no routing intelligence), `industry` (rules 6–10 only, static equal weights) and `padosi` (everything).
+    - `mode` switches between `off` (FIFO, no limits, no routing intelligence), `industry` (rules 6–10 only, static equal weights) and `tenantguard` (everything).
     - If no control heartbeat arrives for 2 s, the gateway keeps its last known-good config (fail-static).
 14. Proxy overhead target: p50 < 2 ms at the demo load.
 
 **C. Workers (Python)**
-15. `tenancy.py`: a middleware reads `X-Padosi-Tenant` (set by the gateway, rejected if it comes from outside the gateway network) into a `contextvars.ContextVar`. `jobs.py` copies the context into every background job and measures job CPU with `time.thread_time()`, charged to that tenant.
+15. `tenancy.py`: a middleware reads `X-TenantGuard-Tenant` (set by the gateway, rejected if it comes from outside the gateway network) into a `contextvars.ContextVar`. `jobs.py` copies the context into every background job and measures job CPU with `time.thread_time()`, charged to that tenant.
 16. Endpoints (synchronous handlers, so `time.thread_time()` measures per-request CPU):
     - `GET /api/read` (cache → DB)
     - `GET /api/search` (CPU-heavy)
@@ -127,15 +127,15 @@ Build **Padosi**, a multi-tenant isolation and noisy-neighbour defense platform.
     - **host_fault**.
     - **mitigated_no_blame**: confidence below the bar.
 28a. `profile.py`, genuineness and importance (mentor feedback):
-    - **Genuineness score 0–100** = weighted sum (weights in `padosi.yaml`) of: paid share; request-class similarity to the tenant's own 7-day/calm history (new class → lower); growth shape (ramp vs. step jump); `Retry-After` obedience (retries after 429 within the advised time → lower); source novelty (share of requests from sources not seen before → lower); active Event Calendar window (→ high).
+    - **Genuineness score 0–100** = weighted sum (weights in `tenantguard.yaml`) of: paid share; request-class similarity to the tenant's own 7-day/calm history (new class → lower); growth shape (ramp vs. step jump); `Retry-After` obedience (retries after 429 within the advised time → lower); source novelty (share of requests from sources not seen before → lower); active Event Calendar window (→ high).
     - **Importance level** Low / Medium / High / Critical, from tenant profile fields in `layouts/ag23.json`: `tier`, `monthly_revenue_rs`, `sla` (99.9 / 99.95 / 99.99), `protected` (bool), `end_users`.
-    - **Decision matrix** (`policy.matrix` in `padosi.yaml`), genuine = score ≥ 60, important = High or Critical:
+    - **Decision matrix** (`policy.matrix` in `tenantguard.yaml`), genuine = score ≥ 60, important = High or Critical:
       - genuine + important → `vip_lane` (relocate to dedicated spare capacity + scale out one worker + notify account manager + upgrade offer; never throttled)
       - genuine + not important → `fair_share` (plan limits; spare capacity if idle; upgrade suggestion)
       - not genuine + important → `surgical` (class-level heavy lane; rest of the traffic untouched; full block only with human approval)
       - not genuine + not important → `contain` (limit → quarantine → block, each with TTL)
     - Both scores and the chosen matrix cell are added to the evidence pack and shown in the Case File.
-28b. **Event Calendar:** `POST /events/calendar {tenant, start, end, expected_multiplier}` and `GET /events/calendar`. Padosi pre-sizes the spare/burst lane 2 minutes before the window, and traffic inside the window counts as genuine.
+28b. **Event Calendar:** `POST /events/calendar {tenant, start, end, expected_multiplier}` and `GET /events/calendar`. TenantGuard pre-sizes the spare/burst lane 2 minutes before the window, and traffic inside the window counts as genuine.
 29. `actions.py`: maps verdicts and matrix cells to actions, escalating in this order: rescue → capacity → class isolation → batch shaping → limit → quarantine → block (block needs human approval).
     - costly_pattern → class → heavy lane
     - honest_growth → keep on spare as burst lane + scale out one worker
@@ -163,7 +163,7 @@ Build **Padosi**, a multi-tenant isolation and noisy-neighbour defense platform.
     - Decisions are never made by the narrator.
 
 **E. Traffic lab (Python)**
-35. Twelve tenant clients as **personas**: A Aarogya Health, B BazaarKart, C Chitra Studio, D DhanSetu Payments, E Ekalavya Learn, F FitPadosi, G GaadiGo, H HisaabBooks, I IdliExpress, J JhatpatMart, K KaamKaro, L LokVani News. Each has:
+35. Twelve tenant clients as **personas**: A Aarogya Health, B BazaarKart, C Chitra Studio, D DhanSetu Payments, E Ekalavya Learn, F FitZone, G GaadiGo, H HisaabBooks, I IdliExpress, J JhatpatMart, K KaamKaro, L LokVani News. Each has:
     - Poisson arrivals
     - its own request mix and daily-peak curve
     - profile fields (revenue ₹, SLA, protected, end users)
@@ -172,7 +172,7 @@ Build **Padosi**, a multi-tenant isolation and noisy-neighbour defense platform.
 35a. **"Day in the cloud" mode:** a 4-minute compressed 24-hour script in `scenarios.yaml`: morning rush → lunch peak → JhatpatMart sale (with an Event Calendar entry) → a bug at 3 PM (costly pattern) → a faulty server at night.
 35b. **Scenario Director API:** `POST /lab/scenario {events:[{at_s, type, tenant?, server?, intensity}]}` lets judges combine events (for example, 2 attackers + a faulty server).
 36. Attacks, each started and stopped by API: `flood`, `whale`, `hog`, `retry_storm`, `background_bomb` (tagged path), `blackbox_bomb`, `cache_flood`, `faulty_server` (via `/admin/fault`), `honest_spike` (8× within plan). Each takes `tenant`, `intensity` and `duration` parameters.
-37. `crashtest.py`: runs `scenarios.yaml` × N runs × modes (off / industry / padosi) with random culprits. Records victim SLO-violation-seconds, time to rescue, time to verdict, culprit correct, innocents penalised, victim p99 and gateway overhead. Writes JSON results that the Scorecard reads.
+37. `crashtest.py`: runs `scenarios.yaml` × N runs × modes (off / industry / tenantguard) with random culprits. Records victim SLO-violation-seconds, time to rescue, time to verdict, culprit correct, innocents penalised, victim p99 and gateway overhead. Writes JSON results that the Scorecard reads.
 38. `play_bridge.py`: an outbound WebSocket client to the VM relay. It receives play commands (contract 5), starts the chosen attack, and reports results back for the reveal.
 
 **F. Relay (VM)**
@@ -189,12 +189,12 @@ Build **Padosi**, a multi-tenant isolation and noisy-neighbour defense platform.
     - 3×3 server grid showing peer ratio; selecting a tenant highlights its barcode.
     - Incident timeline with stage timestamps.
     - Confidence bar per suspect.
-    - Mode toggle (OFF / Industry / Padosi).
+    - Mode toggle (OFF / Industry / TenantGuard).
     - Shadow-mode Approve button and kill switch.
 41. **Case File**: barcode match, harm graph (who made whom wait / who evicted whom), relocation chart (original servers recovering vs. spare absorbing the harm), verdict, action, TTL countdown, evidence hash, AI report (template → AI swap).
-42. **Scorecard**: OFF / Industry / Padosi per attack (table + bar charts) from crash-test JSON and live runs.
+42. **Scorecard**: OFF / Industry / TenantGuard per attack (table + bar charts) from crash-test JSON and live runs.
 43. **Billing**: per-tenant cost breakdown, credits, true-cost lines, "Why was I slow?" per victim.
-44. **Play** (mobile-first): pick tenant → pick attack → Start → Reveal, showing the judge's pick next to Padosi's verdict. No sign-up.
+44. **Play** (mobile-first): pick tenant → pick attack → Start → Reveal, showing the judge's pick next to TenantGuard's verdict. No sign-up.
 45. Design rules: colour only for status (green / amber / red) plus one accent; large type; units on every number.
 46. **Live flow view** (canvas): request dots travel tenant → server, sampled from telemetry. Slow servers turn red, and dots visibly shift away during the rescue.
 47. **Proof animation:** during the relocation test, red "smoke" moves from the suspect's original servers to the spare.
@@ -203,7 +203,7 @@ Build **Padosi**, a multi-tenant isolation and noisy-neighbour defense platform.
 50. **Scenario Director page** (judge-facing): build and launch combined scenarios through `/lab/scenario`.
 
 **H. Convergence with Web PS 3 (Digital Handoff), see `convergence-web.md`**
-51. `brain/padosi_brain/handoff.py`: on every incident change, `POST {WEB_URL}/cases` with `{case_id, title, severity, status, context:{verdict, affected, evidence_link, summary}, pending_actions:[{action_id, text, deadline}], history:[{time, event}]}`. Retry with backoff. Never blocks the decision loop.
+51. `brain/tenantguard_brain/handoff.py`: on every incident change, `POST {WEB_URL}/cases` with `{case_id, title, severity, status, context:{verdict, affected, evidence_link, summary}, pending_actions:[{action_id, text, deadline}], history:[{time, event}]}`. Retry with backoff. Never blocks the decision loop.
 52. `POST /control/case-update` on the brain accepts `{case_id, type:"owner", owner, time}` (shown as "Owner: <name>" on the incident timeline) and `{case_id, type:"decision", action_id, decision: approve|reject|extend|release|resolve, by}` (applied through `actions.py`, which honours the action budget).
 53. Pending actions with no decision before their deadline follow the safe default: the TTL auto-undo, or the configured default action.
 
@@ -211,9 +211,9 @@ Build **Padosi**, a multi-tenant isolation and noisy-neighbour defense platform.
 - **Build order** (each step demoable):
   1. Contracts + layout + Compose skeleton.
   2. Gateway pass-through routing by barcode + worker endpoints + lab calm traffic + tiles.
-  3. **Calibration run** (20 min calm) → thresholds into `padosi.yaml`.
+  3. **Calibration run** (20 min calm) → thresholds into `tenantguard.yaml`.
   4. Admission + DRR + limiter (Industry mode complete).
-  5. Brain health → rescue → decoder → prover → classifier → actions (Padosi mode, primary flow: black-box bomb).
+  5. Brain health → rescue → decoder → prover → classifier → actions (TenantGuard mode, primary flow: black-box bomb).
   6. Faulty server + honest spike.
   7. Ledger + cache flood + retry storm.
   8. Billing, evidence, narrator.
@@ -242,7 +242,7 @@ Build **Padosi**, a multi-tenant isolation and noisy-neighbour defense platform.
   - The gateway never crashes on a bad control command (it validates and returns 400).
   - The brain logs and skips a tick on missing data.
   - Workers return structured JSON errors `{error, tenant, detail}`.
-- **Config reload:** `padosi.yaml` is hot-reloaded by the brain on change. The gateway receives the relevant parts through the control API.
+- **Config reload:** `tenantguard.yaml` is hot-reloaded by the brain on change. The gateway receives the relevant parts through the control API.
 
 ### Edge Cases & Constraints
 - **Two simultaneous culprits:** the explain-away decoder plus sequential relocation tests name both.
@@ -289,7 +289,7 @@ Build **Padosi**, a multi-tenant isolation and noisy-neighbour defense platform.
   - Per-tenant DB file isolation.
   - Background job charged to the correct tenant via contextvar copy.
   - Black-box CPU excluded from tenant attribution.
-- **Scenario tests** (`lab/crashtest.py`): every attack × 20 runs in Padosi mode with random culprits.
+- **Scenario tests** (`lab/crashtest.py`): every attack × 20 runs in TenantGuard mode with random culprits.
   - Acceptance: culprit named correctly ≥ 95%, innocents penalised = 0, time to rescue ≤ 2 s, time to verdict ≤ 15 s, host fault drained ≤ 3 s, honest spike never penalised, quiet 5-minute run produces no incident.
   - The same scenarios in OFF and Industry modes produce the comparison numbers.
 - **Chaos checks:** kill the brain mid-incident (traffic continues, actions expire by TTL); restart a worker (gateway routes around it); drop the relay (local /play works).

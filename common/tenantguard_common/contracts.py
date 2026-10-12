@@ -14,24 +14,24 @@ from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-Mode = Literal["off", "industry", "padosi"]
+Mode = Literal["off", "industry", "tenantguard"]
 Tier = Literal["enterprise", "pro", "free"]
 Level = Literal["normal", "warn", "throttle", "deprioritize", "quarantine", "blocked"]
 
 # Headers set by the gateway on every forwarded request (workers trust only these).
-H_TENANT = "X-Padosi-Tenant"
-H_CLASS = "X-Padosi-Class"          # request class hash computed by gateway (8 hex chars)
+H_TENANT = "X-TenantGuard-Tenant"
+H_CLASS = "X-TenantGuard-Class"          # request class hash computed by gateway (8 hex chars)
 H_REQUEST_ID = "X-Request-Id"
 # Header set by the worker on every response: handler CPU ms spent on this request,
 # as a decimal float string, e.g. "12.375". Background-job CPU is NOT included (Wave 1).
-H_CPU_MS = "X-Padosi-Cpu-Ms"
+H_CPU_MS = "X-TenantGuard-Cpu-Ms"
 
 
 # ---------- 0. Tenancy / admin (gateway /admin/*) ----------
 class Quota(BaseModel):
     rate_rps: float          # token bucket refill, requests/s
     burst: int               # token bucket capacity, requests
-    cost_ms_per_s: float     # cost bucket refill, CPU-ms per second (capacity = padosi.yaml gateway.cost_bucket_s seconds worth)
+    cost_ms_per_s: float     # cost bucket refill, CPU-ms per second (capacity = tenantguard.yaml gateway.cost_bucket_s seconds worth)
     concurrency: int         # max in-flight requests
 
 
@@ -144,7 +144,7 @@ class WorkerStats(BaseModel):
     started_at: float            # process start; a change means counters reset
     cpu_total_ms: float          # whole process tree, cumulative
     blackbox_cpu_ms: float = 0.0 # unattributed "vendor indexer" CPU, cumulative (Wave 2)
-    cpu_limit_cores: float = 0.5 # container CPU limit (worker fills from padosi.yaml worker.cpus / env), for cpu_pct
+    cpu_limit_cores: float = 0.5 # container CPU limit (worker fills from tenantguard.yaml worker.cpus / env), for cpu_pct
     mem_mb: float
     fault: Optional[dict] = None
     tenants: List[TenantUsage] = Field(default_factory=list)
@@ -228,7 +228,7 @@ class TenantView(BaseModel):
     rps: float                    # completed requests/s, averaged over the last 5 s
     rejected_rps: float           # 429 + 503 per second, last 5 s
     cpu_share: float              # 0..1: (handler+bg CPU of tenant) / (handler+bg CPU of all tenants), last 5 s
-    noisy_score: float            # raw ratio >= 0; compare with padosi.yaml brain.noisy thresholds (warn 1.5 ...)
+    noisy_score: float            # raw ratio >= 0; compare with tenantguard.yaml brain.noisy thresholds (warn 1.5 ...)
     noisy_norm: float             # 0..1 = min(1, noisy_score / brain.noisy.quarantine), for bars
     level: Level
     factor: float = 1.0           # current throttle factor applied

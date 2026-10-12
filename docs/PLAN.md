@@ -1,17 +1,17 @@
-# PLAN: Padosi (CodeAstra 2.0, Cloud PS 3): coordinator plan file
+# PLAN: TenantGuard (CodeAstra 2.0, Cloud PS 3): coordinator plan file
 
 **This file is the source of truth.** Decisions made in chat get written here in the same turn.
-Product/design background: `docs/FINAL-PLAN.md` (scope tiers, demo), `enhanced-prompts/padosi-build-prompt.md` (detailed requirements).
+Product/design background: `docs/FINAL-PLAN.md` (scope tiers, demo), `enhanced-prompts/tenantguard-build-prompt.md` (detailed requirements).
 `reshdata/` is out of scope: user instruction, do not read, use or edit it.
 
 ---
 
 ## §1 How we work
 
-- **Coordinator:** session `codeastra-ea`, running in `D:\yashodeep\codeAstra` (master). It owns this plan, `common/`, `padosi.yaml`, `layouts/`, `docker-compose.yml`, `README.md`, merges, and the user-facing status.
+- **Coordinator:** session `codeastra-ea`, running in `D:\yashodeep\codeAstra` (master). It owns this plan, `common/`, `tenantguard.yaml`, `layouts/`, `docker-compose.yml`, `README.md`, merges, and the user-facing status.
 - **Task sessions:** each task runs in its own git worktree `D:\yashodeep\codeAstra-T<n>` on branch `task/T<n>-<slug>`, with its brief in `TASK-T<n>.md` in that worktree. The user starts the session there (`cd` + `claude`, then paste the start line).
 - **Support sessions** (in the main dir, write nothing under code paths):
-  - `codeastra-21`: product/spec owner (author of the Padosi plan); convergence partner liaison. Writes only under `docs/convergence/`.
+  - `codeastra-21`: product/spec owner (author of the TenantGuard plan); convergence partner liaison. Writes only under `docs/convergence/`.
   - `codeastra-2b`: reviewer. Read-only reviews of task branches on request.
 - **Report moments** (SendMessage to `codeastra-ea`), and nothing else:
   - `T<n>: started. Plan: <3 lines>.`
@@ -23,22 +23,22 @@ Product/design background: `docs/FINAL-PLAN.md` (scope tiers, demo), `enhanced-p
 
 1. **Python only for all backend services** (gateway, workers, brain, lab). Go is not installed and no one has shipped Go, so it is dropped. UI is React 18 + Vite + TypeScript + Tailwind + Recharts.
 2. **Python 3.10 compatible.** The local interpreter is 3.10.1; Docker images use `python:3.12-slim`. Use `from __future__ import annotations`; no `asyncio.TaskGroup`, `ExceptionGroup`, `tomllib` or `typing.Self`.
-3. **Contracts:** every cross-service message is a model in `common/padosi_common/contracts.py`. Import it; never redefine a contract locally. Need a field? Ask the coordinator.
-4. **Config:** every tunable is in `padosi.yaml`, read via `padosi_common.config`. No hard-coded thresholds, ports or URLs. Workers and tenants come from `load_tenants()` / `worker_urls()`.
+3. **Contracts:** every cross-service message is a model in `common/tenantguard_common/contracts.py`. Import it; never redefine a contract locally. Need a field? Ask the coordinator.
+4. **Config:** every tunable is in `tenantguard.yaml`, read via `tenantguard_common.config`. No hard-coded thresholds, ports or URLs. Workers and tenants come from `load_tenants()` / `worker_urls()`.
 5. **Local dev ports:**
    - gateway `8000`
    - workers `w0..w8` → `8100..8108`, `spare` `8109`, `quarantine` `8110`
    - brain `8200`, lab `8300`, UI `5173`
 
-   Inside Docker every worker listens on `8100`; compose sets `PADOSI_WORKER_URLS`.
-6. **Shared package:** `padosi_common` is installed editable from the main repo (`D:\yashodeep\codeAstra\common`) into the global Python 3.10. Task sessions do not reinstall it. Every service also runs without Docker (`uvicorn ... --port N`), because Docker is the deployment, not the only dev path.
-7. **Tenant identity** comes only from `X-API-Key` at the gateway. Workers trust only `X-Padosi-Tenant` (set by the gateway). Workers report handler CPU per request in the `X-Padosi-Cpu-Ms` response header, and the gateway debits the cost bucket with it.
+   Inside Docker every worker listens on `8100`; compose sets `TENANTGUARD_WORKER_URLS`.
+6. **Shared package:** `tenantguard_common` is installed editable from the main repo (`D:\yashodeep\codeAstra\common`) into the global Python 3.10. Task sessions do not reinstall it. Every service also runs without Docker (`uvicorn ... --port N`), because Docker is the deployment, not the only dev path.
+7. **Tenant identity** comes only from `X-API-Key` at the gateway. Workers trust only `X-TenantGuard-Tenant` (set by the gateway). Workers report handler CPU per request in the `X-TenantGuard-Cpu-Ms` response header, and the gateway debits the cost bucket with it.
 8. **Modes:**
    - `off`: FIFO, no limits, static routing.
    - `industry`: token + cost + concurrency limits, weighted DRR, cgroups, static equal routing.
-   - `padosi`: everything, including the brain's control commands.
+   - `tenantguard`: everything, including the brain's control commands.
 
-   The gateway owns the mode. The brain applies control commands only in `padosi` mode.
+   The gateway owns the mode. The brain applies control commands only in `tenantguard` mode.
 9. **Safety:** every control override has `ttl_s` and auto-reverts. If the brain heartbeat stops for `fail_static_after_s`, the gateway keeps its last config (fail-static). The gateway validates control input and returns 400; it never crashes on bad input.
 10. **Verification standard:** "done" means unit tests pass (`pytest` in your dir) **and** you ran the real service and proved the behaviour with real HTTP calls. Paste the commands and their output in your done message. A test must be shown to fail when the behaviour is broken.
 11. **Offline-first:** no external network at runtime except the optional Claude narrator (which has a template fallback).
@@ -49,7 +49,7 @@ Product/design background: `docs/FINAL-PLAN.md` (scope tiers, demo), `enhanced-p
 
 | Task | Owns (only these paths) | Must ask coordinator before |
 |---|---|---|
-| Coordinator | `docs/PLAN.md`, `common/**`, `padosi.yaml`, `layouts/**`, `docker-compose.yml`, `README.md`, `.gitignore` | n/a |
+| Coordinator | `docs/PLAN.md`, `common/**`, `tenantguard.yaml`, `layouts/**`, `docker-compose.yml`, `README.md`, `.gitignore` | n/a |
 | T1 Gateway | `gateway/**` | new contract fields, new yaml keys, compose changes |
 | T2 Workers | `worker/**` | same as above |
 | T3 Brain | `brain/**` | same as above + any new gateway control endpoint |
@@ -62,26 +62,26 @@ A task that needs a change in someone else's path sends a BLOCKED message with t
 
 ## §4 Waves
 
-**Wave 0 (coordinator, done 2026-10-12):** repo, `common/` contracts + config, `layouts/ag23.json`, `padosi.yaml`, `docker-compose.yml`, this plan, briefs.
+**Wave 0 (coordinator, done 2026-10-12):** repo, `common/` contracts + config, `layouts/ag23.json`, `tenantguard.yaml`, `docker-compose.yml`, this plan, briefs.
 
 **Wave 1 (parallel T1–T5): Stage 1 + Stage 2 = every PS deliverable.**
 Gate G1: in Docker, the lab runs 12 calm tenants plus a `whale` attack on tenant K.
 - In `off` mode, victims' p95 rises a lot.
 - In `industry` mode it is contained.
-- In `padosi` mode the brain flags K (usage-share score), walks the throttle ladder and recovers it.
+- In `tenantguard` mode the brain flags K (usage-share score), walks the throttle ladder and recovers it.
 - The UI shows all of it live.
 - The admin API edits a quota.
 
-**Wave 2: Stage 3 (Padosi magic).**
+**Wave 2: Stage 3 (TenantGuard magic).**
 - T1: route weights + relocation + drain overrides honoured; adaptive per-worker limiter; retry budget; express lane.
 - T2: black-box indexer, cache isolation + eviction ledger, fault injection, per-class costs.
 - T3: health (peer ratio) → rescue → barcode decoder → relocation prover (`docker update`) → verdicts.
 - T4: 3×3 server grid, Case File, Scorecard pages.
 - T5: blackbox_bomb, cache_flood, faulty_server, honest_spike, crash-test runner → `lab/results`.
 
-Gate G2: black-box bomb is missed by `industry` and rescued → named → proved → resolved by `padosi`, 3 runs in a row.
+Gate G2: black-box bomb is missed by `industry` and rescued → named → proved → resolved by `tenantguard`, 3 runs in a row.
 
-**Wave 3: polish.** Genuineness/importance matrix, Claude narrator, Web PS3 convergence adapter (`brain/padosi_brain/handoff.py`, contract in `enhanced-prompts/convergence-web.md`), and the COULD list from FINAL-PLAN §3.
+**Wave 3: polish.** Genuineness/importance matrix, Claude narrator, Web PS3 convergence adapter (`brain/tenantguard_brain/handoff.py`, contract in `enhanced-prompts/convergence-web.md`), and the COULD list from FINAL-PLAN §3.
 
 ## §5 Task briefs (Wave 1)
 
@@ -95,15 +95,15 @@ Each brief is copied into its worktree as `TASK-T<n>.md`. **Every TASK file also
 ### T1: Gateway
 **You are TASK T1:** when this is finished, any tenant request entering on :8000 is identified, admitted against multi-dimensional quotas, fairly scheduled, routed to one of its barcode servers, measured, and controllable by the admin and the brain.
 
-You own `gateway/**` (package `gateway/padosi_gateway/`, tests in `gateway/tests/`, `gateway/Dockerfile`, `gateway/requirements.txt`).
+You own `gateway/**` (package `gateway/tenantguard_gateway/`, tests in `gateway/tests/`, `gateway/Dockerfile`, `gateway/requirements.txt`).
 
 Build:
-1. FastAPI app on :8000. `ANY /api/{path}` → forwards to a worker with httpx (pooled AsyncClient), adding headers `X-Padosi-Tenant`, `X-Padosi-Class`, `X-Request-Id` from `contracts.py`.
+1. FastAPI app on :8000. `ANY /api/{path}` → forwards to a worker with httpx (pooled AsyncClient), adding headers `X-TenantGuard-Tenant`, `X-TenantGuard-Class`, `X-Request-Id` from `contracts.py`.
 2. **Identity:** `X-API-Key` hashed with SHA-256 → TenantConfig (from `load_tenants()`). Unknown key → 401 JSON.
 3. **Request class** = sha1(method + path + sorted query keys + body-size bucket)[:8].
 4. **Admission** (skipped in `off` mode):
    - token bucket (rate/burst)
-   - cost bucket in CPU-ms, debited *after* the response using the worker's `X-Padosi-Cpu-Ms`; a request is refused while the bucket is negative
+   - cost bucket in CPU-ms, debited *after* the response using the worker's `X-TenantGuard-Cpu-Ms`; a request is refused while the bucket is negative
    - concurrency cap
 
    Refusal → 429 with an accurate `Retry-After`, plus `RateLimit-Policy` / `RateLimit` headers.
@@ -133,7 +133,7 @@ Prove it: run 2+ stub workers (a 10-line FastAPI that echoes, or T2's worker if 
 You own `worker/**` (package `worker/app/`, tests in `worker/tests/`, `worker/Dockerfile` installing `./common`, `worker/requirements.txt`).
 
 Build:
-1. FastAPI app, `SERVER_NAME` env, port from the CLI. A middleware reads `X-Padosi-Tenant` into a `contextvars.ContextVar` (missing → 400), and sets `X-Padosi-Cpu-Ms` on every response (handler CPU via `time.thread_time()`; handlers are **sync** `def`).
+1. FastAPI app, `SERVER_NAME` env, port from the CLI. A middleware reads `X-TenantGuard-Tenant` into a `contextvars.ContextVar` (missing → 400), and sets `X-TenantGuard-Cpu-Ms` on every response (handler CPU via `time.thread_time()`; handlers are **sync** `def`).
 2. Endpoints:
    - `GET /api/light` (~1 ms; the victim SLO probe)
    - `GET /api/read?key=` (cache → DB)
@@ -144,9 +144,9 @@ Build:
    - `GET /canary`
    - `GET /healthz`
 3. **Storage:** one SQLite file per tenant (`/data/{tenant}.db`, or `./data/<server>/` locally), seeded at start. The repository takes the tenant from context only.
-4. **Meters:** cumulative per-tenant `requests`, `handler_cpu_ms`, `bg_cpu_ms`, `db_ms`, `bytes_in`, `mem_mb`; per (tenant, class) count + cpu total (class from `X-Padosi-Class`).
+4. **Meters:** cumulative per-tenant `requests`, `handler_cpu_ms`, `bg_cpu_ms`, `db_ms`, `bytes_in`, `mem_mb`; per (tenant, class) count + cpu total (class from `X-TenantGuard-Class`).
 5. **Stats:** `GET /stats` → `WorkerStats` (contracts), with `cpu_total_ms` from psutil on the process tree.
-6. **Fault injection:** `POST /admin/fault {latency_ms, cpu_burn_pct}` and `DELETE /admin/fault` (simulated faulty host; the header `X-Admin-Token` must equal env `PADOSI_ADMIN_TOKEN`, default `dev`).
+6. **Fault injection:** `POST /admin/fault {latency_ms, cpu_burn_pct}` and `DELETE /admin/fault` (simulated faulty host; the header `X-Admin-Token` must equal env `TENANTGUARD_ADMIN_TOKEN`, default `dev`).
 7. 1 MB body limit (413).
 8. `worker/Dockerfile` (python:3.12-slim, build context = repo root, installs `common`, listens on 8100). `docker compose up w0 w1` must work.
 9. Tests:
@@ -160,11 +160,11 @@ Prove it: run 3 workers locally on 8100–8102. Show that hammering `/api/search
 ### T3: Brain (Wave 1 = Stage 2)
 **You are TASK T3:** when this is finished, a control-plane service watches every tenant's usage and latency, detects a noisy neighbor, throttles it with a graduated, self-recovering ladder, explains every action, and streams live state to the dashboard.
 
-You own `brain/**` (package `brain/padosi_brain/`, tests in `brain/tests/`, `brain/Dockerfile`, `brain/requirements.txt`).
+You own `brain/**` (package `brain/tenantguard_brain/`, tests in `brain/tests/`, `brain/Dockerfile`, `brain/requirements.txt`).
 
 Build:
 1. FastAPI + asyncio app on :8200, with three ingest tasks:
-   - the gateway telemetry WS (`PADOSI_GATEWAY_URL` env, default from yaml `services.gateway`) → `/internal/telemetry`, reconnecting
+   - the gateway telemetry WS (`TENANTGUARD_GATEWAY_URL` env, default from yaml `services.gateway`) → `/internal/telemetry`, reconnecting
    - poll every worker's `/stats` at 1 Hz (diff the cumulative counters)
    - send a heartbeat to the gateway every 500 ms
 2. **Rolling state:** 60 s of per-tenant rps, p95, rejected, CPU ms/s (handler + bg), and per-server p95 and CPU.
@@ -178,7 +178,7 @@ Build:
    - normal → warn → throttle (LimitsCmd factor ×0.5 per step, AIMD) → deprioritize (weight_factor 0.25) → quarantine (BlockCmd is NOT quarantine; in Wave 1 quarantine = LimitsCmd factor 0.1 + weight_factor 0.1, with a TODO to relocate in Wave 2)
    - recovery: +0.1 factor per recover tick after `recover_below` holds
 
-   Every action sends a TTL; the brain renews it while the action is needed. Only in `padosi` mode (read the mode from the telemetry frame).
+   Every action sends a TTL; the brain renews it while the action is needed. Only in `tenantguard` mode (read the mode from the telemetry frame).
 5. **Incidents:** an incident opens when a tenant reaches warn; emit an `IncidentEvent` on every stage/level change, with `detail` holding plain-English reasons (D5: every throttle stores why).
 6. **UI stream:** WS `/ws/events` broadcasts a `StateSnapshot` at 2 Hz (tenants, servers, utilization, Jain fairness over per-tenant normalized throughput, status sentence) plus every IncidentEvent. Also `GET /api/state`, `GET /api/incidents`.
 7. Pure logic (score, ladder, fairness) lives in modules with no I/O; tests for each, including "a legit burst with no victim impact is never throttled" and "ladder recovers after the attack stops".
@@ -205,7 +205,7 @@ Build:
    - noisy-score bars
    - incident timeline
    - fairness index + utilization gauges
-   - mode toggle OFF / Industry / Padosi
+   - mode toggle OFF / Industry / TenantGuard
    - attack launcher (attack, tenant, intensity, duration)
 3. **Tenants page:** table with quotas and an inline quota edit (PATCH).
 4. Design rules: colour means status (green / amber / red) plus one accent; big type; a unit on every number; works on a 1080p projector.
@@ -216,7 +216,7 @@ Prove it: `npm run build` passes plus `npm run lint`; a screenshot (headless Edg
 ### T5: Lab
 **You are TASK T5:** when this is finished, one command fills the platform with 12 realistic tenants, and any attack can be launched or stopped from the dashboard or the CLI. Every run produces measured victim-latency results.
 
-You own `lab/**` (package `lab/padosi_lab/`, tests in `lab/tests/`, `lab/Dockerfile`, `lab/results/.gitkeep`).
+You own `lab/**` (package `lab/tenantguard_lab/`, tests in `lab/tests/`, `lab/Dockerfile`, `lab/results/.gitkeep`).
 
 Build:
 1. FastAPI on :8300 plus an asyncio traffic engine using httpx with keep-alive pools, sending to the gateway with each tenant's API key.
@@ -233,7 +233,7 @@ Build:
    - per tenant: client-side p50/p95/p99, success, 429, 503, per second
    - `GET /lab/metrics`
    - `POST /lab/run {scenario, mode}` runs a scripted scenario (calm 20 s → attack 40 s → calm 20 s) after setting the gateway mode via `/admin/mode`, then writes `lab/results/<ts>-<scenario>-<mode>.json` with victim p99 for baseline / attack / after, time-to-recover, and the attacker's 429 count
-5. CLI: `python -m padosi_lab calm`, `python -m padosi_lab attack whale K`.
+5. CLI: `python -m tenantguard_lab calm`, `python -m tenantguard_lab attack whale K`.
 6. Allow CORS from `http://127.0.0.1:5173`.
 7. Tests: Poisson rate within ±10%; the percentile math; the scenario timeline.
 
@@ -254,7 +254,7 @@ Prove it: run against a stub gateway (a 10-line FastAPI that sleeps 2 ms), then 
 | Review | n/a | main | codeastra-2b | standby |
 
 ## Decisions log
-- 2026-10-12: Python-only backend (Go not installed). Padosi design adopted; `reshdata/` ignored per user. Convergence partner = Web PS3 Digital Handoff (`enhanced-prompts/convergence-web.md`); `convergence-contract.md` (Cyber) kept as a backup only.
+- 2026-10-12: Python-only backend (Go not installed). TenantGuard design adopted; `reshdata/` ignored per user. Convergence partner = Web PS3 Digital Handoff (`enhanced-prompts/convergence-web.md`); `convergence-contract.md` (Cyber) kept as a backup only.
 - 2026-10-12 (contracts v2, from codeastra-2b review):
   - `noisy_score` is the raw ratio; `noisy_norm` (0..1) is for bars.
   - LimitsCmd semantics are in its docstring: replace + restart TTL; base = PATCHed quota; ints = max(1, round); 1.0/1.0 clears; 400 outside (0, 1].
@@ -263,12 +263,17 @@ Prove it: run against a stub gateway (a 10-line FastAPI that sleeps 2 ms), then 
   - Lab: `LabStatus`, `RunReq`, `RunResult` (the results JSON schema). AttackReq intensity is 0.1..5.
   - Units are documented in the contracts header.
   - Tenants added at runtime via `POST /admin/tenants` are out of scope for the brain in Wave 1 (it uses `load_tenants()`).
-- 2026-10-12: Background-job CPU is NOT charged to the gateway cost bucket in Wave 1 (`X-Padosi-Cpu-Ms` = handler only). Wave 2 T1+T3: the brain pushes per-tenant bg CPU debits to the gateway (new control `charge`), closing the "background work included" claim.
+- 2026-10-12: Background-job CPU is NOT charged to the gateway cost bucket in Wave 1 (`X-TenantGuard-Cpu-Ms` = handler only). Wave 2 T1+T3: the brain pushes per-tenant bg CPU debits to the gateway (new control `charge`), closing the "background work included" claim.
 - 2026-10-12 (convergence samples from codeastra-21, accepted):
   - verdicts are snake_case (`costly_pattern`, `over_plan`, `honest_growth`, `host_fault`, `mitigated_no_blame`)
   - case status is `waiting_for_decision|in_progress|resolved|closed`; severity is `low|medium|high`; times are HH:MM:SS IST
   - evidence_link = `http://<ui-host>:5173/case/<incident_id>` (T4 adds the `/case/:id` route in Wave 2)
   - Case/handoff Pydantic models are added to `contracts.py` at the start of Wave 3.
+- 2026-10-12 (user): **Project name is TenantGuard.** The old name was a mistake and must not appear anywhere.
+  - Package `tenantguard_common`; config `tenantguard.yaml`; env prefix `TENANTGUARD_`; headers `X-TenantGuard-Tenant` / `-Class` / `-Cpu-Ms`; mode literal `tenantguard` (off | industry | tenantguard).
+  - Service packages: `gateway/tenantguard_gateway`, `worker/app`, `brain/tenantguard_brain`, `lab/tenantguard_lab`.
+  - Persona F renamed to FitZone.
+  - Repo: private GitHub `yashodeepchaudhari/tenantguard`, collaborator `reki-shu` (friend's laptop = Docker host).
 - 2026-10-12 (user): **Two-laptop setup.**
   - The friend's laptop = Docker host ("Laptop A"): gateway, workers, spare, quarantine and brain in compose. The brain must sit with docker.sock.
   - This laptop = dev + traffic ("Laptop B"): all Claude sessions, the lab and the UI, pointing at `<friend-ip>`.
@@ -276,4 +281,4 @@ Prove it: run against a stub gateway (a 10-line FastAPI that sleeps 2 ms), then 
   - Code reaches Laptop A via a private GitHub remote (pending user OK).
   - Laptop A needs ≥ 8 cores / 16 GB; with fewer, lower `worker.cpus` or use the 6-worker layout.
   - Services must therefore bind `0.0.0.0` and allow CORS from the UI origin; nothing may assume 127.0.0.1 for a peer service (always read URLs from config/env).
-- 2026-10-12: Cost bucket is debited with the worker-measured CPU (`X-Padosi-Cpu-Ms`) rather than an estimate, so it is a real resource quota, not a request count.
+- 2026-10-12: Cost bucket is debited with the worker-measured CPU (`X-TenantGuard-Cpu-Ms`) rather than an estimate, so it is a real resource quota, not a request count.

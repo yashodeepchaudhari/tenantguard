@@ -7,7 +7,7 @@
     "verdict": "mitigated_no_blame",
     "affected": ["A", "F", "I", "C", "D", "H"],
     "evidence_link": "http://<ui-host>:5173/case/INC-0108",
-    "summary": "Servers w2 and w6 slowed for about 6 seconds. Affected tenants were moved to their healthy servers within 1 s. No tenant had all 3 of its servers slow; the closest match, LokVani News (L), shares w2 and w6 but its third server w4 stayed healthy, so its confidence was only 42%. The slowdown ended before a test was needed. Padosi did not blame or limit anyone; the full data is saved for review."
+    "summary": "Servers w2 and w6 slowed for about 6 seconds. Affected tenants were moved to their healthy servers within 1 s. No tenant had all 3 of its servers slow; the closest match, LokVani News (L), shares w2 and w6 but its third server w4 stayed healthy, so its confidence was only 42%. The slowdown ended before a test was needed. TenantGuard did not blame or limit anyone; the full data is saved for review."
   },
   "pending_actions": [
     { "action_id": "A1", "text": "Review the saved data and mark this case resolved, or keep it open to watch for a repeat.", "deadline": "15:40:00" }

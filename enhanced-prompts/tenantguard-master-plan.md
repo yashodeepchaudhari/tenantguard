@@ -1,8 +1,8 @@
-# Padosi 2.0: Master Plan
+# TenantGuard 2.0: Master Plan
 **CODEASTRA 2.0 · Cloud Computing & Distributed Systems · PS 3: Multi-Tenant Isolation and Noisy-Neighbor Defense**
 Team VisionGuardians · 4 members · 24 hours · Go + Python + React · 2 laptops + Azure VM
 
-> **One line:** Padosi is a fair-share control plane for multi-tenant clouds. Every tenant gets its fair share, every slowdown is fixed in about a second, and every slowdown gets a name, a proof and a plain-English explanation.
+> **One line:** TenantGuard is a fair-share control plane for multi-tenant clouds. Every tenant gets its fair share, every slowdown is fixed in about a second, and every slowdown gets a name, a proof and a plain-English explanation.
 
 ---
 
@@ -10,9 +10,9 @@ Team VisionGuardians · 4 members · 24 hours · Go + Python + React · 2 laptop
 
 Think of a housing society with one water tank. When one flat runs a huge motor, everyone's taps run dry.
 
-Clouds work the same way: thousands of customers (**tenants**) share the same servers. Today's platforms stop only the obvious abuser, the one sending too many requests. Padosi handles the whole problem:
+Clouds work the same way: thousands of customers (**tenants**) share the same servers. Today's platforms stop only the obvious abuser, the one sending too many requests. TenantGuard handles the whole problem:
 
-| Step | What Padosi does | Time |
+| Step | What TenantGuard does | Time |
 |---|---|---|
 | **1. Prevent** | Fair, cost-based limits for every tenant, including hidden background work | Always on |
 | **2. Rescue** | Victims' traffic moves away from slow servers at once | ≈ 1 s |
@@ -23,9 +23,9 @@ Clouds work the same way: thousands of customers (**tenants**) share the same se
 
 ---
 
-## 2. Why Padosi is ahead of the industry
+## 2. Why TenantGuard is ahead of the industry
 
-| Capability | Typical API gateway | Observability tools | Padosi |
+| Capability | Typical API gateway | Observability tools | TenantGuard |
 |---|---|---|---|
 | Per-tenant rate + **cost** limits | Rate only | ✗ | ✅ Cost-based, background work included |
 | Fair scheduling + adaptive concurrency | Partial | ✗ | ✅ Weighted DRR + gradient limiter |
@@ -37,7 +37,7 @@ Clouds work the same way: thousands of customers (**tenants**) share the same se
 | Explains itself in plain English | ✗ | ✗ | ✅ Grounded AI incident narrator |
 | Tenant data isolation | Partial | ✗ | ✅ Namespaced cache, DB per tenant, memory budgets |
 
-**Built on proven engineering:** Google SRE (overload handling, criticality), AWS (shuffle sharding, load shedding, fairness), Microsoft 2DFQ, Stripe limiters, Netflix adaptive concurrency, Google CPI² (antagonist detection), group-testing theory. Padosi's contribution is the complete loop: **prevent → rescue → name → prove → resolve → explain**.
+**Built on proven engineering:** Google SRE (overload handling, criticality), AWS (shuffle sharding, load shedding, fairness), Microsoft 2DFQ, Stripe limiters, Netflix adaptive concurrency, Google CPI² (antagonist detection), group-testing theory. TenantGuard's contribution is the complete loop: **prevent → rescue → name → prove → resolve → explain**.
 
 ---
 
@@ -50,7 +50,7 @@ Clouds work the same way: thousands of customers (**tenants**) share the same se
    ┌──────────────────────── AZURE VM ─────────────────────────┐
    │  Caddy (auto-HTTPS)  →  Relay hub (WebSocket)             │
    │  /play page · public read-only dashboard                  │
-   │  Standby: full Padosi stack (same Compose file)           │
+   │  Standby: full TenantGuard stack (same Compose file)           │
    └───────────────────────────▲───────────────────────────────┘
                                │ outbound WebSocket (no inbound ports needed)
    ┌──────────── LAPTOP A: "PLATFORM" ──────────┐   wired LAN   ┌──────── LAPTOP B: "TRAFFIC LAB" ────────┐
@@ -139,7 +139,7 @@ Client ──► GATEWAY (Go)
 
 ### 4.4 The five verdicts
 
-| Verdict | How Padosi recognises it | Action |
+| Verdict | How TenantGuard recognises it | Action |
 |---|---|---|
 | **Over-plan** | Metered usage above the plan | Interactive: fast reject + accurate `Retry-After` + `RateLimit` headers. Batch: queued at the plan rate within its wait budget. Upsell notice. |
 | **Costly pattern** (hidden cost) | Confirmed suspect whose paid work explains < 35% of the load it caused, or heavy black-box / eviction evidence | Find the exact request class (class-level relocation) → move **only that class** to the heavy lane. Tenant's other traffic untouched. Bill the true cost. |
@@ -165,7 +165,7 @@ Every confirmed noisy tenant gets **two separate scores**, shown in the Case Fil
 **Importance level (Low / Medium / High / Critical): how much does it matter to the business?**
 Signals: plan tier, monthly revenue (₹), SLA level, "protected account" flag, number of end users served.
 
-**Event Calendar:** tenants pre-announce big events through `POST /events/calendar`. Padosi pre-allocates burst capacity for that window, and traffic inside the window counts as genuine.
+**Event Calendar:** tenants pre-announce big events through `POST /events/calendar`. TenantGuard pre-allocates burst capacity for that window, and traffic inside the window counts as genuine.
 
 **Decision matrix: the noisy tenant is never downscaled if it is important. It is moved and scaled.**
 
@@ -183,7 +183,7 @@ Signals: plan tier, monthly revenue (₹), SLA level, "protected account" flag, 
 6. Quarantine with a timer (clear abuse)
 7. Block, only with human approval (confirmed attack / stolen key)
 
-Every step has a timer + auto-undo, and the tenant always receives the reason and a suggested fix. Each company can tune the matrix in `padosi.yaml` (example: "Enterprise: never throttle, only relocate").
+Every step has a timer + auto-undo, and the tenant always receives the reason and a suggested fix. Each company can tune the matrix in `tenantguard.yaml` (example: "Enterprise: never throttle, only relocate").
 
 ### 4.5 Barcode layout: AG(2,3), 9 servers, 12 tenants
 
@@ -209,14 +209,14 @@ Tier weights: Enterprise 4 · Pro 2 · Free 1.
 | C | Chitra Studio (photo app) | Free | Uploads, bursty |
 | D | DhanSetu Payments (UPI-style) | Enterprise | Steady, very latency-sensitive |
 | E | Ekalavya Learn (ed-tech) | Pro | Class-time spikes |
-| F | FitPadosi (fitness) | Free | Early-morning bursts |
+| F | FitZone (fitness) | Free | Early-morning bursts |
 | G | GaadiGo (ride booking) | Enterprise | Rush-hour peaks |
 | H | HisaabBooks (accounting) | Pro | Month-end batch exports |
 | I | IdliExpress (food delivery) | Free | Lunch and dinner peaks |
 | J | JhatpatMart (quick commerce) | Enterprise | Huge sale-day spikes (uses the Event Calendar) |
 | K | KaamKaro (jobs portal) | Pro | Bulk-write imports |
 | L | LokVani News | Free | Breaking-news spikes |
-Scaling layouts: STS(13) → 13 servers / 26 tenants · AG(2,5) → 25 servers / 30 tenants · AG(2,7) → 49 servers / 56 tenants. Beyond one layout, Padosi runs in **cells**, each cell an independent gateway + workers + brain (the cell architecture used by AWS and Shopify).
+Scaling layouts: STS(13) → 13 servers / 26 tenants · AG(2,5) → 25 servers / 30 tenants · AG(2,7) → 49 servers / 56 tenants. Beyond one layout, TenantGuard runs in **cells**, each cell an independent gateway + workers + brain (the cell architecture used by AWS and Shopify).
 
 ### 4.6 Why the rescue step also names the culprit
 
@@ -237,7 +237,7 @@ When a server slows down, every tenant shifts traffic to its other, healthy serv
 - Per-tenant memory budget inside each worker (cache bytes + in-flight bodies) and a 1 MB body limit.
 - API keys stored as SHA-256 hashes. Each tenant's billing view shows only its own data.
 
-### 4.9 Padosi's own safety
+### 4.9 TenantGuard's own safety
 
 - **Fail-static:** if the brain goes quiet for 2 s, the gateway keeps the last known-good policy and traffic keeps flowing.
 - **Action budget:** ≤ 6 relocations/min, ≤ 1 quarantine per 30 s, ≤ 1 drained server at a time (when peers are < 75% busy) without human approval.
@@ -264,7 +264,7 @@ When a server slows down, every tenant shifts traffic to its other, healthy serv
 
 ## 6. Attack lab (8 modes) and the 3-mode scorecard
 
-| Attack | What it does | OFF | Industry standard | Padosi |
+| Attack | What it does | OFF | Industry standard | TenantGuard |
 |---|---|---|---|---|
 | Flood | 10× request rate | All slow | ✅ Rate limit | ✅ Rate limit |
 | Whale | Few, very heavy requests | All slow | Partial | ✅ Cost bucket + fair queue + express lane |
@@ -279,7 +279,7 @@ When a server slows down, every tenant shifts traffic to its other, healthy serv
 **Modes (one toggle on the dashboard):**
 - **OFF**: shared pool, FIFO, no limits.
 - **Industry standard**: token bucket + concurrency caps + cgroups + fair queue + load shedding.
-- **Padosi**: the full loop.
+- **TenantGuard**: the full loop.
 
 **Scorecard metrics (live, per attack, per mode):**
 - victim SLO-violation-seconds
@@ -295,10 +295,10 @@ When a server slows down, every tenant shifts traffic to its other, healthy serv
 ## 7. Showcase features
 
 ### 7.1 Blind phone whodunit
-A judge scans the QR code, secretly picks a tenant and an attack type, and presses **Start**. The phone talks to the VM, which forwards to Laptop A's Traffic Lab. Padosi rescues the victims, names the tenant with a confidence %, proves it on the spare, and shows the verdict. Then the judge's phone reveals their pick next to Padosi's answer.
+A judge scans the QR code, secretly picks a tenant and an attack type, and presses **Start**. The phone talks to the VM, which forwards to Laptop A's Traffic Lab. TenantGuard rescues the victims, names the tenant with a confidence %, proves it on the spare, and shows the verdict. Then the judge's phone reveals their pick next to TenantGuard's answer.
 
 ### 7.2 Three-mode scorecard
-The same attack is run in OFF, Industry and Padosi modes and shown side by side as live charts and a table. This answers "isn't this just rate limiting?" with numbers.
+The same attack is run in OFF, Industry and TenantGuard modes and shown side by side as live charts and a table. This answers "isn't this just rate limiting?" with numbers.
 
 ### 7.3 Fair billing + "Why was I slow?"
 - Per-tenant cost (CPU, DB, background), SLA credits received, true-cost lines, refunds.
@@ -312,9 +312,9 @@ The same attack is run in OFF, Industry and Padosi modes and shown side by side 
 4. **Live flow view:** dots (requests) travel from tenants to servers. Slow servers turn red, and the dots visibly move away during the rescue.
 5. **Proof animation:** when the suspect moves to the spare, the red "smoke" follows it.
 6. **₹ impact panel:** revenue protected, SLA credits avoided, customers saved from slowdown, innocents punished (0).
-7. **Scenario Director:** judges combine events (for example, 2 attackers + a broken server) and watch Padosi handle them live.
+7. **Scenario Director:** judges combine events (for example, 2 attackers + a broken server) and watch TenantGuard handle them live.
 8. **Statistics:** a 40-run blind drill before the final, with the real results on the slide.
-9. **Fair comparison:** the same attack in OFF / Industry / Padosi, side by side.
+9. **Fair comparison:** the same attack in OFF / Industry / TenantGuard, side by side.
 
 ### 7.4 AI incident narrator (Claude)
 When a verdict is reached, the brain sends the evidence pack (JSON) to Claude (`claude-opus-5-5`) and gets back a structured report:
@@ -339,7 +339,7 @@ Every tenant ID, server ID and number in the output is checked against the evide
   - Right: incident timeline (Detected → Rescued → Named → Proved → Verdict → Resolved → Explained).
   - Bottom: the 3-mode toggle.
 - **Case File:** the three witnesses (barcode match, Harm Ledger graph "who made whom wait / who evicted whom", relocation chart showing the harm following the suspect to the spare), verdict, action, TTL countdown, evidence hash, AI report.
-- **Scorecard:** OFF vs Industry vs Padosi, per attack.
+- **Scorecard:** OFF vs Industry vs TenantGuard, per attack.
 - **Billing:** per-tenant costs, credits, true-cost lines, "Why was I slow?".
 - **/play (phone):** QR → pick tenant → pick attack → Start → Reveal. No sign-up.
 - **Design rules:** colour means status only (green / amber / red) plus one accent; large type; every number has a unit; motion only when it means something.
@@ -365,7 +365,7 @@ Pairing points: M1↔M2 at H1 (control API contract) and H8 (rescue loop); M2↔
 |---|---|---|---|
 | 10:30–11:30 | H0–H1 | Repo skeleton, the 5 JSON contracts (§12), Compose with 9 workers, AG(2,3) layout file, wireframes | `docker compose up` works for everyone; contracts committed |
 | 11:30–13:30 | H1–H3 | Walking skeleton: Go gateway routes by barcode; workers serve 4 endpoints; Lab sends normal traffic; tiles show live p95 | Tiles move with real data across both laptops |
-| 13:30–14:30 | H3–H4 | **Calibration run:** 20 min of calm traffic → record each server's peer-ratio spread and canary noise → write thresholds into `padosi.yaml` | Thresholds from real measurements committed |
+| 13:30–14:30 | H3–H4 | **Calibration run:** 20 min of calm traffic → record each server's peer-ratio spread and canary noise → write thresholds into `tenantguard.yaml` | Thresholds from real measurements committed |
 | 14:30–15:30 | H4–H5 | Admission (token + cost bucket, concurrency), DRR, tenant context in workers | Flood + whale handled in Industry mode |
 | 15:30 | H5 | **Mentoring 1** | Feedback noted |
 | 16:30 | H6 | **Convergence round** with Web PS 3 (§13): agree on the contract, send 5 sample cases by H7, joint test at H9 | Partner integration live by H9 |
@@ -382,7 +382,7 @@ Pairing points: M1↔M2 at H1 (control API contract) and H8 (rescue loop); M2↔
 
 ---
 
-## 11. Decision-engine parameters (`padosi.yaml`, calibrated at H3–H4)
+## 11. Decision-engine parameters (`tenantguard.yaml`, calibrated at H3–H4)
 
 | Parameter | Starting value | Meaning |
 |---|---|---|
@@ -408,7 +408,7 @@ Pairing points: M1↔M2 at H1 (control API contract) and H8 (rescue loop); M2↔
 
 1. **Telemetry** (gateway → brain, 4 Hz, WebSocket): `{ts, cells:[{tenant, server, count, p50_ms, p95_ms, errors, shed}], queues:[{tenant, depth, wait_ms}], limiter:[{server, window}]}`
 2. **Worker stats** (worker → brain, 1 Hz, `GET /stats`): `{server, cpu_total_ms, blackbox_cpu_ms, tenants:[{tenant, handler_cpu_ms, bg_cpu_ms, db_ms, cache_hits, cache_misses, evictions_caused, evictions_suffered, bytes}]}`
-3. **Control** (brain → gateway, `POST /control/*`): `route_weights`, `relocate {tenant, class?, target}`, `limits {tenant, rate, cost, concurrency}`, `lane {tenant, class, lane}`, `drain {server}`, `mode {off|industry|padosi}`. Every command has `ttl_s` and `incident_id`.
+3. **Control** (brain → gateway, `POST /control/*`): `route_weights`, `relocate {tenant, class?, target}`, `limits {tenant, rate, cost, concurrency}`, `lane {tenant, class, lane}`, `drain {server}`, `mode {off|industry|tenantguard}`. Every command has `ttl_s` and `incident_id`.
 4. **Incident events** (brain → UI/relay, WebSocket): `{incident_id, stage, ts, suspects:[{tenant, confidence}], verdict, action, evidence_hash, report?}`
 5. **Play** (phone → VM → lab): `{session, tenant, attack, start|stop}` and `{session, reveal}`
 
@@ -418,11 +418,11 @@ Pairing points: M1↔M2 at H1 (control API contract) and H8 (rescue loop); M2↔
 
 **Convergence partner: Web PS 3, "Digital Handoff & Continuity Management Platform".** Their PS lists "Web + Cybersecurity + Cloud", so we are their official Cloud partner. Full contract: `convergence-web.md`.
 
-- **Idea:** every Padosi incident becomes a case in their app, with an owner (on-call), context, pending actions and deadlines. When the on-call shift changes, their app makes the handoff complete and safe.
-- **Web team builds for us:** (1) cases created from Padosi incidents; (2) Hand off / Acknowledge / Approve buttons that call Padosi.
-- **Padosi builds for them:** (1) `POST {WEB_URL}/cases` on every incident change (context, pending actions with deadlines, history); (2) `POST /control/case-update` that receives the new owner + decisions (approve / reject / extend / release / resolve) and acts on them.
-- **Joint demo:** attack → case appears, owned by Priya → handoff blocked ("1 approval pending") → Rahul acknowledges → Padosi shows "Owner: Rahul" → Rahul approves → Padosi fixes it live.
-- **Safety:** each side keeps working if the other is down (Padosi's timers + auto-undo; their app keeps the cases).
+- **Idea:** every TenantGuard incident becomes a case in their app, with an owner (on-call), context, pending actions and deadlines. When the on-call shift changes, their app makes the handoff complete and safe.
+- **Web team builds for us:** (1) cases created from TenantGuard incidents; (2) Hand off / Acknowledge / Approve buttons that call TenantGuard.
+- **TenantGuard builds for them:** (1) `POST {WEB_URL}/cases` on every incident change (context, pending actions with deadlines, history); (2) `POST /control/case-update` that receives the new owner + decisions (approve / reject / extend / release / resolve) and acts on them.
+- **Joint demo:** attack → case appears, owned by Priya → handoff blocked ("1 approval pending") → Rahul acknowledges → TenantGuard shows "Owner: Rahul" → Rahul approves → TenantGuard fixes it live.
+- **Safety:** each side keeps working if the other is down (TenantGuard's timers + auto-undo; their app keeps the cases).
 
 **Surprise challenge (cloud):**
 - **Scaling:** switch to the STS(13) layout (26 tenants) or start a second cell; the brain is cell-scoped.
@@ -434,7 +434,7 @@ Pairing points: M1↔M2 at H1 (control API contract) and H8 (rescue loop); M2↔
 ## 14. Pitch (5 min) and demo (4 min)
 
 **Pitch**
-1. **Hook (30 s):** "Your app is slow. Your code is fine. Your servers are fine. The problem is your *padosi*." Water-tank analogy.
+1. **Hook (30 s):** "Your app is slow. Your code is fine. Your servers are fine. The problem is your *noisy neighbor*." Water-tank analogy.
 2. **Pain (60 s):** shared platforms everywhere; Shopify rebuilt into isolated pods to contain noisy shops; slow-hardware incidents took days to months to find (FAST 2018); rate limits stop only the obvious abuser.
 3. **Solution (90 s):** prevent → rescue → name → prove → resolve → explain. Pooled-test analogy for the barcode. "Move, don't punish."
 4. **Proof (60 s):** blind-test drill results from H18–H20, 3-mode scorecard numbers.
@@ -443,7 +443,7 @@ Pairing points: M1↔M2 at H1 (control API contract) and H8 (rescue loop); M2↔
 **Demo**
 1. **Calm (15 s):** 12 green tiles, 3×3 grid.
 2. **OFF → Industry (45 s):** black-box bomb in Industry mode: the rate limiter sees nothing and victims go red.
-3. **Padosi, blind (75 s):** a judge picks a tenant on their phone. Victims recover in about 1 s, the barcode lights up, the suspect moves to the spare and the slowdown follows it, the verdict appears, the heavy lane isolates only the guilty request type, and the judge reveals the pick.
+3. **TenantGuard, blind (75 s):** a judge picks a tenant on their phone. Victims recover in about 1 s, the barcode lights up, the suspect moves to the spare and the slowdown follows it, the verdict appears, the heavy lane isolates only the guilty request type, and the judge reveals the pick.
 4. **Faulty server (25 s):** drained, "host fault, no tenant blamed".
 5. **Honest spike (25 s):** burst lane + new worker, no penalty.
 6. **Explain (40 s):** AI incident report, victim's "Why was I slow?", credits in billing.
@@ -457,7 +457,7 @@ Pairing points: M1↔M2 at H1 (control API contract) and H8 (rescue loop); M2↔
 
 | Question | Answer |
 |---|---|
-| Isn't this just rate limiting? | The scorecard shows it: Industry mode includes rate limiting and still misses the black-box bomb and cache flood. Padosi catches both. |
+| Isn't this just rate limiting? | The scorecard shows it: Industry mode includes rate limiting and still misses the black-box bomb and cache flood. TenantGuard catches both. |
 | Why not instrument everything? | We do, for our own code: background jobs are tagged and billed. The barcode covers components nobody can instrument, such as vendor engines, database internals and kernels. |
 | How fast are victims helped? | Route-around rescues them within about a second, before the investigation even starts. |
 | Doesn't testing hurt the suspect? | The suspect moves to a dedicated spare sized for it, so it usually gets faster. |

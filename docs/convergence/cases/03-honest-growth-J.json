@@ -7,7 +7,7 @@
     "verdict": "honest_growth",
     "affected": ["A", "D", "G", "B", "F", "H", "C", "E", "I"],
     "evidence_link": "http://<ui-host>:5173/case/INC-0106",
-    "summary": "JhatpatMart's sale (registered in the Event Calendar for 18:00-21:00) raised its traffic 8x. Its own paid work explains the load (paid share 0.92), so this is honest growth. Genuineness 94%, importance Critical (Enterprise, Rs 15 lakh/month). Padosi moved it to dedicated spare capacity (VIP lane) and added one worker. Tenants on w0, w5, w7 were briefly slowed and recovered within 1 s. JhatpatMart was never throttled."
+    "summary": "JhatpatMart's sale (registered in the Event Calendar for 18:00-21:00) raised its traffic 8x. Its own paid work explains the load (paid share 0.92), so this is honest growth. Genuineness 94%, importance Critical (Enterprise, Rs 15 lakh/month). TenantGuard moved it to dedicated spare capacity (VIP lane) and added one worker. Tenants on w0, w5, w7 were briefly slowed and recovered within 1 s. JhatpatMart was never throttled."
   },
   "pending_actions": [
     { "action_id": "A1", "text": "Extend JhatpatMart's VIP lane until the sale ends at 21:00 (it expires at 19:00 otherwise).", "deadline": "18:55:00" },
