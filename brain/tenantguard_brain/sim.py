@@ -71,7 +71,8 @@ class SimWorker:
 class Simulator:
     def __init__(self, tenants: List[TenantConfig], phases: List[Phase], *, tick_ms: int = 250,
                  server_cores: float = 0.5, quota_mult: Optional[Dict[str, float]] = None,
-                 seed: int = 7, start: float = 0.0, mode: str = "tenantguard"):
+                 seed: int = 7, start: float = 0.0, mode: str = "tenantguard", noise: Optional[str] = None,
+                 calm_scale: float = 1.0):
         self.tenants = {t.id: t for t in tenants}
         self.phases = phases
         self.tick_ms = tick_ms
@@ -94,6 +95,12 @@ class Simulator:
         self.route_log: List = []                      # (now, RouteWeightsCmd) for tests
         self.control_log: List = []                    # (now, path, cmd) for tests
         self.util: Dict[str, float] = {}               # last tick's CPU utilisation per server
+        # noise="host": what 0.5-CPU containers look like at calm on the Docker host. Each server stalls now
+        # and then (CPU-quota throttling: 0.5-3 s, ~every 30 s, latency x3-8 for everyone on it, canary
+        # included), and 5% of cell-ticks have a 3-8x tail spike.
+        self.noise = noise
+        self.calm_scale = calm_scale                   # >1: a busier calm (host calm runs near fair share)
+        self.stall: Dict[str, Tuple[float, float]] = {}   # server -> (until, multiplier)
 
     @property
     def cap_ms(self) -> float:                         # a barcode server's CPU ms/s (back-compat)
@@ -179,11 +186,15 @@ class Simulator:
                     return {r[0]: 1.0}
         return self.share(t)
 
+    def _stall_mult(self, server: str) -> float:
+        st = self.stall.get(server)
+        return st[1] if st and st[0] > self.now else 1.0
+
     def canary_ms(self, server: str) -> float:
         """Round trip of an unattributed probe: it queues for CPU like everyone else, plus the server's fault."""
         u = min(0.97, self.util.get(server, 0.0))
         return (BASE_LATENCY_MS * 0.5 * (1.0 + 0.6 * u / (1.0 - u)) * self.rng.lognormvariate(0, 0.05)
-                + self.faults.get(server, 0.0))
+                * self._stall_mult(server) + self.faults.get(server, 0.0))
 
     def phase_at(self, t: float) -> Optional[Phase]:
         el = t - self.t0
@@ -202,11 +213,15 @@ class Simulator:
         dt = self.tick_ms / 1000.0
         self.now += dt
         phase = self.phase_at(self.now) or Phase("done", 0)
+        if self.noise == "host":
+            for s in self.cores:
+                if self._stall_mult(s) == 1.0 and self.rng.random() < dt / 30.0:
+                    self.stall[s] = (self.now + self.rng.uniform(0.5, 3.0), self.rng.uniform(3.0, 8.0))
         limits_on = self.mode != "off"
         # demand per tenant: [(rps, cost per request, class, blackbox)]
         demand: Dict[str, List[Tuple[float, float, str, bool]]] = {}
         for t, cfg in self.tenants.items():
-            rps = CALM_RPS[cfg.tier] * self.rng.uniform(0.9, 1.1)
+            rps = CALM_RPS[cfg.tier] * self.calm_scale * self.rng.uniform(0.9, 1.1)
             if phase.burst == t:
                 rps *= phase.burst_mult
             demand[t] = [(rps, CALM_COST_MS, LIGHT, False)]
@@ -264,7 +279,10 @@ class Simulator:
             for s in servers:
                 r = rps_ts.get((t, s), 0.0)
                 n = max(0, int(round(r * dt + self.rng.uniform(-0.5, 0.5)))) if r > 0 else 0
-                p95 = lat(load_seen[s] / cap[s]) * self.rng.lognormvariate(0, 0.06) + self.faults.get(s, 0.0)
+                p95 = lat(load_seen[s] / cap[s]) * self.rng.lognormvariate(0, 0.06) * self._stall_mult(s)
+                if self.noise == "host" and self.rng.random() < 0.05:
+                    p95 *= self.rng.uniform(3.0, 8.0)
+                p95 += self.faults.get(s, 0.0)
                 if heavy_on.get((t, s)):
                     p95 += phase.attack_cost_ms * 0.5
                 if n or s in cfg.servers:

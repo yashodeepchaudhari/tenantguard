@@ -6,6 +6,7 @@ tests drive the same object with a simulated clock.
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from statistics import median
 from dataclasses import dataclass, field
 from typing import Deque, Dict, List, Optional, Tuple
 
@@ -127,17 +128,42 @@ class Brain:
         self.last_frame_at = now
         self._prune(now)
         self.s3.on_frame(frame, now)
-        if not self.calm:
-            return
-        for q in frame.queues:
-            if q.tenant not in self.tenants or q.completed <= 0 or q.p95_ms <= 0:
-                continue        # contracts: skip ticks with completed == 0
-            if self._baseline_frozen(q.tenant):
+
+    def victim_latency(self, now: float) -> Dict[str, float]:
+        """Each tenant's victim latency: the `victim_quantile` (0.3) of its per-tick end-to-end p95 over
+        `victim_window_s` (5 s), from ticks with completions only, and only with at least `victim_min_ticks`
+        of them. A slowdown must cover ~70% of the window to count: a mean, a median or a short window lets the
+        1-3 s CPU-quota stalls of a 0.5-CPU container read as a hurt neighbour (host calm run, T12)."""
+        per: Dict[str, List[float]] = defaultdict(list)
+        for f in self._frames(now, self.cfg.victim_window_s):
+            for q in f.queues:
+                if q.completed > 0 and q.p95_ms > 0:       # contracts: skip ticks with completed == 0
+                    per[q.tenant].append(q.p95_ms)
+        q = self.cfg.victim_quantile
+        return {t: sorted(v)[min(len(v) - 1, int(q * len(v)))] for t, v in per.items()
+                if len(v) >= self.cfg.victim_min_ticks and t in self.tenants}
+
+    def occupancy(self, now: float) -> Dict[str, float]:
+        """Each tenant's dispatch-slot occupancy (queue depth + inflight): the MEDIAN over `victim_window_s`,
+        scaled by the share of its requests that succeeded. A stall raises everybody's inflight on that server
+        (Little's law): a victim's own occupancy must not read as over-use."""
+        per: Dict[str, List[float]] = defaultdict(list)
+        frames = self._frames(now, self.cfg.victim_window_s)
+        for f in frames:
+            for q in f.queues:
+                per[q.tenant].append(q.depth + q.inflight)
+        ok = self._tenant_agg(frames)
+        return {t: median(v) * (ok[t].ok_fraction if t in ok else 1.0) for t, v in per.items()}
+
+    def _learn_baselines(self, now: float, lat: Dict[str, float]) -> None:
+        """Once a second, in calm only: the baseline learns the same windowed median it is compared with."""
+        for t, v in lat.items():
+            if self._baseline_frozen(t):
                 continue
-            base = self.baseline.get(q.tenant)
-            if base is not None and self.baseline.ready(q.tenant) and q.p95_ms > 2.0 * max(base, self.cfg.slow_abs_ms):
+            base = self.baseline.get(t)
+            if base is not None and self.baseline.ready(t) and v > 2.0 * max(base, self.cfg.slow_abs_ms):
                 continue        # an outlier in a calm period is not "normal"
-            self.baseline.update(q.tenant, q.p95_ms, now)
+            self.baseline.update(t, v, now)
 
     def ingest_canary(self, server: str, rtt_ms: float, now: float) -> None:
         self.s3.on_canary(server, rtt_ms, now)
@@ -179,6 +205,14 @@ class Brain:
         lim = {s: l for s, (_, l) in self._server_cpu(now, 3 * self.cfg.stats_poll_s).items()}
         servers = set(self.cfg.fleet_servers) | set(self.cfg.worker_urls)
         return {s: 1000.0 * (lim.get(s) or self.cfg.default_cores) for s in servers}
+
+    def _rescue_grace(self, t: str, now: float) -> bool:
+        """True while a server incident covers t's servers and its rescue is younger than the victim window plus
+        the throttle hold (the ladder's evidence still contains the harm the rescue just removed)."""
+        s3 = self.s3
+        if s3.inc is None or s3.rescued_at is None or not (set(self.servers_of[t]) & set(s3.reported_slow)):
+            return False
+        return now - s3.rescued_at < self.cfg.victim_window_s + self.p.hold["throttle"]
 
     def _baseline_frozen(self, t: str) -> bool:
         """Don't learn a tenant's 'normal' while it is hurt, or while a neighbour over-uses its share:
@@ -317,13 +351,16 @@ class Brain:
         for per in by_server.values():
             for t, ms in per.items():
                 cpu[t] += ms
+        lat = self.victim_latency(now)
+        if self.calm and int(now) != int(now - self.cfg.tick_s):
+            self._learn_baselines(now, lat)
         slow = {}
         for t in self.tenants:
-            base = self.baseline.get(t) if self.baseline.ready(t) else None
-            slow[t] = slowdown(agg[t].p95 if t in agg else None, base, self.cfg.slow_abs_ms)
+            base = self.baseline.get(t) if self.baseline.ready(t, 3) else None
+            slow[t] = slowdown(lat.get(t), base, self.cfg.slow_abs_ms, self.cfg.victim_abs_ms)
         self.slowdowns = slow
         # failed / 5xx requests (e.g. all of a tenant's servers down: fast 502s) are not slot usage
-        queue = {t: a.occupancy / max(1, a.ticks) * a.ok_fraction for t, a in agg.items()}
+        queue = self.occupancy(now)
         servers = {s for t in self.tenants.values() for s in t.servers}
         limits = {s: lim for s, (_, lim) in self._server_cpu(now, cpu_window).items()}
         cpu_cap = {s: 1000.0 * (limits.get(s) or self.cfg.default_cores) for s in servers}
@@ -337,7 +374,7 @@ class Brain:
         self.scores = compute_scores(
             weights=self.weights, servers_of=self.servers_of, active=active, cpu_by_server=by_server,
             cpu_cap=cpu_cap, occupancy=queue, slots=slots, slowdowns=slow,
-            neighbours=self.neighbours, min_victim_impact=self.cfg.min_victim_impact,
+            neighbours=self.neighbours, min_victim_impact=self.cfg.min_victim_impact, over_use=self.cfg.over_use,
             quarantine_threshold=self.p.quarantine)
         self.calm = not self.book.open and all(
             not (s.flagged and s.score >= self.p.warn) for s in self.scores.values())
@@ -350,7 +387,16 @@ class Brain:
                 if t in self.holds:
                     res.events.extend(self._held_tick(t, sd, now))
                     continue                # a human decision owns this tenant until the hold ends
-                sig = lad.Signal(score=sd.score, flagged=sd.flagged, unhurt=sd.victim_impact < self.hurt_off)
+                # "neighbours unhurt" lets the ladder relax a tenant only once it is no longer over-using: while
+                # it still over-uses, its neighbours are fine *because* of the throttle (relaxing it would just
+                # re-open the incident a few seconds later)
+                score = sd.score
+                if self._rescue_grace(t, now):
+                    # rescue first: while the server loop is moving this tenant's neighbours away, the ladder may
+                    # warn but not throttle until it has seen the effect of the rescue
+                    score = min(score, self.p.throttle - 1e-6)
+                sig = lad.Signal(score=score, flagged=sd.flagged,
+                                 unhurt=sd.victim_impact < self.hurt_off and sd.usage_ratio < self.cfg.over_use)
                 tr = lad.step(st, sig, now, self.p)
                 if tr:
                     res.events.extend(self._on_transition(t, tr, now))

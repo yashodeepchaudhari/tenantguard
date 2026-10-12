@@ -31,6 +31,11 @@ class BrainSettings:
     server_window_s: float = 2.0   # ServerView window (contracts: "last 2 s")
     history_s: float = 60.0        # rolling state kept in memory
     baseline_half_life_s: float = 60.0
+    victim_window_s: float = 5.0      # victim latency from per-tick p95 over this window ...
+    victim_min_ticks: int = 4
+    over_use: float = 1.25            # flagged only at >= this x its fair share
+    victim_quantile: float = 0.3      # ... this quantile of it (a slowdown must cover ~70% of the window)
+    victim_abs_ms: float = 8.0        # a victim is slower only if >= this many ms above its baseline
     default_mode: str = "tenantguard"
     control_token: str = "dev"
     ttl_max_s: float = 3600.0
@@ -82,6 +87,11 @@ def load(raw: dict | None = None) -> BrainSettings:
         noisy=noisy,
         probe_window_s=health.get("probe_window_ticks", 8) * tick_s,
         baseline_half_life_s=float(noisy.get("baseline_half_life_s", 60.0)),
+        victim_window_s=float(noisy.get("victim_window_s", 5.0)),
+        victim_min_ticks=int(noisy.get("victim_min_ticks", 4)),
+        victim_quantile=float(noisy.get("victim_quantile", 0.3)),
+        over_use=float(noisy.get("over_use", 1.25)),
+        victim_abs_ms=float(noisy.get("victim_abs_ms", health.get("slow_abs_ms", 8))),
         default_mode=str(raw["gateway"].get("default_mode", "tenantguard")),
         control_token=os.environ.get("TENANTGUARD_CONTROL_TOKEN", "dev"),
         ttl_max_s=float(raw["gateway"].get("ttl_max_s", 3600)),

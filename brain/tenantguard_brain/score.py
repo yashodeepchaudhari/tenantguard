@@ -10,7 +10,8 @@ score(t) = max(cpu_share / fair_share, queue_share / fair_share) * (1 + victim_i
                      of max(0, p95 / baseline_p95 - 1), clipped to [0, 3]
 - baseline_p95     = per-tenant EWMA, updated only in calm periods (see BaselineTracker)
 
-A tenant is *flagged* only if it over-uses (ratio > 1) AND its neighbours are hurt
+A tenant is *flagged* only if it over-uses (ratio >= `over_use`, 1.25: at its fair share a busy fleet is
+not over-use) AND its neighbours are hurt
 (victim_impact >= min_victim_impact). A heavy tenant whose neighbours are fine is never flagged.
 
 Neighbours instead of "all other tenants": with shuffle-sharded barcodes (AG(2,3)) each tenant
@@ -45,24 +46,29 @@ def fair_shares(weights: Mapping[str, float], active: Iterable[str]) -> Dict[str
     return out
 
 
-def slowdown(p95: Optional[float], baseline: Optional[float], floor_ms: float = 0.0) -> Optional[float]:
-    """max(0, p95 / baseline - 1). The baseline is floored at `floor_ms` so sub-millisecond
-    jitter on a ~1 ms endpoint never reads as a 3x slowdown. None when either side is unknown."""
+def slowdown(p95: Optional[float], baseline: Optional[float], floor_ms: float = 0.0,
+             abs_ms: float = 0.0) -> Optional[float]:
+    """max(0, p95 / baseline - 1). The baseline is floored at `floor_ms` so sub-millisecond jitter on a ~1 ms
+    endpoint never reads as a 3x slowdown, and less than `abs_ms` above the baseline is no slowdown at all.
+    None when either side is unknown."""
     if p95 is None or baseline is None or baseline <= 0:
         return None
+    if p95 - baseline < abs_ms:
+        return 0.0
     return max(0.0, p95 / max(baseline, floor_ms) - 1.0)
 
 
 def victim_impact(culprit: str, slowdowns: Mapping[str, Optional[float]],
                   neighbours: Optional[Iterable[str]] = None) -> Tuple[float, List[Tuple[str, float]]]:
-    """Mean slowdown over the culprit's neighbours with data, clipped to [0, 3].
+    """Mean slowdown over the culprit's neighbours with data, each clipped to [0, 3] first (one victim with a
+    46x tail must not carry the mean), the mean clipped to [0, 3] too.
     Returns (impact, [(victim, slowdown) sorted worst first])."""
     pool = set(neighbours) if neighbours is not None else set(slowdowns)
     pool.discard(culprit)
     vals = [(t, s) for t, s in slowdowns.items() if t in pool and s is not None]
     if not vals:
         return 0.0, []
-    mean = sum(s for _, s in vals) / len(vals)
+    mean = sum(min(IMPACT_CLIP, max(0.0, s)) for _, s in vals) / len(vals)
     return min(IMPACT_CLIP, max(0.0, mean)), sorted(vals, key=lambda x: -x[1])
 
 
@@ -98,7 +104,8 @@ def compute_scores(*, weights: Mapping[str, float], servers_of: Mapping[str, Seq
                    occupancy: Mapping[str, float], slots: Mapping[str, float],
                    slowdowns: Mapping[str, Optional[float]],
                    neighbours: Mapping[str, Sequence[str]],
-                   min_victim_impact: float, quarantine_threshold: float) -> Dict[str, ScoreDetail]:
+                   min_victim_impact: float, quarantine_threshold: float,
+                   over_use: float = 1.0) -> Dict[str, ScoreDetail]:
     """Score every tenant in `weights`.
 
     Shares are measured against the capacity of the tenant's *own* servers, and the fair share is
@@ -132,7 +139,7 @@ def compute_scores(*, weights: Mapping[str, float], servers_of: Mapping[str, Seq
             tenant=t, cpu_share=cpu_share, queue_share=queue_share, fair_share=fair,
             usage_ratio=ratio, victim_impact=impact, score=score,
             norm=min(1.0, score / quarantine_threshold) if quarantine_threshold > 0 else 0.0,
-            flagged=ratio > 1.0 and impact >= min_victim_impact,
+            flagged=ratio >= over_use and ratio > 1.0 and impact >= min_victim_impact,
             victims=victims,
         )
     return out

@@ -54,7 +54,8 @@ def test_costly_pattern_sends_the_guilty_class_to_the_heavy_lane(cfg):
 
 
 def test_culprit_pausing_mid_test_is_mitigated_no_blame(cfg):
-    brain, sim, docker = make(cfg, calm_s=20, attack_s=5, after_s=40)
+    # detected (~7 s), then it stops during the proof's settle time: its servers recover, the spare stays calm
+    brain, sim, docker = make(cfg, calm_s=20, attack_s=8, after_s=40)
     events, _ = run(brain, sim)
     v = verdicts(events)
     assert [x.verdict for x in v] == ["mitigated_no_blame"]

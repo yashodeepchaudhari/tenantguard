@@ -1,7 +1,8 @@
 """Per-server health (pure, no I/O).
 
 **Traffic source (primary): tenant-relative.** For every (tenant, server) cell the level over the last
-`window_s` seconds is the count-weighted median of its per-tick p95, used only with at least
+`window_s` seconds is the count-weighted `level_quantile` (0.3) of its per-tick p95 (a slowdown has to cover
+most of the window, so a 1-3 s CPU-quota stall or a tail spike doesn't move it), used only with at least
 `min_cell_requests` requests. Each tenant's reference is the median of its levels across its own servers,
 and its ratio on a server is level / reference. A server's score is the median of that ratio over its
 tenants (at least `min_tenants` of them):
@@ -20,8 +21,10 @@ broken. The canary can only keep an already-slow server open, never open one: an
 traffic first, so an idle or lightly loaded host (probe jitter of a few ms) opens nothing.
 
 A server is *slow now* when peer_ratio >= slow_peer_ratio AND its median excess latency >= slow_abs_ms
-(canary: canary_abs_ms; ratio alone would flag 2 ms vs 1 ms). It becomes *slow* (open) after `open_after_ticks` consecutive
-slow-now ticks, and healthy again after as many consecutive not-slow ticks (hysteresis).
+(canary: canary_abs_ms; ratio alone would flag 2 ms vs 1 ms). It becomes *slow* (open) once it was slow now in
+>= hold_ratio of the ticks of the last `open_hold_s` (4 s), and healthy again after `heal_hold_s` (2 s) of
+mostly healthy ticks. Persistence, not a streak: on the Docker host a 0.5-CPU container stalls for 1-3 s now
+and then at calm (CPU-quota throttling) and that is not a slow server.
 """
 from __future__ import annotations
 
@@ -35,7 +38,7 @@ from typing import Deque, Dict, Iterable, List, Mapping, Optional, Sequence, Tup
 class HealthParams:
     window_ticks: int = 8
     tick_s: float = 0.25
-    window_s: float = 3.0              # traffic window per (tenant, server)
+    window_s: float = 5.0              # traffic window per (tenant, server)
     slow_peer_ratio: float = 1.6
     slow_abs_ms: float = 8.0
     open_after_ticks: int = 4
@@ -44,6 +47,10 @@ class HealthParams:
     min_canaries: int = 3
     canary_window_s: float = 6.0
     canary_abs_ms: float = 8.0         # absolute floor on the canary path too (idle hosts jitter by ms)
+    open_hold_s: float = 4.0           # slow in >= hold_ratio of the ticks of the last open_hold_s -> open
+    heal_hold_s: float = 2.0           # healthy in >= hold_ratio of the ticks of the last heal_hold_s -> heal
+    hold_ratio: float = 0.8
+    level_quantile: float = 0.3        # a cell's level: this quantile of its per-tick p95 (sustained, not tails)
 
     @classmethod
     def from_yaml(cls, health: dict, tick_s: float) -> "HealthParams":
@@ -59,7 +66,11 @@ class HealthParams:
                    min_tenants=int(health.get("min_tenants", d.min_tenants)),
                    min_canaries=int(health.get("min_canaries", d.min_canaries)),
                    canary_window_s=float(health.get("canary_window_s", d.canary_window_s)),
-                   canary_abs_ms=float(health.get("canary_abs_ms", d.canary_abs_ms)))
+                   canary_abs_ms=float(health.get("canary_abs_ms", d.canary_abs_ms)),
+                   open_hold_s=float(health.get("open_hold_s", d.open_hold_s)),
+                   heal_hold_s=float(health.get("heal_hold_s", d.heal_hold_s)),
+                   hold_ratio=float(health.get("hold_ratio", d.hold_ratio)),
+                   level_quantile=float(health.get("level_quantile", d.level_quantile)))
 
 
 @dataclass
@@ -76,18 +87,23 @@ class ServerHealth:
     streak: int = 0
     slow_since: Optional[float] = None
     canary: Deque[Tuple[float, float]] = field(default_factory=deque)          # (t, rtt ms)
+    history: Deque[Tuple[float, bool]] = field(default_factory=deque)         # (t, slow_now)
 
 
-def weighted_median(samples: Sequence[Tuple[float, int]]) -> float:
-    """Median of values weighted by counts."""
+def weighted_quantile(samples: Sequence[Tuple[float, int]], q: float) -> float:
+    """q-quantile of values weighted by counts (q = 0.5: the weighted median)."""
     xs = sorted(samples)
     total = sum(n for _, n in xs)
     acc = 0
     for v, n in xs:
         acc += n
-        if acc * 2 >= total:
+        if acc >= q * total:
             return v
     return xs[-1][0]
+
+
+def weighted_median(samples: Sequence[Tuple[float, int]]) -> float:
+    return weighted_quantile(samples, 0.5)
 
 
 class HealthTracker:
@@ -129,7 +145,7 @@ class HealthTracker:
                 del self.cells[key]
                 continue
             if sum(n for _, _, n in dq) >= self.p.min_cell_requests:
-                out[key] = weighted_median([(p, n) for _, p, n in dq])
+                out[key] = weighted_quantile([(p, n) for _, p, n in dq], self.p.level_quantile)
         return out
 
     def _canary_levels(self, now: float) -> Dict[str, float]:
@@ -181,16 +197,25 @@ class HealthTracker:
             if h.source == "canary" and not h.slow:
                 h.slow_now = False     # the canary can keep a slow server open, never open one: real traffic must
                 #                        be slow first (an idle host's probe jitter is nobody's problem)
-            if h.slow_now != h.slow:
-                h.streak += 1
-                if h.streak >= self.p.open_after_ticks:
-                    h.slow = h.slow_now
-                    h.slow_since = now if h.slow else None
-                    h.streak = 0
-                    flips.append((s, h.slow))
-            else:
-                h.streak = 0
+            # persistence, not a streak: a CPU-quota stall of 1-3 s on a 0.5-CPU container is not a slow server
+            h.history.append((now, h.slow_now))
+            keep = max(self.p.open_hold_s, self.p.heal_hold_s) + 1.0
+            while h.history and h.history[0][0] < now - keep:
+                h.history.popleft()
+            if not h.slow and h.slow_now and self._held(h, True, self.p.open_hold_s, now):
+                h.slow, h.slow_since = True, now
+                flips.append((s, True))
+            elif h.slow and not h.slow_now and self._held(h, False, self.p.heal_hold_s, now):
+                h.slow, h.slow_since = False, None
+                flips.append((s, False))
         return flips
+
+    def _held(self, h: ServerHealth, value: bool, hold: float, now: float) -> bool:
+        """`value` in >= hold_ratio of the ticks of the last `hold` seconds, and the history covers them."""
+        if not h.history or now - h.history[0][0] < hold - 1e-6:
+            return False
+        win = [v for t, v in h.history if t >= now - hold - 1e-6]
+        return sum(1 for v in win if v == value) >= self.p.hold_ratio * len(win) - 1e-6
 
     def _peer(self, s: str) -> bool:
         return self.fleet is None or s in self.fleet

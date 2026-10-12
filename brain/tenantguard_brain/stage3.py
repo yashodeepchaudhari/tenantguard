@@ -97,8 +97,8 @@ class Stage3:
         self.named_key: Optional[tuple] = None
         self.pending_key: Optional[tuple] = None
         self.pending_n = 0
-        self.bg_base = Ewma()
-        self.bb_base = Ewma()
+        self.bg_base = Ewma(0.01)                     # ~30 s time constant at 4 Hz
+        self.bb_base = Ewma(0.01)
         self.vp: VerdictParams = cfg.verdicts
         self.budget: ActionBudget = cfg.action_budget
         self.memory = OffenderMemory(self.vp.repeat_count, self.vp.repeat_window_s)
@@ -110,6 +110,7 @@ class Stage3:
         self.control: List[Tuple[str, str, object]] = []   # (sender key, path, command)
         self.drains: Dict[str, float] = {}            # server -> last DrainCmd sent (ours, host_fault)
         self.pre_evidence: Dict[str, dict] = {}       # culprit -> verdict inputs captured before its test
+        self.rescued_at: Optional[float] = None       # last time the rescue grew (ladder grace, see core)
 
     # ------------------------------------------------------------- inputs
     def on_frame(self, frame: TelemetryFrame, now: float) -> None:
@@ -145,7 +146,10 @@ class Stage3:
         led.blackbox_all = {t: min(g.get(s, 0.0) for s in servers) for t, servers in self.barcodes.items()}
         led.over_share = {t: max(0.0, min(1.0, sd.usage_ratio - 1.0)) for t, sd in self.b.scores.items()}
         self.ledger = led
-        if not slow:                        # baselines learn only while every server is healthy
+        # baselines learn only in a real calm: nothing open, nothing even momentarily slow, and the ladder calm
+        # (with persistence, an attack runs for several seconds before any server opens)
+        quiet = not slow and self.b.calm and not any(h.slow_now for h in self.health.servers.values())
+        if quiet:
             for t, r in bg_rate.items():
                 self.bg_base.update(t, r)
             for s, r in bb_rate.items():
@@ -220,6 +224,7 @@ class Stage3:
         rescued = tuple(sorted(self.plan.weights))
         if not set(rescued) <= set(self.reported_rescue):
             self.reported_rescue = tuple(sorted(set(rescued) | set(self.reported_rescue)))
+            self.rescued_at = now
             events.append(self._emit(now, "rescued", action=f"RouteWeightsCmd {len(rescued)} tenants "
                                      f"ttl={self.cfg.rescue_ttl_s:g}s", detail=self._rescue_text(slow)))
 
@@ -481,6 +486,7 @@ class Stage3:
         self.route_ok = None
         self.plan = None
         self.reported_slow = self.reported_rescue = ()
+        self.rescued_at = None
         self.named_key = self.pending_key = None
         self.pending_n = 0
         self.confidence, self.judged, self.noted = {}, {}, {}
@@ -490,7 +496,8 @@ class Stage3:
         h = self.health.servers[s]
         lvl = f"{h.level_ms:.0f} ms" if h.level_ms is not None else "?"
         peer = f"{h.peer_ms:.0f} ms" if h.peer_ms is not None else "?"
-        return f"{s} {h.peer_ratio:.1f}x its peers ({lvl} vs {peer}, by {h.source})"
+        healing = "" if h.slow_now or not h.slow else ", healing"
+        return f"{s} {h.peer_ratio:.1f}x its peers ({lvl} vs {peer}, by {h.source}{healing})"
 
     def _slow_text(self, slow: List[str]) -> str:
         return "Slow servers: " + "; ".join(self._srv(s) for s in slow) + "."

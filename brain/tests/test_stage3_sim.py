@@ -34,8 +34,9 @@ def test_host_fault_is_rescued_and_named_without_blaming_a_tenant(cfg):
     srv = srv_events(events)
     assert stages(srv) == ["detected", "rescued", "named", "proving", "verdict", "resolved", "closed"]
     by = {e.stage: e for e in srv}
-    # rescue within ~3 s of the fault (fault at +20 s; 3 s health window)
-    assert by["rescued"].ts - (T0 + 20) <= 3.0
+    # rescue within ~8 s of the fault (5 s window at the 0.3 quantile + 4 s of persistence: a 1-3 s
+    # CPU-quota stall on the host must not open an incident)
+    assert by["rescued"].ts - (T0 + 20) <= 8.0
     first_route = sim.route_log[0][1]
     assert set(first_route.weights) == {"B", "E", "G", "L"}          # exactly w4's tenants
     assert all(w["w4"] == 0.0 for w in first_route.weights.values())
@@ -49,7 +50,7 @@ def test_host_fault_is_rescued_and_named_without_blaming_a_tenant(cfg):
     drains = [(c.server, c.drained) for _, p, c in sim.control_log if p.endswith("/drain")]
     assert drains[0] == ("w4", True) and drains[-1] == ("w4", False)
     # resolved after the fault is cleared (+50 s), route weights back to equal
-    assert T0 + 50 < by["resolved"].ts < T0 + 60
+    assert T0 + 50 < by["resolved"].ts < T0 + 62
     last = sim.route_log[-1][1]
     assert all(abs(v - 1 / 3) < 0.01 for w in last.weights.values() for v in w.values())
     assert brain.s3.inc is None
@@ -60,7 +61,7 @@ def test_servers_show_slow_in_the_snapshot(cfg):
     sim = Simulator(cfg.tenants, [Phase("calm", 60)], start=T0)
     drive(brain, sim, T0 + 20)
     sim.set_fault("w4", 40.0)
-    drive(brain, sim, T0 + 25)
+    drive(brain, sim, T0 + 30)
     snap = brain.snapshot(sim.now)
     w4 = next(s for s in snap.servers if s.server == "w4")
     assert w4.status == "slow" and w4.peer_ratio > 3
@@ -74,7 +75,7 @@ def test_whale_is_named_from_its_barcode(cfg):
     events, _ = drive(brain, sim, T0 + sim.total_s)
     named = [e for e in srv_events(events) if e.stage == "named"]
     assert named and all([s.tenant for s in e.suspects] == ["K"] for e in named)
-    assert named[0].suspects[0].confidence > 0.9 and named[0].ts - (T0 + 20) < 4
+    assert named[0].suspects[0].confidence > 0.9 and named[0].ts - (T0 + 20) < 9
     assert all(not e.report["host_suspects"] for e in named)
     # the culprit itself is never moved by a rescue once named, and every rescue keeps to barcodes
     for t, rc in sim.route_log:
@@ -106,8 +107,8 @@ def test_rescue_first_then_throttle_only_if_harm_persists(cfg):
     srv = srv_events(events)
     assert stages(srv) == ["detected", "rescued", "named", "resolved", "closed"]   # no prover: named only
     by = {e.stage: e for e in srv}
-    assert by["rescued"].ts - (T0 + 20) <= 3.0
-    assert T0 + 60 < by["resolved"].ts < T0 + 66                 # the attack ends at +60 s
+    assert by["rescued"].ts - (T0 + 20) <= 8.0
+    assert T0 + 60 < by["resolved"].ts < T0 + 70                 # the attack ends at +60 s
     assert not [c for _, c in limits if c.factor < 1]            # nobody throttled
     assert brain.ladders["K"].level == "normal"
     # the culprit's own traffic was never moved

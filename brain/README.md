@@ -121,8 +121,24 @@ mode resets every ladder, clears overrides and closes incidents. If telemetry go
 
 ## Stage 3: servers (`health.py`, `rescue.py`, `decoder.py`, `stage3.py`; pure)
 
+**Host calibration (T12 host run).** 0.5-CPU containers on the Docker host stall for 1-3 s now and then at
+calm (CPU-quota throttling: a whole server x3-8 for everyone on it). Calm then opened 78 server incidents and
+moved the ladder 19 times in 270 s. Every signal is therefore *sustained*, not instantaneous:
+- a server opens only after 4 s of mostly-slow ticks;
+- levels and victim latencies are the 0.3 quantile of per-tick p95 over 5 s, so a slowdown must cover ~70% of
+  the window;
+- a victim must also be >= 8 ms above its baseline (each victim clipped before the mean);
+- slot occupancy is a 5 s median (a stall raises everyone's inflight);
+- flagging needs >= 1.25x the fair share;
+- the ladder may warn but not throttle during a rescue's grace period, and relaxes a tenant only once it no
+  longer over-uses.
+
+The simulator's `noise="host"` mode reproduces those stalls; `tests/test_host_noise.py` asserts 10 quiet
+minutes open nothing and move nothing, and that a whale and a faulty host are still found. The price: detection
+takes ~7 s instead of ~2 s.
+
 **Health (tenant-relative).** For every (tenant, server) cell, its level over the last `health.window_s`
-(3 s) is the count-weighted median of its per-tick p95, used only with at least `health.min_cell_requests`
+(5 s) is the count-weighted 0.3 quantile of its per-tick p95, used only with at least `health.min_cell_requests`
 (5) requests (5xx don't count). Each tenant's reference is the median of its levels across its own servers;
 a server's `peer_ratio` is the median over its tenants (at least `health.min_tenants`, 2) of
 level / reference. Comparing a tenant with itself cancels workload mix: a search-heavy tenant is slow
@@ -208,8 +224,18 @@ plan emits `resolved`; back to normal emits `closed`.
 brain:
   prover: auto                  # auto | docker | null  (env TENANTGUARD_PROVER wins)
   charge_s: 1.0
-  health:                       # + probe_window_ticks, slow_peer_ratio, slow_abs_ms, open_after_ticks
-    window_s: 3.0
+  noisy:                        # + the existing keys
+    victim_window_s: 5.0        # victim latency = the victim_quantile of per-tick p95 over this window
+    victim_quantile: 0.3        # a slowdown must cover ~70% of the window (CPU-quota stalls don't)
+    victim_min_ticks: 4
+    victim_abs_ms: 8.0          # and be >= this many ms above the baseline
+    over_use: 1.25              # flagged only at >= this x its fair share
+  health:                       # + probe_window_ticks, slow_peer_ratio, slow_abs_ms (open_after_ticks unused now)
+    window_s: 5.0
+    level_quantile: 0.3         # a cell's level: this quantile of its per-tick p95 in the window
+    open_hold_s: 4.0            # open: slow in >= hold_ratio of the ticks of the last 4 s
+    heal_hold_s: 2.0
+    hold_ratio: 0.8
     min_cell_requests: 5
     min_tenants: 2
     canary_s: 1.0

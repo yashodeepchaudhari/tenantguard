@@ -60,11 +60,14 @@ def test_peer_ratio_and_debounce():
     assert flips == [] and h.slow_servers() == []
     assert h.servers["w4"].peer_ratio == pytest.approx(1.0) and h.servers["w4"].source == "traffic"
     bad = dict(calm, w4=40.0)
-    t, flips = feed(h, bad, t, 4)
+    t1, flips = feed(h, bad, t, 4)
+    assert flips == []                        # not yet: it must stay slow for open_hold_s (4 s)
+    t1, flips = feed(h, bad, t1, 6)
     assert flips and flips[0][1] == ("w4", True)
+    assert 4.0 <= flips[0][0] - t <= 9.0      # window quantile (~3.5 s) + persistence (4 s)
     assert h.servers["w4"].peer_ratio == pytest.approx(5.0)
     assert h.slow_servers() == ["w4"]
-    t, flips = feed(h, calm, t, 5)
+    t, flips = feed(h, calm, t1, 6)
     assert flips and flips[0][1] == ("w4", False) and h.slow_servers() == []
 
 
