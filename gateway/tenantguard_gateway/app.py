@@ -3,18 +3,20 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hmac
 import logging
+import math
 import time
 from typing import List, Optional, Set
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from tenantguard_common.config import load_settings, load_tenants, worker_urls
-from tenantguard_common.contracts import (BlockCmd, ControlAck, DrainCmd, Heartbeat, LimitsCmd, ModeBody,
-                                          OverridesView, QuotaPatch, RelocateCmd, RouteWeightsCmd,
-                                          TenantAdminView, TenantConfig)
+from tenantguard_common.contracts import (H_CONTROL_TOKEN, BlockCmd, ChargeCmd, ControlAck, DrainCmd, Heartbeat, LimitsCmd,
+                                          ModeBody, OverridesView, QuotaPatch, ReferenceCostsCmd, RelocateCmd,
+                                          RouteWeightsCmd, TenantAdminView, TenantConfig)
 
 from .core import Gateway, Result
 from .metrics import render_metrics
@@ -89,10 +91,19 @@ def create_app(gw: Optional[Gateway] = None, run_ticker: bool = True) -> FastAPI
     # ---------- data plane ----------
     @app.api_route("/api/{path:path}", methods=API_METHODS)
     async def proxy(path: str, request: Request):
-        body = await request.body()
         headers = {k.lower(): v for k, v in request.headers.items()}
-        res: Result = await gw.handle(request.method, "/api/" + path, request.url.query,
-                                      list(request.query_params.keys()), headers, body)
+
+        async def read_body(limit: int) -> Optional[bytes]:
+            buf = bytearray()
+            async for chunk in request.stream():
+                buf += chunk
+                if len(buf) > limit:
+                    return None
+            return bytes(buf)
+
+        res: Result = await gw.handle(request.method, request.scope["path"], request.url.query,
+                                      list(request.query_params.keys()), headers, read_body,
+                                      raw_path=request.scope.get("raw_path"))
         if res.json is not None:
             return JSONResponse(res.json, status_code=res.status, headers=res.headers)
         return Response(res.body, status_code=res.status, headers=res.headers)
@@ -138,27 +149,38 @@ def create_app(gw: Optional[Gateway] = None, run_ticker: bool = True) -> FastAPI
     async def metrics():
         return PlainTextResponse(render_metrics(gw), media_type="text/plain; version=0.0.4")
 
+    # ---------- admin + control: both need the control token ----------
+    expected = gw.s.control_token.encode("utf-8")
+
+    def require_token(request: Request) -> None:
+        got = request.headers.get(H_CONTROL_TOKEN, "").encode("utf-8")
+        if not hmac.compare_digest(got, expected):
+            raise HTTPException(status_code=401, detail=f"missing or wrong {H_CONTROL_TOKEN}")
+
+    admin = APIRouter(dependencies=[Depends(require_token)])
+    control = APIRouter(dependencies=[Depends(require_token)])
+
     # ---------- admin ----------
-    @app.get("/admin/tenants", response_model=List[TenantAdminView])
+    @admin.get("/admin/tenants", response_model=List[TenantAdminView])
     async def list_tenants():
         return [gw.admin_view(st) for st in gw.registry.by_id.values()]
 
-    @app.get("/admin/tenants/{tenant}", response_model=TenantAdminView)
+    @admin.get("/admin/tenants/{tenant}", response_model=TenantAdminView)
     async def get_tenant(tenant: str):
         st = gw.registry.get(tenant)
         if st is None:
             return JSONResponse({"detail": f"unknown tenant {tenant}"}, status_code=404)
         return gw.admin_view(st)
 
-    @app.post("/admin/tenants", response_model=TenantAdminView, status_code=201)
+    @admin.post("/admin/tenants", response_model=TenantAdminView, status_code=201)
     async def add_tenant(cfg: TenantConfig):
-        errs = quota_problems(cfg.quota)
+        errs = quota_problems(cfg.quota, gw.s.quota_max)
         unknown = [s for s in cfg.servers if s not in gw.workers]
         if unknown:
             errs.append(f"unknown servers {unknown}")
         if not cfg.servers:
             errs.append("servers must not be empty")
-        if not cfg.weight > 0:
+        if not (math.isfinite(cfg.weight) and cfg.weight > 0):
             errs.append("weight must be > 0")
         if errs:
             return JSONResponse({"detail": errs}, status_code=400)
@@ -168,46 +190,48 @@ def create_app(gw: Optional[Gateway] = None, run_ticker: bool = True) -> FastAPI
             return JSONResponse({"detail": str(e.args[0])}, status_code=409)
         return gw.admin_view(st)
 
-    @app.delete("/admin/tenants/{tenant}")
+    @admin.delete("/admin/tenants/{tenant}")
     async def delete_tenant(tenant: str):
         if gw.registry.remove(tenant) is None:
             return JSONResponse({"detail": f"unknown tenant {tenant}"}, status_code=404)
         return {"ok": True}
 
-    @app.patch("/admin/tenants/{tenant}/quota", response_model=TenantAdminView)
+    @admin.patch("/admin/tenants/{tenant}/quota", response_model=TenantAdminView)
     async def patch_quota(tenant: str, patch: QuotaPatch):
         st = gw.registry.get(tenant)
         if st is None:
             return JSONResponse({"detail": f"unknown tenant {tenant}"}, status_code=404)
         new = st.cfg.quota.model_copy(update=patch.model_dump(exclude_none=True))
-        errs = quota_problems(new)
+        errs = quota_problems(new, gw.s.quota_max)
         if errs:
             return JSONResponse({"detail": errs}, status_code=400)
         st.cfg = st.cfg.model_copy(update={"quota": new})
         st.configure(gw.effective_quota(st), gw.s.cost_bucket_s, time.perf_counter())
         return gw.admin_view(st)
 
-    @app.get("/admin/mode", response_model=ModeBody)
+    @admin.get("/admin/mode", response_model=ModeBody)
     async def get_mode():
         return ModeBody(mode=gw.mode)
 
-    @app.post("/admin/mode", response_model=ModeBody)
+    @admin.post("/admin/mode", response_model=ModeBody)
     async def set_mode(body: ModeBody):
         gw.set_mode(body.mode)
         return ModeBody(mode=gw.mode)
 
-    @app.get("/admin/overrides", response_model=OverridesView)
+    @admin.get("/admin/overrides", response_model=OverridesView)
     async def overrides():
         return gw.overrides.view(gw.s.fail_static_after_s)
 
     # ---------- control (brain -> gateway) ----------
     def _check_ttl(ttl: float) -> Optional[str]:
-        return None if ttl > 0 else "ttl_s must be > 0"
+        if math.isfinite(ttl) and 0 < ttl <= gw.s.ttl_max_s:
+            return None
+        return f"ttl_s must be finite and in (0, {gw.s.ttl_max_s:g}]"
 
     def _check_tenant(t: str) -> Optional[str]:
         return None if gw.registry.get(t) else f"unknown tenant {t}"
 
-    @app.post("/control/limits", response_model=ControlAck)
+    @control.post("/control/limits", response_model=ControlAck)
     async def control_limits(cmd: LimitsCmd):
         err = _check_tenant(cmd.tenant) or _check_ttl(cmd.ttl_s)
         if not err and not 0 < cmd.factor <= 1:
@@ -222,7 +246,7 @@ def create_app(gw: Optional[Gateway] = None, run_ticker: bool = True) -> FastAPI
         return _ok("cleared" if cleared else f"limits {cmd.tenant} factor={cmd.factor} "
                                              f"weight_factor={cmd.weight_factor} ttl={cmd.ttl_s}s")
 
-    @app.post("/control/block", response_model=ControlAck)
+    @control.post("/control/block", response_model=ControlAck)
     async def control_block(cmd: BlockCmd):
         err = _check_tenant(cmd.tenant) or _check_ttl(cmd.ttl_s)
         if err:
@@ -230,12 +254,12 @@ def create_app(gw: Optional[Gateway] = None, run_ticker: bool = True) -> FastAPI
         gw.overrides.set_block(cmd)
         return _ok(f"{'blocked' if cmd.blocked else 'unblocked'} {cmd.tenant}")
 
-    @app.post("/control/heartbeat", response_model=ControlAck)
+    @control.post("/control/heartbeat", response_model=ControlAck)
     async def control_heartbeat(_: Heartbeat):
         gw.overrides.heartbeat()
         return _ok()
 
-    @app.post("/control/route_weights", response_model=ControlAck)
+    @control.post("/control/route_weights", response_model=ControlAck)
     async def control_route_weights(cmd: RouteWeightsCmd):
         err = _check_ttl(cmd.ttl_s)
         for t, w in cmd.weights.items():
@@ -245,8 +269,8 @@ def create_app(gw: Optional[Gateway] = None, run_ticker: bool = True) -> FastAPI
             bad = [s for s in w if s not in gw.workers]
             if bad:
                 err = f"unknown servers {bad} for tenant {t}"
-            elif any(x < 0 or x != x for x in w.values()):
-                err = f"weights for {t} must be >= 0"
+            elif any(not math.isfinite(x) or x < 0 for x in w.values()):
+                err = f"weights for {t} must be finite and >= 0"
             elif not any(x > 0 for x in w.values()):
                 err = f"weights for {t} must have at least one positive entry"
         if err:
@@ -255,7 +279,7 @@ def create_app(gw: Optional[Gateway] = None, run_ticker: bool = True) -> FastAPI
         gw._pump()
         return _ok(f"route weights for {sorted(cmd.weights)}")
 
-    @app.post("/control/relocate", response_model=ControlAck)
+    @control.post("/control/relocate", response_model=ControlAck)
     async def control_relocate(cmd: RelocateCmd):
         err = _check_tenant(cmd.tenant) or _check_ttl(cmd.ttl_s)
         if not err and cmd.target is not None and cmd.target not in gw.workers:
@@ -267,7 +291,7 @@ def create_app(gw: Optional[Gateway] = None, run_ticker: bool = True) -> FastAPI
         what = cmd.tenant + (f"/{cmd.cls}" if cmd.cls else "")
         return _ok(f"relocated {what} -> {cmd.target}" if cmd.target else f"relocation of {what} cleared")
 
-    @app.post("/control/drain", response_model=ControlAck)
+    @control.post("/control/drain", response_model=ControlAck)
     async def control_drain(cmd: DrainCmd):
         err = _check_ttl(cmd.ttl_s) or (None if cmd.server in gw.workers else f"unknown server {cmd.server}")
         if err:
@@ -276,6 +300,30 @@ def create_app(gw: Optional[Gateway] = None, run_ticker: bool = True) -> FastAPI
         gw._pump()
         return _ok(f"{'drained' if cmd.drained else 'undrained'} {cmd.server}")
 
+    @control.post("/control/charge", response_model=ControlAck)
+    async def control_charge(cmd: ChargeCmd):
+        err = _check_tenant(cmd.tenant)
+        if not err and not (math.isfinite(cmd.cpu_ms) and cmd.cpu_ms >= 0):
+            err = "cpu_ms must be a finite number >= 0"
+        if err:
+            return _bad(err)
+        return _ok(gw.charge(cmd))
+
+    @control.post("/control/reference_costs", response_model=ControlAck)
+    async def control_reference_costs(cmd: ReferenceCostsCmd):
+        bad = [c for c, v in cmd.costs.items() if not (math.isfinite(v) and v > 0)]
+        if bad:
+            return _bad(f"reference costs must be finite and > 0: {bad}")
+        gw.reference_costs = dict(cmd.costs)     # the latest table replaces the previous one
+        return _ok(f"{len(cmd.costs)} reference costs" + ("" if gw.controlled else " (stored; applied in tenantguard mode)"))
+
+    @admin.get("/admin/reference_costs")
+    async def get_reference_costs():
+        return {"reference_costs": gw.reference_costs,
+                "measured": {f"{t}/{c}": round(v, 3) for (t, c), v in sorted(gw.class_cost.items())}}
+
+    app.include_router(admin)
+    app.include_router(control)
     return app
 
 
