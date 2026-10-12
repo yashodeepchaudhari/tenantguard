@@ -8,12 +8,12 @@ Product/design background: `docs/FINAL-PLAN.md` (scope tiers, demo), `enhanced-p
 
 ## §1 How we work
 
-- **Coordinator:** session `codeastra-04`, running in `D:\yashodeep\codeAstra` (master). It owns this plan, `common/`, `tenantguard.yaml`, `layouts/`, `docker-compose.yml`, `README.md`, merges, and the user-facing status.
+- **Coordinator:** session `codeastra-b1`, running in `D:\yashodeep\codeAstra` (master). It owns this plan, `common/`, `tenantguard.yaml`, `layouts/`, `docker-compose.yml`, `README.md`, merges, and the user-facing status.
 - **Task sessions:** each task runs in its own git worktree `D:\yashodeep\codeAstra-T<n>` on branch `task/T<n>-<slug>`, with its brief in `TASK-T<n>.md` in that worktree. The user starts the session there (`cd` into it, start a session, then paste the start line).
 - **Support sessions** (in the main dir, write nothing under code paths):
   - `codeastra-21`: product/spec owner (author of the TenantGuard plan); convergence partner liaison. Writes only under `docs/convergence/`.
   - `codeastra-2b`: reviewer. Read-only reviews of task branches on request.
-- **Report moments** (SendMessage to `codeastra-04`), and nothing else:
+- **Report moments** (SendMessage to `codeastra-b1`), and nothing else:
   - `T<n>: started. Plan: <3 lines>.`
   - `T<n>: BLOCKED on <thing>. I need <exact decision or file>.`
   - `T<n>: done on branch task/<...>. <what changed>. Checks: <all> pass.`
@@ -97,7 +97,7 @@ Each brief is copied into its worktree as `TASK-T<n>.md`. **Every TASK file also
 ### Common footer (part of every brief)
 > Read `README.md`, `docs/PLAN.md` (§2 is settled: follow it, don't relitigate it) and `docs/FINAL-PLAN.md`. Build the standard feature set for your domain, not the bare minimum.
 > **Done** means `pytest` passes in your directory AND you ran the real service and proved the behaviour with real HTTP calls; report the commands and output. Report what actually happened.
-> Your coordinator is the session named `codeastra-04` (confirm with ListAgents). SendMessage it at exactly three moments: started, blocked, done. No chatter. Commit to your own branch; never commit to master. The coordinator merges.
+> Your coordinator is the session named `codeastra-b1` (confirm with ListAgents). SendMessage it at exactly three moments: started, blocked, done. No chatter. Commit to your own branch; never commit to master. The coordinator merges.
 
 ### T1: Gateway
 **You are TASK T1:** when this is finished, any tenant request entering on :8000 is identified, admitted against multi-dimensional quotas, fairly scheduled, routed to one of its barcode servers, measured, and controllable by the admin and the brain.
@@ -261,7 +261,7 @@ Build:
 5. `worker/tools/calibrate.py`: inside Docker (0.5 CPU), measure the mean/p95 handler CPU and latency of every endpoint at default params, and write `worker/calibration.json`. T5 uses it to size the personas to ~30% fleet CPU. Run it in Docker on this laptop if Docker is up; otherwise locally, and say which.
 6. Tests: black-box CPU never appears in tenant meters; the queue bound; child restart; FaultReq from contracts.
 
-Done = pytest passes + the measured black-box noisy-neighbor numbers + calibration.json committed. Same protocol: started / blocked / done to `codeastra-04`; no tool attribution in commits.
+Done = pytest passes + the measured black-box noisy-neighbor numbers + calibration.json committed. Same protocol: started / blocked / done to `codeastra-b1`; no tool attribution in commits.
 
 ### T7: Gateway wave 2 (T1 session, same worktree)
 **You are TASK T7:** when this is finished, the gateway is fully adaptive. The queue lives at the gateway with a per-worker window that tracks real latency, retry storms are capped, cheap requests never wait behind whales, and background CPU is charged to the tenant who caused it.
@@ -451,9 +451,9 @@ Common rules for every writer:
 
 | Writer | Files in `prototype-docs/` |
 |---|---|
-| T1 session (`codeastra-t1-d7`, branch `task/T22a-docs`) | `00_INDEX.md` (map of all files + how to read), `01_OVERVIEW.md` (problem, what is built, status table, demo script), `02_ARCHITECTURE.md` (system, planes, 5 isolation layers, deployment two-laptop + Tailscale, component/port table: all Mermaid), `03_SOLID_AND_DESIGN.md` (SOLID principles with concrete code examples, patterns, refactoring done and possible), `06_RISKS_AND_MITIGATIONS.md`, `07_UNIQUE_FEATURES.md`, `09_CONFIG_REFERENCE.md` (every yaml key, env var, port, token), `10_TESTING.md` (suites, counts, mutation checks), `11_FILES_gateway.md`, `11_FILES_handoff.md`, `11_FILES_tools.md`, `11_FILES_narrator.md` |
-| T2 session (`codeastra-t2-41`, branch `task/T22b-docs`) | `04_DATA_MODELS.md` (every contract model + field + unit, class diagrams, layout + yaml shapes, SQLite per-tenant schema), `11_FILES_common.md`, `11_FILES_worker.md` |
-| T4 session (`codeastra-t4-2e`, branch `task/T22c-docs`) | `05_SEQUENCE_DIAGRAMS.md` (request path, admission/429, DRR dispatch, detection→throttle ladder→recovery, health→rescue→decoder naming, host fault, operator/handoff decision, narrator report, UI live stream), `11_FILES_ui.md`, `11_FILES_lab.md` |
+| T1 session (`codeastra-t1-32`, branch `task/T22a-docs`) | `00_INDEX.md` (map of all files + how to read), `01_OVERVIEW.md` (problem, what is built, status table, demo script), `02_ARCHITECTURE.md` (system, planes, 5 isolation layers, deployment two-laptop + Tailscale, component/port table: all Mermaid), `03_SOLID_AND_DESIGN.md` (SOLID principles with concrete code examples, patterns, refactoring done and possible), `06_RISKS_AND_MITIGATIONS.md`, `07_UNIQUE_FEATURES.md`, `09_CONFIG_REFERENCE.md` (every yaml key, env var, port, token), `10_TESTING.md` (suites, counts, mutation checks), `11_FILES_gateway.md`, `11_FILES_handoff.md`, `11_FILES_tools.md`, `11_FILES_narrator.md` |
+| T2 session (`codeastra-t2-9a`, branch `task/T22b-docs`) | `04_DATA_MODELS.md` (every contract model + field + unit, class diagrams, layout + yaml shapes, SQLite per-tenant schema), `11_FILES_common.md`, `11_FILES_worker.md` |
+| T4 session (`codeastra-t4-0e`, branch `task/T22c-docs`) | `05_SEQUENCE_DIAGRAMS.md` (request path, admission/429, DRR dispatch, detection→throttle ladder→recovery, health→rescue→decoder naming, host fault, operator/handoff decision, narrator report, UI live stream), `11_FILES_ui.md`, `11_FILES_lab.md` |
 | `codeastra-2b` (main dir, no branch; coordinator commits) | `11_FILES_brain.md` |
 
 ### T24: Playwright end-to-end verification (T4 session, same worktree)
@@ -499,30 +499,30 @@ Build:
 
 | Task | Branch | Worktree | Session | Status |
 |---|---|---|---|---|
-| T1 Gateway | task/T1-gateway | D:\yashodeep\codeAstra-T1 | codeastra-t1-d7 | **merged** |
-| T7 Gateway wave 2 | task/T7-gateway-adaptive | D:\yashodeep\codeAstra-T1 | codeastra-t1-d7 | **merged** |
-| T11 Handoff bridge (Web PS3 convergence) | task/T11-handoff-bridge | D:\yashodeep\codeAstra-T1 | codeastra-t1-d7 | **merged** |
-| T14 Demo driver (`tools/demo.py`) | task/T14-demo-runbook | D:\yashodeep\codeAstra-T1 | codeastra-t1-d7 | **merged** |
-| T16 Submission docs | task/T16-submission-docs | D:\yashodeep\codeAstra-T1 | codeastra-t1-d7 | **merged** (re-check after T10/T12) |
-| T24 Playwright e2e verification | task/T24-playwright | D:\yashodeep\codeAstra-T4 | codeastra-t4-2e | assigned |
+| T1 Gateway | task/T1-gateway | D:\yashodeep\codeAstra-T1 | codeastra-t1-32 | **merged** |
+| T7 Gateway wave 2 | task/T7-gateway-adaptive | D:\yashodeep\codeAstra-T1 | codeastra-t1-32 | **merged** |
+| T11 Handoff bridge (Web PS3 convergence) | task/T11-handoff-bridge | D:\yashodeep\codeAstra-T1 | codeastra-t1-32 | **merged** |
+| T14 Demo driver (`tools/demo.py`) | task/T14-demo-runbook | D:\yashodeep\codeAstra-T1 | codeastra-t1-32 | **merged** |
+| T16 Submission docs | task/T16-submission-docs | D:\yashodeep\codeAstra-T1 | codeastra-t1-32 | **merged** (re-check after T10/T12) |
+| T24 Playwright e2e verification | task/T24-playwright | D:\yashodeep\codeAstra-T4 | codeastra-t4-0e | assigned |
 | T22 Prototype docs pack (`prototype-docs/`, 20 files, 6.7k lines) | T22a/b/c + 2b | 4 writers | T1, T2, T4, 2b | **merged** |
-| T23 Handoff tools token + telemetry counter bug + docstring | task/T23-handoff-token-tools | D:\yashodeep\codeAstra-T1 | codeastra-t1-d7 | assigned |
-| T21 Narrator template-only (user decision) | task/T21-narrator-template-only | D:\yashodeep\codeAstra-T1 | codeastra-t1-d7 | **merged** (with the coordinator scrub branch) |
-| T18 Incident narrator service | task/T18-narrator | D:\yashodeep\codeAstra-T1 | codeastra-t1-d7 | **merged** (template-only per user) |
-| T2 Workers | task/T2-workers | D:\yashodeep\codeAstra-T2 | codeastra-t2-41 | **merged** (9cebaaf) |
-| T6 Workers wave 2 | task/T6-worker-blackbox | D:\yashodeep\codeAstra-T2 | codeastra-t2-41 | **merged** |
-| T15 Worker calibration in-container | task/T15-worker-calib | D:\yashodeep\codeAstra-T2 | codeastra-t2-41 | **merged**; host calibration committed (fa011b3) |
-| T20 Fixes: handoff bridge + demo driver (T19 review) | task/T20-handoff-demo-fixes | D:\yashodeep\codeAstra-T2 | codeastra-t2-41 | **merged** (ownership of integrations/handoff + tools/ returned to T1 session) |
-| T17 Fair billing + "Why was I slow?" | task/T17-billing | D:\yashodeep\codeAstra-T2 | codeastra-t2-41 | **done, merge pending** (tests need coord/layout-balance; merges together with T12) |
-| T3 Brain | task/T3-brain | D:\yashodeep\codeAstra-T3 | codeastra-t3-b7 | **merged** |
-| T8 Brain integration + health/rescue/decoder | task/T8-brain-detect | D:\yashodeep\codeAstra-T3 | codeastra-t3-b7 | **merged** |
-| T12 Brain prover + verdicts + calibration | task/T12-brain-prover | D:\yashodeep\codeAstra-T3 | codeastra-t3-b7 | in progress (merges coord/layout-balance) |
-| T4 UI | task/T4-ui | D:\yashodeep\codeAstra-T4 | codeastra-t4-2e | **merged** |
-| T9 UI wave 2 | task/T9-ui-casefile | D:\yashodeep\codeAstra-T4 | codeastra-t4-2e | **merged** |
-| T13 UI wave 3 (story + Docker-host run) | task/T13-ui-story | D:\yashodeep\codeAstra-T4 | codeastra-t4-2e | **merged** (standby; screenshot retake at rehearsal) |
-| T5 Lab | task/T5-lab | D:\yashodeep\codeAstra-T5 | codeastra-t5-11 | **merged** |
-| T10 Lab wave 2 + crash-test | task/T10-lab-crashtest | D:\yashodeep\codeAstra-T5 | codeastra-t5-11 | **partial, done** (tiers, SLA, run marks); merges with T12. Wave 2 runners: user decision. Scorecard runner moved to T25 |
-| T25 Scorecard runner (OFF/Industry/TenantGuard summary) | task/T25-scorecard | D:\yashodeep\codeAstra-T2 | codeastra-t2-41 | assigned (owns lab/tenantguard_lab/scorecard.py + lab/tests/test_scorecard.py only) |
+| T23 Handoff tools token + telemetry counter bug + docstring | task/T23-handoff-token-tools | D:\yashodeep\codeAstra-T1 | codeastra-t1-32 | assigned |
+| T21 Narrator template-only (user decision) | task/T21-narrator-template-only | D:\yashodeep\codeAstra-T1 | codeastra-t1-32 | **merged** (with the coordinator scrub branch) |
+| T18 Incident narrator service | task/T18-narrator | D:\yashodeep\codeAstra-T1 | codeastra-t1-32 | **merged** (template-only per user) |
+| T2 Workers | task/T2-workers | D:\yashodeep\codeAstra-T2 | codeastra-t2-9a | **merged** (9cebaaf) |
+| T6 Workers wave 2 | task/T6-worker-blackbox | D:\yashodeep\codeAstra-T2 | codeastra-t2-9a | **merged** |
+| T15 Worker calibration in-container | task/T15-worker-calib | D:\yashodeep\codeAstra-T2 | codeastra-t2-9a | **merged**; host calibration committed (fa011b3) |
+| T20 Fixes: handoff bridge + demo driver (T19 review) | task/T20-handoff-demo-fixes | D:\yashodeep\codeAstra-T2 | codeastra-t2-9a | **merged** (ownership of integrations/handoff + tools/ returned to T1 session) |
+| T17 Fair billing + "Why was I slow?" | task/T17-billing | D:\yashodeep\codeAstra-T2 | codeastra-t2-9a | **done, merge pending** (tests need coord/layout-balance; merges together with T12) |
+| T3 Brain | task/T3-brain | D:\yashodeep\codeAstra-T3 | codeastra-t3-1b | **merged** |
+| T8 Brain integration + health/rescue/decoder | task/T8-brain-detect | D:\yashodeep\codeAstra-T3 | codeastra-t3-1b | **merged** |
+| T12 Brain prover + verdicts + calibration | task/T12-brain-prover | D:\yashodeep\codeAstra-T3 | codeastra-t3-1b | in progress (merges coord/layout-balance) |
+| T4 UI | task/T4-ui | D:\yashodeep\codeAstra-T4 | codeastra-t4-0e | **merged** |
+| T9 UI wave 2 | task/T9-ui-casefile | D:\yashodeep\codeAstra-T4 | codeastra-t4-0e | **merged** |
+| T13 UI wave 3 (story + Docker-host run) | task/T13-ui-story | D:\yashodeep\codeAstra-T4 | codeastra-t4-0e | **merged** (standby; screenshot retake at rehearsal) |
+| T5 Lab | task/T5-lab | D:\yashodeep\codeAstra-T5 | codeastra-t5-45 | **merged** |
+| T10 Lab wave 2 + crash-test | task/T10-lab-crashtest | D:\yashodeep\codeAstra-T5 | codeastra-t5-45 | **partial, done** (tiers, SLA, run marks); merges with T12. Wave 2 runners: user decision. Scorecard runner moved to T25 |
+| T25 Scorecard runner (OFF/Industry/TenantGuard summary) | task/T25-scorecard | D:\yashodeep\codeAstra-T2 | codeastra-t2-9a | assigned (owns lab/tenantguard_lab/scorecard.py + lab/tests/test_scorecard.py only) |
 | Convergence samples | n/a (main dir, docs/convergence/) | main | codeastra-21 | assigned |
 | Review | n/a | main | codeastra-2b | standby |
 
@@ -623,4 +623,6 @@ Build:
   - Deployed from git tag `demo-vN` into `C:\Users\preeti\tenantguard-demo`.
   - Dev/test keeps project `codeastra` on 8000/8200/8300. No session ever touches `tgdemo`; only the coordinator deploys it, and only on a new tag.
   - The brain must find ITS OWN spare: filter by label `com.docker.compose.project`, not only by service.
+- 2026-10-13: **T12 host acceptance.** Step 0 PASS (DockerProver). 1a idle PASS (0 incidents in 5 min). **1b calm FAIL:** in 270 s of calm traffic there were 78 srv detections across all 9 servers (ratio 0.6–19.3, e.g. 54 ms vs 5 ms), 20 named, 19 ladder level changes. Likely cause: CFS throttling tail spikes on 0.5-CPU cgroups against a 3 s p95 window. Back to T12 for calibration.
+- Session names change on every restart: always confirm with ListAgents. Coordinator is currently `codeastra-b1`.
 - 2026-10-12: Cost bucket is debited with the worker-measured CPU (`X-TenantGuard-Cpu-Ms`) rather than an estimate, so it is a real resource quota, not a request count.
