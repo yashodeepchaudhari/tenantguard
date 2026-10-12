@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+.env
+.env.local
+node_modules/
+dist/
+*.db
+*.db-wal
+*.db-shm
+.pytest_cache/
+lab/results/*.json
+!lab/results/.gitkeep
+.claude/worktrees/

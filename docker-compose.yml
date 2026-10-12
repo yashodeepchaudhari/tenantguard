@@ -1,0 +1,64 @@
+# Owned by the coordinator. Tasks own their own Dockerfile; ask before editing this file.
+# Build context is the repo root so every image can install ./common.
+x-worker: &worker
+  build: {context: ., dockerfile: worker/Dockerfile}
+  cpus: 0.5
+  mem_limit: 256m
+  pids_limit: 128
+  restart: unless-stopped
+  environment: &worker-env
+    PADOSI_ROOT: /app
+
+x-worker-urls: &worker-urls >-
+  w0=http://w0:8100,w1=http://w1:8100,w2=http://w2:8100,w3=http://w3:8100,w4=http://w4:8100,w5=http://w5:8100,w6=http://w6:8100,w7=http://w7:8100,w8=http://w8:8100,spare=http://spare:8100,quarantine=http://quarantine:8100
+
+services:
+  w0: {<<: *worker, environment: {<<: *worker-env, SERVER_NAME: w0}}
+  w1: {<<: *worker, environment: {<<: *worker-env, SERVER_NAME: w1}}
+  w2: {<<: *worker, environment: {<<: *worker-env, SERVER_NAME: w2}}
+  w3: {<<: *worker, environment: {<<: *worker-env, SERVER_NAME: w3}}
+  w4: {<<: *worker, environment: {<<: *worker-env, SERVER_NAME: w4}}
+  w5: {<<: *worker, environment: {<<: *worker-env, SERVER_NAME: w5}}
+  w6: {<<: *worker, environment: {<<: *worker-env, SERVER_NAME: w6}}
+  w7: {<<: *worker, environment: {<<: *worker-env, SERVER_NAME: w7}}
+  w8: {<<: *worker, environment: {<<: *worker-env, SERVER_NAME: w8}}
+  spare:
+    <<: *worker
+    cpus: 1.0
+    environment: {<<: *worker-env, SERVER_NAME: spare}
+  quarantine:
+    <<: *worker
+    cpus: 0.25
+    mem_limit: 128m
+    environment: {<<: *worker-env, SERVER_NAME: quarantine}
+
+  gateway:
+    build: {context: ., dockerfile: gateway/Dockerfile}
+    ports: ["8000:8000"]
+    environment:
+      PADOSI_ROOT: /app
+      PADOSI_WORKER_URLS: *worker-urls
+    depends_on: [w0, w1, w2, w3, w4, w5, w6, w7, w8, spare, quarantine]
+
+  brain:
+    build: {context: ., dockerfile: brain/Dockerfile}
+    ports: ["8200:8200"]
+    environment:
+      PADOSI_ROOT: /app
+      PADOSI_WORKER_URLS: *worker-urls
+      PADOSI_GATEWAY_URL: http://gateway:8000
+      COMPOSE_PROJECT: codeastra
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on: [gateway]
+
+  lab:
+    build: {context: ., dockerfile: lab/Dockerfile}
+    ports: ["8300:8300"]
+    environment:
+      PADOSI_ROOT: /app
+      PADOSI_GATEWAY_URL: http://gateway:8000
+      PADOSI_WORKER_URLS: *worker-urls
+    depends_on: [gateway]
+    profiles: ["lab"]
