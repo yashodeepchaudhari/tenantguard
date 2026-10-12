@@ -14,6 +14,7 @@ from tenantguard_common.contracts import (ChargeCmd, IncidentEvent, LimitsCmd, O
 
 from . import ladder as lad
 from .fairness import jain, normalized_throughput
+from .impact import ImpactMeter
 from .incidents import Incident, IncidentBook
 from .score import BaselineTracker, ScoreDetail, compute_scores, shares, slowdown
 from .settings import BrainSettings
@@ -112,6 +113,8 @@ class Brain:
         self.hurt_off = cfg.min_victim_impact / 2.0
         self.s3 = Stage3(self)
         self.holds: Dict[str, OperatorHold] = {}
+        self.impact: Optional[ImpactMeter] = None          # starts with the first frame
+        self.last_tick_at: Optional[float] = None
         self.cls_base_n: Dict[Tuple[str, str], float] = {}        # calm request rate per (tenant, class)
         self.cls_base_cpu: Dict[Tuple[str, str], float] = {}      # calm CPU rate per (tenant, class)
         self.bg_pending: Dict[str, float] = defaultdict(float)   # bg CPU ms not yet charged to the gateway
@@ -360,6 +363,7 @@ class Brain:
 
         if self.s3.inc is None and self.calm and int(now) != int(now - self.cfg.tick_s):
             self._learn_classes(now)                     # once a second, in calm only
+        self._measure_impact(now, agg, fresh and self.mode == ACTING_MODE)
         ev, routes = self.s3.tick(now, acting=fresh and self.mode == ACTING_MODE)
         res.events.extend(ev)
         res.route_cmds = routes
@@ -477,6 +481,28 @@ class Brain:
         st.peak = tr.level if lad.RANK[tr.level] > lad.RANK[st.peak] else st.peak
         self._restart_holds(st, now)
         return self._on_transition(t, tr, now)
+
+    def _measure_impact(self, now: float, agg: Dict[str, "TenantAgg"], acting: bool) -> None:
+        if self.impact is None:
+            if self.last_frame_at is None:
+                return
+            self.impact = ImpactMeter(now, {t: c.sla_p95_ms for t, c in self.tenants.items()},
+                                      {t: c.monthly_revenue_rs for t, c in self.tenants.items()})
+        dt = now - self.last_tick_at if self.last_tick_at is not None else 0.0
+        self.last_tick_at = now
+        if not acting or dt <= 0:
+            return
+        threatened = set()
+        if self.s3.inc is not None:
+            culprits = set(self.s3.named_key[0]) if self.s3.named_key else set()
+            slow = set(self.s3.reported_slow)
+            threatened |= {t for t, srv in self.servers_of.items() if slow & set(srv) and t not in culprits}
+        for t, st in self.ladders.items():
+            if st.level != "normal":
+                threatened |= set(self.neighbours[t])
+        threatened -= {t for t, st in self.ladders.items() if st.acting}
+        threatened -= {t for t, sd in self.scores.items() if sd.usage_ratio > 1.0}   # over-users aren't victims
+        self.impact.tick(min(dt, 1.0), threatened, {t: (agg[t].p95 if t in agg else None) for t in threatened})
 
     def _charges(self, now: float, acting: bool) -> List[Tuple[str, str, ChargeCmd]]:
         """Once a second: debit each tenant's background-job CPU (not in X-TenantGuard-Cpu-Ms) from its cost
@@ -614,6 +640,9 @@ class Brain:
                                       detail=f"Possible noisy neighbour: {ev_text}"))
         inc.peak = tr.level if lad.RANK[tr.level] > lad.RANK[inc.peak] else inc.peak
         acted = tr.factor != tr.prev_factor or tr.weight_factor != tr.prev_weight_factor
+        tightened = tr.factor < tr.prev_factor - lad.EPS or tr.weight_factor < tr.prev_weight_factor - lad.EPS
+        if tightened and tr.kind in ("escalate", "step") and self.impact is not None and t in self.scores:
+            self.impact.note_action(t, self.scores[t].score, self.p.warn)
         action = self._action_text(tr.factor, tr.weight_factor, tr.level) if acted else None
         verb = {"escalate": "Escalated", "step": "Tightened", "recover": "Relaxed", "clear": "Cleared",
                 "resolve": "Back to normal", "reset": "Reset"}[tr.kind]
@@ -713,6 +742,7 @@ class Brain:
                              utilization=round(util, 4), fairness=round(fair, 4),
                              status_sentence=self.status_sentence(now, util, fair),
                              brain_ok=self.telemetry_fresh(now),
+                             impact=self.impact.view() if self.impact else None,
                              noisy_thresholds={"warn": self.p.warn, "throttle": self.p.throttle,
                                                "quarantine": self.p.quarantine,
                                                "recover_below": self.p.recover_below})
@@ -741,17 +771,23 @@ class Brain:
             return f"{srv} {tail}" if srv else f"All {len(self.tenants)} tenants healthy. {tail}"
         if srv:
             tail = f"{srv} {tail}"
-        usage = f"{sd.usage_ratio:.1f}x its fair share" if sd else "over its fair share"
+        within = sd is None or sd.usage_ratio <= 1.0
+        usage = "now within its fair share" if within else f"using {sd.usage_ratio:.1f}x its fair share"
         hurt = len([v for v, s in sd.victims if s >= self.hurt_off]) if sd else 0
         if st.level == "warn" and not st.acting:
-            return f"Watching {name}: using {usage}, {hurt} neighbours slower than usual. {tail}"
+            if st.peak != "warn":          # coming down after an action
+                return f"{name} recovered: back to its full plan, {usage}; watching before closing. {tail}"
+            return f"Watching {name}: {usage}, {hurt} neighbours slower than usual. {tail}"
+        if st.last_recover_at is not None:  # relaxing step by step
+            return (f"{name} recovering: limits back up to {st.factor:.0%} of plan "
+                    f"(+{self.p.recover_step:g} per {self.p.recover_tick_s:g} s while calm), {usage}. {tail}")
         if st.level == "throttle":
-            return f"{name} throttled to {st.factor:.0%} of plan: using {usage}. {tail}"
+            return f"{name} throttled to {st.factor:.0%} of plan: {usage}. {tail}"
         if st.level == "deprioritize":
             return (f"{name} deprioritized (weight x{st.weight_factor:.2f}, limits {st.factor:.0%}): "
-                    f"using {usage}. {tail}")
+                    f"{usage}. {tail}")
         if st.level == "quarantine":
-            return f"{name} quarantined to {st.factor:.0%} of plan: using {usage}. {tail}"
+            return f"{name} quarantined to {st.factor:.0%} of plan: {usage}. {tail}"
         return f"{name} recovered; override cleared, watching before closing. {tail}"
 
     def debug(self) -> dict:
