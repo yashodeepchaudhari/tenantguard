@@ -1,0 +1,22 @@
+{
+  "case_id": "INC-0107",
+  "title": "Server w4 is faulty: drained, no tenant blamed",
+  "severity": "high",
+  "status": "waiting_for_decision",
+  "context": {
+    "verdict": "host_fault",
+    "affected": ["B", "E", "G", "L"],
+    "evidence_link": "http://<padosi-host>/case/INC-0107",
+    "summary": "Server w4 became 3.1x slower than its peers. No tenant's pattern explains it: no tenant has all 3 of its servers slow. Padosi drained w4, and BazaarKart, Ekalavya Learn, GaadiGo and LokVani News were moved to their other servers in 0.8 s. Even with no traffic, w4 stayed 2.7x slower than its peers, so this is a machine fault. No tenant was blamed or limited."
+  },
+  "pending_actions": [
+    { "action_id": "A1", "text": "Keep w4 drained and open a hardware ticket (approve), or return w4 to service (release).", "deadline": "23:55:00" }
+  ],
+  "history": [
+    { "time": "23:40:12", "event": "Detected: w4 slower than peers (peer ratio 3.1x)" },
+    { "time": "23:40:13", "event": "Victims rescued: 4 tenants routed away from w4" },
+    { "time": "23:40:13", "event": "No tenant explains the slowdown; w4 marked as host suspect and drained" },
+    { "time": "23:40:25", "event": "Verified: w4 still 2.7x slower than peers while idle" },
+    { "time": "23:40:26", "event": "Verdict: host fault; no tenant blamed" }
+  ]
+}

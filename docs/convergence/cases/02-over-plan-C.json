@@ -1,0 +1,22 @@
+{
+  "case_id": "INC-0105",
+  "title": "Chitra Studio (C) is sending 10x its plan's request rate",
+  "severity": "low",
+  "status": "waiting_for_decision",
+  "context": {
+    "verdict": "over_plan",
+    "affected": [],
+    "evidence_link": "http://<padosi-host>/case/INC-0105",
+    "summary": "Chitra Studio (Free plan) sent about 200 requests/s against a plan of 20/s. The rate limiter rejected the extra requests with Retry-After, and its batch uploads were queued at the plan rate. No other tenant slowed down. Over plan 37% of the last 10 minutes."
+  },
+  "pending_actions": [
+    { "action_id": "A1", "text": "Approve sending Chitra Studio an upgrade offer (Free -> Pro).", "deadline": "16:20:00" },
+    { "action_id": "A2", "text": "Keep the stricter limit for another 10 minutes, or release it now.", "deadline": "16:15:00" }
+  ],
+  "history": [
+    { "time": "16:10:02", "event": "Detected: Chitra Studio above plan (10x request rate)" },
+    { "time": "16:10:02", "event": "Limited: extra interactive requests rejected with Retry-After; batch uploads queued" },
+    { "time": "16:10:05", "event": "Verdict: over plan (no other tenant affected)" },
+    { "time": "16:10:06", "event": "Waiting for on-call decision on upgrade offer and limit duration" }
+  ]
+}

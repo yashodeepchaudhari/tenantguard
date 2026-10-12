@@ -255,4 +255,18 @@ Prove it: run against a stub gateway (a 10-line FastAPI that sleeps 2 ms), then 
 
 ## Decisions log
 - 2026-10-12: Python-only backend (Go not installed). Padosi design adopted; `reshdata/` ignored per user. Convergence partner = Web PS3 Digital Handoff (`enhanced-prompts/convergence-web.md`); `convergence-contract.md` (Cyber) kept as a backup only.
+- 2026-10-12 (contracts v2, from codeastra-2b review):
+  - `noisy_score` is the raw ratio; `noisy_norm` (0..1) is for bars.
+  - LimitsCmd semantics are in its docstring: replace + restart TTL; base = PATCHed quota; ints = max(1, round); 1.0/1.0 clears; 400 outside (0, 1].
+  - `GET /admin/tenants` returns `TenantAdminView` (no api_key); `GET /admin/overrides` returns `OverridesView`.
+  - IncidentEvent gains `tenant`, `level`, `prev_level`. QueueStat splits `rejected_429` / `expired_503` and adds end-to-end `p95_ms` + `completed` (the brain uses QueueStat.p95_ms for per-tenant victim latency).
+  - Lab: `LabStatus`, `RunReq`, `RunResult` (the results JSON schema). AttackReq intensity is 0.1..5.
+  - Units are documented in the contracts header.
+  - Tenants added at runtime via `POST /admin/tenants` are out of scope for the brain in Wave 1 (it uses `load_tenants()`).
+- 2026-10-12: Background-job CPU is NOT charged to the gateway cost bucket in Wave 1 (`X-Padosi-Cpu-Ms` = handler only). Wave 2 T1+T3: the brain pushes per-tenant bg CPU debits to the gateway (new control `charge`), closing the "background work included" claim.
+- 2026-10-12 (convergence samples from codeastra-21, accepted):
+  - verdicts are snake_case (`costly_pattern`, `over_plan`, `honest_growth`, `host_fault`, `mitigated_no_blame`)
+  - case status is `waiting_for_decision|in_progress|resolved|closed`; severity is `low|medium|high`; times are HH:MM:SS IST
+  - evidence_link = `http://<ui-host>:5173/case/<incident_id>` (T4 adds the `/case/:id` route in Wave 2)
+  - Case/handoff Pydantic models are added to `contracts.py` at the start of Wave 3.
 - 2026-10-12: Cost bucket is debited with the worker-measured CPU (`X-Padosi-Cpu-Ms`) rather than an estimate, so it is a real resource quota, not a request count.

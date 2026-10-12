@@ -1,0 +1,24 @@
+{
+  "case_id": "INC-0106",
+  "title": "JhatpatMart (J) sale-day traffic: moved to VIP lane, no penalty",
+  "severity": "medium",
+  "status": "in_progress",
+  "context": {
+    "verdict": "honest_growth",
+    "affected": ["A", "D", "G", "B", "F", "H", "C", "E", "I"],
+    "evidence_link": "http://<padosi-host>/case/INC-0106",
+    "summary": "JhatpatMart's sale (registered in the Event Calendar for 18:00-21:00) raised its traffic 8x. Its own paid work explains the load (paid share 0.92), so this is honest growth. Genuineness 94%, importance Critical (Enterprise, Rs 15 lakh/month). Padosi moved it to dedicated spare capacity (VIP lane) and added one worker. Tenants on w0, w5, w7 were briefly slowed and recovered within 1 s. JhatpatMart was never throttled."
+  },
+  "pending_actions": [
+    { "action_id": "A1", "text": "Extend JhatpatMart's VIP lane until the sale ends at 21:00 (it expires at 19:00 otherwise).", "deadline": "18:55:00" },
+    { "action_id": "A2", "text": "Account manager: offer JhatpatMart a reserved-capacity upgrade for future sales.", "deadline": "21:30:00" }
+  ],
+  "history": [
+    { "time": "18:00:04", "event": "Detected: w0, w5, w7 slower than peers (peer ratio 1.9x)" },
+    { "time": "18:00:05", "event": "Victims rescued: 9 tenants routed to their healthy servers" },
+    { "time": "18:00:07", "event": "Named: JhatpatMart (J), confidence 88%; Event Calendar sale window active" },
+    { "time": "18:00:07", "event": "Proving: JhatpatMart moved to the spare server (sized 1.25x its footprint)" },
+    { "time": "18:00:15", "event": "Verdict: honest growth; kept on VIP lane, one worker added" },
+    { "time": "18:00:16", "event": "Resolved for now; VIP lane timer set to 19:00" }
+  ]
+}

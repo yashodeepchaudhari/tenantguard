@@ -1,0 +1,24 @@
+{
+  "case_id": "INC-0104",
+  "title": "KaamKaro (K) is slowing servers w1, w3, w8 with hidden background work",
+  "severity": "high",
+  "status": "waiting_for_decision",
+  "context": {
+    "verdict": "costly_pattern",
+    "affected": ["A", "E", "H", "B", "D", "I", "C", "F", "G"],
+    "evidence_link": "http://<padosi-host>/case/INC-0104",
+    "summary": "KaamKaro's bulk-ingest requests trigger about 9x more work in the black-box indexer than they are billed for. Its 3 servers (w1, w3, w8) slowed down. The 9 tenants sharing those servers were moved to healthy servers in 0.9 s. Moving KaamKaro to the spare server made w1, w3 and w8 recover (R = 0.78), and the slowdown followed KaamKaro to the spare. Genuineness 34%, importance Medium (Pro, Rs 1.8 lakh/month)."
+  },
+  "pending_actions": [
+    { "action_id": "A1", "text": "Approve moving KaamKaro's bulk-ingest requests (POST /api/ingest) to the heavy lane. Its other requests keep flowing normally.", "deadline": "15:05:00" },
+    { "action_id": "A2", "text": "Notify KaamKaro's engineering contact with the evidence and the suggested fix (batch the ingest calls).", "deadline": "15:30:00" }
+  ],
+  "history": [
+    { "time": "15:02:10", "event": "Detected: w1, w3, w8 slower than peers (peer ratio 2.4x)" },
+    { "time": "15:02:11", "event": "Victims rescued: 9 tenants routed to their healthy servers" },
+    { "time": "15:02:13", "event": "Named: KaamKaro (K), confidence 91%" },
+    { "time": "15:02:13", "event": "Proving: KaamKaro moved to the spare server" },
+    { "time": "15:02:21", "event": "Verdict: costly pattern (bulk-ingest requests)" },
+    { "time": "15:02:22", "event": "Waiting for on-call approval of the heavy-lane action" }
+  ]
+}

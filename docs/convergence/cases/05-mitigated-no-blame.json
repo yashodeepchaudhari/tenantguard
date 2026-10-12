@@ -1,0 +1,22 @@
+{
+  "case_id": "INC-0108",
+  "title": "Short slowdown on w2 and w6: victims rescued, cause not proven",
+  "severity": "low",
+  "status": "waiting_for_decision",
+  "context": {
+    "verdict": "mitigated_no_blame",
+    "affected": ["A", "F", "I", "C", "D", "H"],
+    "evidence_link": "http://<padosi-host>/case/INC-0108",
+    "summary": "Servers w2 and w6 slowed for about 6 seconds. Affected tenants were moved to their healthy servers within 1 s. No tenant had all 3 of its servers slow; the closest match, LokVani News (L), shares w2 and w6 but its third server w4 stayed healthy, so its confidence was only 42%. The slowdown ended before a test was needed. Padosi did not blame or limit anyone; the full data is saved for review."
+  },
+  "pending_actions": [
+    { "action_id": "A1", "text": "Review the saved data and mark this case resolved, or keep it open to watch for a repeat.", "deadline": "15:40:00" }
+  ],
+  "history": [
+    { "time": "15:10:31", "event": "Detected: w2, w6 slower than peers (peer ratio 1.7x)" },
+    { "time": "15:10:32", "event": "Victims rescued: affected tenants routed to their healthy servers" },
+    { "time": "15:10:34", "event": "Named: no tenant above the confidence bar (top: LokVani News 42%)" },
+    { "time": "15:10:37", "event": "Slowdown ended on its own" },
+    { "time": "15:10:38", "event": "Verdict: mitigated, no blame" }
+  ]
+}

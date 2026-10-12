@@ -2,6 +2,11 @@
 
 Owned by the coordinator. Every cross-service JSON message is one of these models.
 Change only through the coordinator (see docs/PLAN.md §3).
+
+Units (apply everywhere unless a field says otherwise):
+- every `ts`, `*_at` field: unix epoch seconds as float, from time.time() (never monotonic)
+- every `*_ms` field: milliseconds as float
+- shares / ratios marked 0..1 are fractions, not percents
 """
 from __future__ import annotations
 
@@ -15,28 +20,48 @@ Level = Literal["normal", "warn", "throttle", "deprioritize", "quarantine", "blo
 
 # Headers set by the gateway on every forwarded request (workers trust only these).
 H_TENANT = "X-Padosi-Tenant"
-H_CLASS = "X-Padosi-Class"          # request class hash computed by gateway
+H_CLASS = "X-Padosi-Class"          # request class hash computed by gateway (8 hex chars)
 H_REQUEST_ID = "X-Request-Id"
-# Header set by the worker on every response: handler CPU ms spent on this request.
+# Header set by the worker on every response: handler CPU ms spent on this request,
+# as a decimal float string, e.g. "12.375". Background-job CPU is NOT included (Wave 1).
 H_CPU_MS = "X-Padosi-Cpu-Ms"
 
 
 # ---------- 0. Tenancy / admin (gateway /admin/*) ----------
 class Quota(BaseModel):
-    rate_rps: float          # token bucket refill
-    burst: int               # token bucket capacity
-    cost_ms_per_s: float     # CPU-ms budget refill per second (cost bucket)
+    rate_rps: float          # token bucket refill, requests/s
+    burst: int               # token bucket capacity, requests
+    cost_ms_per_s: float     # cost bucket refill, CPU-ms per second (capacity = 2 s worth)
     concurrency: int         # max in-flight requests
 
 
 class TenantConfig(BaseModel):
+    """Input for POST /admin/tenants and the layout file. Never returned by the API (has api_key)."""
     id: str                  # "A".."L"
     name: str
     tier: Tier
     servers: List[str]       # barcode, e.g. ["w0","w1","w2"]
     api_key: str             # demo plaintext key; gateway stores sha256 only
     weight: float            # scheduler weight (from tier)
-    quota: Quota
+    quota: Quota             # configured plan quota (PATCH changes this)
+    monthly_revenue_rs: int = 0
+    protected: bool = False
+
+
+class TenantAdminView(BaseModel):
+    """Output of GET /admin/tenants (list) and GET /admin/tenants/{id}."""
+    id: str
+    name: str
+    tier: Tier
+    servers: List[str]
+    weight: float
+    quota: Quota                     # configured quota (after PATCH)
+    effective_quota: Quota           # quota after the active LimitsCmd factor
+    factor: float = 1.0
+    weight_factor: float = 1.0
+    blocked: bool = False
+    placement: str = "normal"        # normal | spare | quarantine | wN (relocation target)
+    override_expires_at: Optional[float] = None
     monthly_revenue_rs: int = 0
     protected: bool = False
 
@@ -52,9 +77,9 @@ class ModeBody(BaseModel):
     mode: Mode
 
 
-# ---------- 1. Telemetry (gateway -> brain, WS /internal/telemetry, every 250 ms) ----------
+# ---------- 1. Telemetry (gateway -> brain, WS /internal/telemetry, every tick_ms) ----------
 class Cell(BaseModel):
-    """Requests of one tenant served by one server during the last tick."""
+    """Requests of one tenant served by one server during the last tick (server-side latency, excludes queue wait)."""
     tenant: str
     server: str
     count: int
@@ -64,11 +89,15 @@ class Cell(BaseModel):
 
 
 class QueueStat(BaseModel):
+    """Per tenant, during the last tick."""
     tenant: str
-    depth: int
-    wait_p95_ms: float
-    admitted: int            # during the tick
-    rejected: int            # 429/503 during the tick
+    depth: int                   # queued now
+    wait_p95_ms: float           # gateway queue wait
+    p95_ms: float                # end-to-end (queue wait + upstream) p95 of completed requests; 0 if none
+    completed: int
+    admitted: int
+    rejected_429: int            # refused by admission (rate / cost / concurrency / block)
+    expired_503: int             # dropped after bounded wait
     inflight: int
 
 
@@ -87,7 +116,7 @@ class TelemetryFrame(BaseModel):
     limiter: List[LimiterStat] = Field(default_factory=list)
 
 
-# ---------- 2. Worker stats (worker GET /stats, polled at 1 Hz; counters CUMULATIVE since start) ----------
+# ---------- 2. Worker stats (worker GET /stats, polled at 1 Hz; counters CUMULATIVE since process start) ----------
 class TenantUsage(BaseModel):
     tenant: str
     requests: int
@@ -99,7 +128,7 @@ class TenantUsage(BaseModel):
     evictions_caused: int = 0
     evictions_suffered: int = 0
     bytes_in: int = 0
-    mem_mb: float = 0.0
+    mem_mb: float = 0.0          # current (gauge, not cumulative)
 
 
 class ClassCost(BaseModel):
@@ -112,8 +141,10 @@ class ClassCost(BaseModel):
 class WorkerStats(BaseModel):
     server: str
     ts: float
-    cpu_total_ms: float          # whole process tree
-    blackbox_cpu_ms: float       # unattributed "vendor indexer" CPU
+    started_at: float            # process start; a change means counters reset
+    cpu_total_ms: float          # whole process tree, cumulative
+    blackbox_cpu_ms: float = 0.0 # unattributed "vendor indexer" CPU, cumulative (Wave 2)
+    cpu_limit_cores: float = 0.5 # container CPU limit, for computing cpu_pct
     mem_mb: float
     fault: Optional[dict] = None
     tenants: List[TenantUsage] = Field(default_factory=list)
@@ -123,23 +154,31 @@ class WorkerStats(BaseModel):
 # ---------- 3. Control (brain -> gateway, POST /control/{kind}) ----------
 class ControlBase(BaseModel):
     incident_id: Optional[str] = None
-    ttl_s: float = 60.0           # gateway reverts the override after this
+    ttl_s: float = 60.0           # gateway reverts the override after this many seconds
 
 
 class RouteWeightsCmd(ControlBase):
-    weights: Dict[str, Dict[str, float]]      # tenant -> server -> weight
+    weights: Dict[str, Dict[str, float]]      # tenant -> server -> weight (normalized by gateway)
 
 
 class RelocateCmd(ControlBase):
     tenant: str
     cls: Optional[str] = None                 # None = whole tenant
-    target: str                               # "spare" | "quarantine" | "wN"
+    target: Optional[str] = None              # "spare" | "quarantine" | "wN"; None = clear relocation
 
 
 class LimitsCmd(ControlBase):
+    """Throttle / deprioritize one tenant.
+
+    - The latest command for a tenant REPLACES the previous one (both factors) and restarts the TTL.
+    - Base = the tenant's current configured quota (after any PATCH), not the tier default.
+    - Effective int fields = max(1, round(base * factor)); floats = base * factor.
+    - factor == 1.0 and weight_factor == 1.0 clears the override immediately.
+    - Gateway returns 400 if factor <= 0 or factor > 1, or weight_factor <= 0 or > 1.
+    """
     tenant: str
-    factor: float = 1.0                       # multiplies rate, burst, cost and concurrency of the plan quota (0<f<=1 throttles)
-    weight_factor: float = 1.0                # multiplies scheduler weight (deprioritize)
+    factor: float = 1.0                       # multiplies rate, burst, cost and concurrency
+    weight_factor: float = 1.0                # multiplies scheduler weight
 
 
 class DrainCmd(ControlBase):
@@ -149,7 +188,7 @@ class DrainCmd(ControlBase):
 
 class BlockCmd(ControlBase):
     tenant: str
-    blocked: bool = True
+    blocked: bool = True                      # blocked=false clears immediately
 
 
 class ReferenceCostsCmd(BaseModel):
@@ -157,7 +196,7 @@ class ReferenceCostsCmd(BaseModel):
 
 
 class Heartbeat(BaseModel):
-    ts: float
+    ts: float                                 # sender's clock; gateway uses its OWN receive time for fail-static
 
 
 class ControlAck(BaseModel):
@@ -165,25 +204,39 @@ class ControlAck(BaseModel):
     detail: str = ""
 
 
+class OverridesView(BaseModel):
+    """Output of gateway GET /admin/overrides."""
+    limits: Dict[str, LimitsCmd] = Field(default_factory=dict)        # tenant -> active cmd
+    blocks: Dict[str, BlockCmd] = Field(default_factory=dict)
+    relocations: List[RelocateCmd] = Field(default_factory=list)
+    route_weights: Dict[str, Dict[str, float]] = Field(default_factory=dict)
+    drains: Dict[str, DrainCmd] = Field(default_factory=dict)
+    expires_at: Dict[str, float] = Field(default_factory=dict)       # "<kind>:<key>" -> epoch s
+    last_heartbeat_age_s: Optional[float] = None
+    fail_static: bool = False
+
+
 # ---------- 4. Brain -> UI (WS /ws/events on the brain) ----------
 class TenantView(BaseModel):
     tenant: str
     name: str
     tier: Tier
-    p95_ms: float
-    rps: float
-    rejected_rps: float
-    cpu_share: float              # 0..1 of fleet CPU
-    noisy_score: float            # 0..1
+    p95_ms: float                 # end-to-end p95 over the last 5 s
+    rps: float                    # completed requests/s, averaged over the last 5 s
+    rejected_rps: float           # 429 + 503 per second, last 5 s
+    cpu_share: float              # 0..1: (handler+bg CPU of tenant) / (handler+bg CPU of all tenants), last 5 s
+    noisy_score: float            # raw ratio >= 0; compare with padosi.yaml brain.noisy thresholds (warn 1.5 ...)
+    noisy_norm: float             # 0..1 = min(1, noisy_score / brain.noisy.quarantine), for bars
     level: Level
+    factor: float = 1.0           # current throttle factor applied
     placement: str = "normal"     # normal | spare | quarantine
 
 
 class ServerView(BaseModel):
     server: str
-    p95_ms: float
-    peer_ratio: float
-    cpu_pct: float
+    p95_ms: float                 # server-side p95 over the last 2 s
+    peer_ratio: float             # p95 / median p95 of other servers (Wave 2; 1.0 until then)
+    cpu_pct: float                # 0..100 of the container CPU limit (cpu_limit_cores)
     status: Literal["healthy", "slow", "drained"]
 
 
@@ -193,9 +246,10 @@ class StateSnapshot(BaseModel):
     mode: Mode
     tenants: List[TenantView]
     servers: List[ServerView]
-    utilization: float            # 0..1
-    fairness: float               # Jain index 0..1
+    utilization: float            # 0..1 of fleet CPU limit (w0..w8)
+    fairness: float               # Jain index 0..1 over per-tenant (completed rps / weight) of active tenants
     status_sentence: str
+    brain_ok: bool = True
 
 
 Stage = Literal["detected", "level_change", "rescued", "named", "proving",
@@ -204,7 +258,7 @@ Stage = Literal["detected", "level_change", "rescued", "named", "proving",
 
 class Suspect(BaseModel):
     tenant: str
-    confidence: float
+    confidence: float             # 0..1
 
 
 class IncidentEvent(BaseModel):
@@ -212,24 +266,29 @@ class IncidentEvent(BaseModel):
     incident_id: str
     stage: Stage
     ts: float
+    tenant: Optional[str] = None          # primary tenant of the incident, if any
+    level: Optional[Level] = None         # new level (level_change)
+    prev_level: Optional[Level] = None
     suspects: List[Suspect] = Field(default_factory=list)
     verdict: Optional[str] = None
     action: Optional[str] = None
-    detail: str = ""
+    detail: str = ""                      # plain-English reason (every action stores why)
     report: Optional[dict] = None
 
 
-# ---------- 5. Lab (lab service, POST /lab/attack) ----------
+# ---------- 5. Lab (lab service :8300) ----------
 AttackName = Literal["flood", "whale", "hog", "memory", "retry_storm", "background_bomb",
                      "blackbox_bomb", "cache_flood", "faulty_server", "honest_spike"]
 
 
 class AttackReq(BaseModel):
+    """POST /lab/attack. intensity = multiplier on the attack's default profile
+    (flood: 10x persona rps at 1.0; whale/hog/memory: request rate). Valid 0.1..5, else 422."""
     attack: AttackName
     tenant: Optional[str] = None      # faulty_server uses server instead
     server: Optional[str] = None
-    intensity: float = 1.0
-    duration_s: float = 60.0
+    intensity: float = Field(1.0, ge=0.1, le=5.0)
+    duration_s: float = Field(60.0, gt=0, le=600)
 
 
 class AttackStatus(BaseModel):
@@ -237,5 +296,47 @@ class AttackStatus(BaseModel):
     attack: AttackName
     tenant: Optional[str] = None
     server: Optional[str] = None
+    intensity: float = 1.0
+    state: Literal["running", "stopped", "done"] = "running"
     started_at: float
     ends_at: float
+
+
+class LabStatus(BaseModel):
+    """GET /lab/status."""
+    attacks: List[AttackStatus] = Field(default_factory=list)
+    calm_running: bool = False
+    run: Optional[str] = None         # id of the scenario run in progress
+
+
+class RunReq(BaseModel):
+    """POST /lab/run: calm -> attack -> calm, after setting the gateway mode."""
+    scenario: AttackName
+    mode: Mode
+    tenant: Optional[str] = None
+    server: Optional[str] = None
+    intensity: float = Field(1.0, ge=0.1, le=5.0)
+    calm_s: float = 20
+    attack_s: float = 40
+
+
+class PhaseP99(BaseModel):
+    baseline: float
+    attack: float
+    after: float
+
+
+class RunResult(BaseModel):
+    """Written to lab/results/<ts>-<scenario>-<mode>.json. Slide numbers come only from these."""
+    run_id: str
+    scenario: AttackName
+    mode: Mode
+    attacker: Optional[str] = None
+    started_at: float
+    victim_p99_ms: PhaseP99           # pooled over all non-attacker tenants
+    victim_p99_by_tenant: Dict[str, PhaseP99] = Field(default_factory=dict)
+    time_to_detect_s: Optional[float] = None    # from attack start to first incident event (if brain reachable)
+    time_to_recover_s: Optional[float] = None   # from attack start until victim p99 <= 1.5x baseline for 5 s
+    attacker_429: int = 0
+    attacker_503: int = 0
+    file: str = ""
