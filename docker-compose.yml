@@ -73,6 +73,17 @@ services:
     depends_on: [brain]
     profiles: ["handoff"]
 
+  narrator:
+    build: {context: ., dockerfile: narrator/Dockerfile}
+    ports: ["8700:8700"]
+    environment:
+      TENANTGUARD_ROOT: /app
+      TENANTGUARD_BRAIN_URL: http://brain:8200
+      TENANTGUARD_CORS_ORIGINS: ${TENANTGUARD_UI_ORIGINS:-http://127.0.0.1:5173}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    depends_on: [brain]
+    profiles: ["narrator"]
+
   billing:
     build: {context: ., dockerfile: billing/Dockerfile}
     ports: ["8600:8600"]

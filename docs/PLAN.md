@@ -453,7 +453,7 @@ Proof: unit tests + a live run against brain + fake_gateway (ask for a slot). Us
 | T11 Handoff bridge (Web PS3 convergence) | task/T11-handoff-bridge | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
 | T14 Demo driver (`tools/demo.py`) | task/T14-demo-runbook | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
 | T16 Submission docs | task/T16-submission-docs | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** (re-check after T10/T12) |
-| T18 Incident narrator service | task/T18-narrator | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | assigned |
+| T18 Incident narrator service | task/T18-narrator | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** (template mode proven; AI path needs a key) |
 | T2 Workers | task/T2-workers | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged** (9cebaaf) |
 | T6 Workers wave 2 | task/T6-worker-blackbox | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged** |
 | T15 Worker calibration in-container | task/T15-worker-calib | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged**; host calibration committed (fa011b3) |
