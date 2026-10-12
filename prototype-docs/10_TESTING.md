@@ -6,7 +6,7 @@ Every service has its own test suite, which runs with `python -m pytest` in the 
 
 | Suite | Command | Tests | Test files |
 |---|---|---|---|
-| Gateway | `cd gateway && python -m pytest` | 92 | `test_buckets.py`, `test_scheduler.py`, `test_router.py`, `test_overrides.py`, `test_limiter_retry.py`, `test_api.py`, `test_wave2_api.py`, `test_security.py` |
+| Gateway | `cd gateway && python -m pytest` | 94 | `test_buckets.py`, `test_scheduler.py`, `test_router.py`, `test_overrides.py`, `test_limiter_retry.py`, `test_api.py`, `test_wave2_api.py`, `test_security.py`, `test_telemetry.py` |
 | Worker | `cd worker && python -m pytest` | 47 | `test_isolation.py`, `test_metering.py`, `test_blackbox.py`, `test_limits_fault.py`, `test_calibrate.py`, `test_review_fixes.py` |
 | Brain | `cd brain && python -m pytest` | 99 | `test_score.py`, `test_ladder.py`, `test_fairness.py`, `test_core.py`, `test_stage3_pure.py`, `test_stage3_sim.py`, `test_operator.py`, `test_runtime.py`, `test_api.py` |
 | Lab | `cd lab && python -m pytest` | 33 | `test_poisson.py`, `test_stats.py`, `test_scenario.py`, `test_api.py`, `test_isolation.py` |
@@ -14,14 +14,14 @@ Every service has its own test suite, which runs with `python -m pytest` in the 
 | Narrator | `cd narrator && python -m pytest` | 9 | `test_narrator.py` |
 | Demo driver | `cd tools && python -m pytest` | 16 | `test_demo.py`, `test_demo_t20.py` |
 | UI | `cd ui && npm test` (vitest) | about 53 cases | `src/lib/*.test.ts` (backend, case, flow, impact, quota, scorecard, status, store, thresholds), `src/mock/*.test.ts` (handoff, sim) |
-| **Total (Python)** | | **343** | |
+| **Total (Python)** | | **345** | |
 
 Python counts are the numbers `pytest --collect-only` reports on `master`. The UI number counts `it(...)` / `test(...)` cases in the test files. The UI also has `npm run build` (TypeScript type-check plus the production build) and `npm run lint` (zero warnings).
 
 ```mermaid
 pie title Python tests per suite (master)
   "Brain" : 99
-  "Gateway" : 92
+  "Gateway" : 94
   "Worker" : 47
   "Handoff" : 47
   "Lab" : 33
@@ -31,12 +31,13 @@ pie title Python tests per suite (master)
 
 ## What the suites prove
 
-### Gateway (92)
+### Gateway (94)
 - **Buckets and admission:** token-bucket refill and burst; CPU-cost bucket overdraw and pay-back; a token is consumed only on admission; `Retry-After` is the maximum wait over every refusing dimension, rounded up; the exact `RateLimit` / `RateLimit-Policy` header shapes.
 - **Fair scheduling:** weighted DRR with weights 4/2/1 over 10,000 requests is within ±5% for equal and mixed costs; weight changes take effect; a whale with 1,000 queued 500 ms requests cannot starve two light tenants; FIFO mode really serves in arrival order; cancelled items are skipped; a tenant whose servers are full does not block others.
 - **Routing and overrides:** equal spread by default; route weights, drains and relocations; a request is never black-holed; every override kind reverts at its TTL; a newer `LimitsCmd` replaces the old one and restarts its TTL; 1.0/1.0 clears; fail-static uses the gateway's own receive time.
 - **Wave 2:** the gradient window grows at baseline latency, shrinks under worker-side contention, ignores a request's own CPU, is clamped, and re-baselines slowly. The express lane keeps light requests fast behind a whale (and the same test fails without it). Batch is shed first. A retry storm is capped while plain repeats are not counted as retries. Background-CPU charges are idempotent. Reference costs change the lane choice. The window moves with real latency.
 - **API and security:** 401 for unknown keys; 429 per dimension; quota PATCH changes behaviour; bounded wait gives 503 and nothing is forwarded; control input is validated to 400; the telemetry WS emits frames; `/metrics` text. Also: path traversal (10 encodings) is rejected and never forwarded; the control token is required; TTL and quota bounds (Infinity, NaN, 0, too large); a 4 MB body is never read without a key; chunked bodies are capped; request ids are validated; CPU is charged on client disconnect.
+- **Telemetry:** cumulative `/metrics` counters (retries, background-CPU charges) survive missing-CPU-header events; per-tick stats reset every frame.
 
 ### Worker (47)
 Tenant B can never read tenant A's data (same key, case-variant ids, unknown tenants, context-only repository); one SQLite file per tenant; the cache keeps its guaranteed share and records evictions caused by a flooder; background jobs are charged to the tenant that wrote; meters add up; the CPU header tracks real work; black-box CPU is never in tenant meters, and its queue is bounded with drops counted; fault injection adds latency and CPU burn, requires the admin token and clears itself; body and memory limits (413 / 507); background backlog caps; the worker-wide memory cap; unhandled errors still carry the CPU header; the calibration CLI.

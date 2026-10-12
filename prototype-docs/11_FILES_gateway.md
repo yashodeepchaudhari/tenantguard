@@ -591,6 +591,14 @@ The security-review fixes.
 
 ---
 
+### gateway/tests/test_telemetry.py
+Unit tests for the cumulative and per-tick counters of `Telemetry` (added with the T23 fix that stopped `cpu_missing` from resetting the retry and charge counters).
+
+| Function / class | Signature | What it does / proves | Called by |
+|---|---|---|---|
+| `test_cpu_missing_does_not_wipe_other_cumulative_counters` | | Retries and background-CPU charges survive any number of missing-CPU-header events; the missing-header counter counts per (tenant, server) | pytest |
+| `test_frame_resets_per_tick_stats_but_keeps_cumulative_counters` | | A frame reports the tick's admitted / retries / completed and starts a new tick; the cumulative `/metrics` counters keep their totals | pytest |
+
 ### gateway/Dockerfile
 Builds the gateway image from the repository root: Python 3.12-slim; installs `common` and `requirements.txt`; copies `tenantguard.yaml`, `layouts/` and the package; exposes 8000; healthcheck on `/healthz`; runs `python -m tenantguard_gateway --host 0.0.0.0 --port 8000`.
 
