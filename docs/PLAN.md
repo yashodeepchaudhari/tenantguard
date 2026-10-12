@@ -269,6 +269,7 @@ Prove it: run against a stub gateway (a 10-line FastAPI that sleeps 2 ms), then 
   - case status is `waiting_for_decision|in_progress|resolved|closed`; severity is `low|medium|high`; times are HH:MM:SS IST
   - evidence_link = `http://<ui-host>:5173/case/<incident_id>` (T4 adds the `/case/:id` route in Wave 2)
   - Case/handoff Pydantic models are added to `contracts.py` at the start of Wave 3.
+- 2026-10-12: The Docker host (friend's laptop, GitHub reki-shu) is set up per `docs/DOCKER-HOST-SETUP.md`. The coordinator drives it via the docker context `tg-host` over SSH (key `~/.ssh/tenantguard_ed25519`), building from the coordinator's files. This laptop has 8 cores / 7.8 GB RAM, too small to also host the full stack beside 7 Claude sessions.
 - 2026-10-12 (user): **Project name is TenantGuard.** The old name was a mistake and must not appear anywhere.
   - Package `tenantguard_common`; config `tenantguard.yaml`; env prefix `TENANTGUARD_`; headers `X-TenantGuard-Tenant` / `-Class` / `-Cpu-Ms`; mode literal `tenantguard` (off | industry | tenantguard).
   - Service packages: `gateway/tenantguard_gateway`, `worker/app`, `brain/tenantguard_brain`, `lab/tenantguard_lab`.
