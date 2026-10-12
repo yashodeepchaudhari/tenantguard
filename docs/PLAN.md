@@ -439,6 +439,23 @@ Build:
 3. API: `GET /reports`, `GET /reports/{incident_id}`, WS `/ws/reports`.
 4. Tests: report correctness and anonymisation.
 
+### T22: Prototype documentation pack (4 writers in parallel)
+**Goal:** a new folder `prototype-docs/` that fully documents what is BUILT on master (what we show as the prototype): architecture, SOLID/design, data models, sequence diagrams, risks + mitigations, unique features, and EVERY file and EVERY function with a detailed description.
+
+Common rules for every writer:
+- Describe only code that exists on `master` (read it; cite file paths and real function names). Mark unmerged work (T10 lab wave 2, T12 prover/verdicts/calibration, T17 billing) as "in progress", never as done.
+- Numbers only from committed files (`worker/calibration.json`, tests). Diagrams in Mermaid (` ```mermaid `).
+- No mention of any AI, assistant or development tool (PLAN §2.10a). Plain English, but complete.
+- Function catalog format, per file: `### path/to/file.py`, a 2–4 line purpose paragraph, then a table `| Function / class | Signature | What it does | Called by |` covering EVERY function, method and class (private ones too), then "Key decisions" bullets.
+- Write ONLY your own files below. Commit on your branch with a plain message.
+
+| Writer | Files in `prototype-docs/` |
+|---|---|
+| T1 session (`codeastra-t1-71`, branch `task/T22a-docs`) | `00_INDEX.md` (map of all files + how to read), `01_OVERVIEW.md` (problem, what is built, status table, demo script), `02_ARCHITECTURE.md` (system, planes, 5 isolation layers, deployment two-laptop + Tailscale, component/port table: all Mermaid), `03_SOLID_AND_DESIGN.md` (SOLID principles with concrete code examples, patterns, refactoring done and possible), `06_RISKS_AND_MITIGATIONS.md`, `07_UNIQUE_FEATURES.md`, `09_CONFIG_REFERENCE.md` (every yaml key, env var, port, token), `10_TESTING.md` (suites, counts, mutation checks), `11_FILES_gateway.md`, `11_FILES_handoff.md`, `11_FILES_tools.md`, `11_FILES_narrator.md` |
+| T2 session (`codeastra-t2-d5`, branch `task/T22b-docs`) | `04_DATA_MODELS.md` (every contract model + field + unit, class diagrams, layout + yaml shapes, SQLite per-tenant schema), `11_FILES_common.md`, `11_FILES_worker.md` |
+| T4 session (`codeastra-t4-6b`, branch `task/T22c-docs`) | `05_SEQUENCE_DIAGRAMS.md` (request path, admission/429, DRR dispatch, detection→throttle ladder→recovery, health→rescue→decoder naming, host fault, operator/handoff decision, narrator report, UI live stream), `11_FILES_ui.md`, `11_FILES_lab.md` |
+| `codeastra-2b` (main dir, no branch; coordinator commits) | `11_FILES_brain.md` |
+
 ## Task table
 
 | Task | Branch | Worktree | Session | Status |
