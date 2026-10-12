@@ -57,6 +57,21 @@ describe('mock platform', () => {
     expect(report).toMatchObject({ verdict: 'costly_pattern', attacker: 'K' })
   })
 
+  it('routes neighbours away from slow servers in tenantguard mode (rescue)', () => {
+    const p = new MockPlatform()
+    let t = 1000
+    for (let i = 0; i < 40; i++) {
+      t += 0.5
+      if (i === 2) p.startAttack({ attack: 'faulty_server', server: 'w4', intensity: 3, duration_s: 60 }, t)
+      p.tick(t)
+    }
+    const rw = p.overrides(t).route_weights
+    expect(rw.B).toEqual({ w3: 1, w4: 0, w5: 1 }) // B = w3 w4 w5
+    expect(Object.keys(rw).sort()).toEqual(['B', 'E', 'G', 'L']) // every tenant on w4
+    p.setMode('industry')
+    expect(p.overrides(t).route_weights).toEqual({})
+  })
+
   it('never flags an innocent tenant', () => {
     const { p } = run('off')
     for (const [id, s] of p.tenants) if (id !== 'K') expect(s.incident).toBeNull()

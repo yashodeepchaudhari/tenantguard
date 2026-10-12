@@ -15,6 +15,7 @@ export const config = {
   brainUrl: trim(env.VITE_BRAIN_URL, 'http://127.0.0.1:8200'),
   gatewayUrl: trim(env.VITE_GATEWAY_URL, 'http://127.0.0.1:8000'),
   labUrl: trim(env.VITE_LAB_URL, 'http://127.0.0.1:8300'),
+  handoffUrl: trim(env.VITE_HANDOFF_URL, 'http://127.0.0.1:8400'),
   /** Sent as X-TenantGuard-Control-Token on gateway /admin/* (gateway env TENANTGUARD_CONTROL_TOKEN). */
   controlToken: env.VITE_CONTROL_TOKEN?.trim() || 'dev',
   mock: urlMock !== null ? urlMock === '1' : env.VITE_MOCK === '1',

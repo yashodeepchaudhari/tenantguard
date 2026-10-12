@@ -2,11 +2,12 @@
 // contracts over HTTP/WS with CORS. Lets the UI run in REAL mode (VITE_MOCK=0) before the
 // services exist, and exercises the actual fetch / WebSocket code paths.
 //
-//   node scripts/mock-ws-server.mjs [--brain 18200] [--gateway 18000] [--lab 18300] [--no-script]
+//   node scripts/mock-ws-server.mjs [--brain 18200] [--gateway 18000] [--lab 18300] [--handoff 18400] [--no-script]
 //
 // Then point ui/.env at it: VITE_BRAIN_URL=http://127.0.0.1:18200 etc. Requires Node >= 23.6.
 import http from 'node:http'
 import { WebSocketServer } from 'ws'
+import { mockCases } from '../src/mock/handoff.ts'
 import { RESULTS_FIXTURE } from '../src/mock/results.ts'
 import { MockPlatform, SimError } from '../src/mock/sim.ts'
 
@@ -14,7 +15,7 @@ const arg = (name, def) => {
   const i = process.argv.indexOf(`--${name}`)
   return i > 0 ? Number(process.argv[i + 1]) : def
 }
-const PORTS = { brain: arg('brain', 18200), gateway: arg('gateway', 18000), lab: arg('lab', 18300) }
+const PORTS = { brain: arg('brain', 18200), gateway: arg('gateway', 18000), lab: arg('lab', 18300), handoff: arg('handoff', 18400) }
 const HOST = process.env.MOCK_HOST || '0.0.0.0'
 const SCRIPT = !process.argv.includes('--no-script')
 
@@ -112,6 +113,16 @@ serve('lab', PORTS.lab, [
   ['POST', /^\/lab\/attack$/, (_m, b) => sim.startAttack(b, now())],
   ['DELETE', /^\/lab\/attack\/([^/]+)$/, (m) => sim.stopAttack(decodeURIComponent(m[1]), now())],
   ['GET', /^\/lab\/results$/, () => RESULTS_FIXTURE],
+])
+
+// ---- handoff bridge ----
+serve('handoff', PORTS.handoff, [
+  ['GET', /^\/cases$/, () => mockCases(incidents, now())],
+  ['GET', /^\/cases\/([^/]+)$/, (m) => {
+    const c = mockCases(incidents, now()).find((x) => x.case_id === decodeURIComponent(m[1]))
+    if (!c) throw new SimError(404, 'unknown case')
+    return c
+  }],
 ])
 
 // ---- 2 Hz tick ----

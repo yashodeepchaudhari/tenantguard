@@ -261,6 +261,16 @@ class ServerView(BaseModel):
     status: Literal["healthy", "slow", "drained"]
 
 
+class ImpactView(BaseModel):
+    """Brain-owned business impact since `since` (UI keeps its own meter as a fallback)."""
+    since: float                        # epoch s when counting started (brain start or reset)
+    revenue_protected_rs: float         # sum of victims' monthly_revenue_rs x SLO-violation seconds avoided / 2_592_000
+    customers_shielded: List[str]       # threatened tenants that stayed within SLO
+    slo_violation_avoided_s: float
+    slo_violation_suffered_s: float
+    innocents_penalised: List[str]      # acted on while their own score < warn; must stay empty
+
+
 class StateSnapshot(BaseModel):
     type: Literal["state"] = "state"
     ts: float
@@ -271,6 +281,7 @@ class StateSnapshot(BaseModel):
     fairness: float               # Jain index 0..1 over per-tenant (completed rps / weight) of active tenants
     status_sentence: str
     brain_ok: bool = True
+    impact: Optional[ImpactView] = None
     noisy_thresholds: Dict[str, float] = Field(default_factory=dict)   # e.g. {"warn":1.5,"throttle":2.0,"quarantine":4.0} from brain.noisy; UI must use these, not its own copies
 
 
@@ -496,3 +507,38 @@ class WhyView(BaseModel):
     credit_pct: float
     episodes: List[WhyEpisode]
     sentence: str
+
+
+# ---------- 8. Incident narrator (narrator :8700, read-only consumer of the brain) ----------
+class IncidentReport(BaseModel):
+    """Operator-facing report. Every tenant id, server id and number must come from the evidence pack."""
+    headline: str
+    timeline: List[str]               # "HH:MM:SS stage: what happened", oldest first
+    cause: str
+    evidence_points: List[str]
+    action_taken: str
+    operator_recommendation: str
+
+
+class CustomerMessage(BaseModel):
+    """For an affected tenant: built from the anonymised pack, so it never names another tenant."""
+    message: str
+
+
+class ReportView(BaseModel):
+    """Narrator GET /reports (list, newest first), GET /reports/{incident_id}, WS /ws/reports (pushed on every change)."""
+    incident_id: str
+    tenant: Optional[str] = None                  # primary/culprit tenant, if any
+    trigger_stage: Stage                          # the stage that produced this version (named | verdict | closed)
+    version: int                                  # +1 on every change for this incident
+    source: Literal["template", "ai"]
+    grounded: bool                                # template: always True; ai: passed the grounding check
+    ai_status: Literal["pending", "done", "disabled", "rejected", "error"]
+    ai_detail: str = ""                           # e.g. "ungrounded: number 37.5", "refusal", "no API key"
+    model: Optional[str] = None                   # AI model id when source == "ai"
+    report: IncidentReport
+    customer_message: CustomerMessage
+    evidence: dict                                # the evidence pack this version was built from
+    created_at: float                             # epoch s
+    updated_at: float
+

@@ -73,6 +73,19 @@ services:
     depends_on: [brain]
     profiles: ["handoff"]
 
+  billing:
+    build: {context: ., dockerfile: billing/Dockerfile}
+    ports: ["8600:8600"]
+    environment:
+      TENANTGUARD_ROOT: /app
+      TENANTGUARD_WORKER_URLS: *worker-urls
+      TENANTGUARD_BRAIN_URL: http://brain:8200
+      TENANTGUARD_GATEWAY_URL: http://gateway:8000
+      TENANTGUARD_CONTROL_TOKEN: ${TENANTGUARD_CONTROL_TOKEN:-dev}
+      TENANTGUARD_CORS_ORIGINS: ${TENANTGUARD_UI_ORIGINS:-http://127.0.0.1:5173}
+    depends_on: [brain, gateway]
+    profiles: ["billing"]
+
   lab:
     build: {context: ., dockerfile: lab/Dockerfile}
     ports: ["8300:8300"]

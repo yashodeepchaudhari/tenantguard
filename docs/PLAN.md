@@ -428,6 +428,22 @@ Build:
 
 Proof: unit tests + a run against the Docker host (I'll add the compose service and run it there; send me the exact commands).
 
+### T18: Incident narrator (T1 session, same worktree)
+**You are TASK T18:** when this is finished, every TenantGuard incident gets a plain-English incident report: an instant deterministic version, upgraded within seconds by an AI-written one that is checked fact-by-fact against the evidence. The AI never makes a decision.
+
+You own a NEW dir `narrator/` (package `tenantguard_narrator`, FastAPI on :8700, Dockerfile, tests). Read-only consumer of the brain.
+
+Build:
+1. Subscribe to brain WS `/ws/events` (+ `/api/incidents` backfill). On `named`, `verdict` and `closed`, build an **evidence pack** (JSON): stages + timestamps, suspects + confidence, slow servers + peer ratios, actions + TTLs, affected tenants, verdict.
+2. **Template report:** a deterministic `IncidentReport {headline, timeline[], cause, evidence_points[], action_taken, operator_recommendation}` plus `CustomerMessage {message}` built from the *anonymised* pack (no other tenant named). Available instantly.
+3. **AI report:** the official `anthropic` Python SDK with structured output into the same Pydantic models. A stable system prompt first, with prompt caching. Run it asynchronously, never on the decision path. Read the SDK's current docs for the exact call shape and model id (planned: `claude-opus-5-5`, effort low). The key comes from env `ANTHROPIC_API_KEY`; with no key, or offline, use the template only.
+4. **Grounding check:** every tenant id, server id and number in the AI output must appear in the evidence pack. Otherwise, or on refusal/API error, keep the template. Record `source: template|ai` and a `grounded` flag.
+5. API: `GET /reports/{incident_id}`, `GET /reports`, and WS `/ws/reports` pushing the template and then the AI version. Propose a contract (`ReportView`) to the coordinator.
+6. Tests: template correctness, anonymisation, the grounding check (rejects an unknown tenant or number; accepts a valid one), with a stubbed SDK client; no-key mode.
+7. The AI-attribution rule applies to commits and docs only. Product code that calls the API is a feature and is fine.
+
+Proof: unit tests + a live run against brain + fake_gateway (ask for a slot). Use the real API only if a key is available; otherwise template mode.
+
 ## Task table
 
 | Task | Branch | Worktree | Session | Status |
@@ -436,17 +452,19 @@ Proof: unit tests + a run against the Docker host (I'll add the compose service 
 | T7 Gateway wave 2 | task/T7-gateway-adaptive | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
 | T11 Handoff bridge (Web PS3 convergence) | task/T11-handoff-bridge | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
 | T14 Demo driver (`tools/demo.py`) | task/T14-demo-runbook | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
-| T16 Submission docs | task/T16-submission-docs | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | assigned |
+| T16 Submission docs | task/T16-submission-docs | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** (re-check after T10/T12) |
+| T18 Incident narrator service | task/T18-narrator | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | assigned |
 | T2 Workers | task/T2-workers | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged** (9cebaaf) |
 | T6 Workers wave 2 | task/T6-worker-blackbox | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged** |
 | T15 Worker calibration in-container | task/T15-worker-calib | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged**; host calibration committed (fa011b3) |
-| T17 Fair billing + "Why was I slow?" | task/T17-billing | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | assigned |
+| T20 Fixes: handoff bridge + demo driver (T19 review) | task/T20-handoff-demo-fixes | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | assigned (owns integrations/handoff + tools/ for this task) |
+| T17 Fair billing + "Why was I slow?" | task/T17-billing | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **done, merge pending** (tests need coord/layout-balance; merges together with T12) |
 | T3 Brain | task/T3-brain | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | **merged** |
 | T8 Brain integration + health/rescue/decoder | task/T8-brain-detect | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | **merged** |
 | T12 Brain prover + verdicts + calibration | task/T12-brain-prover | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | in progress (merges coord/layout-balance) |
 | T4 UI | task/T4-ui | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | **merged** |
 | T9 UI wave 2 | task/T9-ui-casefile | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | **merged** |
-| T13 UI wave 3 (story + Docker-host run) | task/T13-ui-story | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | in progress |
+| T13 UI wave 3 (story + Docker-host run) | task/T13-ui-story | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | **merged** (standby; screenshot retake at rehearsal) |
 | T5 Lab | task/T5-lab | D:\yashodeep\codeAstra-T5 | codeastra-t5-79 | **merged** |
 | T10 Lab wave 2 + crash-test | task/T10-lab-crashtest | D:\yashodeep\codeAstra-T5 | codeastra-t5-79 | in progress |
 | Convergence samples | n/a (main dir, docs/convergence/) | main | codeastra-21 | assigned |
@@ -537,4 +555,10 @@ Proof: unit tests + a run against the Docker host (I'll add the compose service 
     - It breaks one tuned brain test, so T12 merges the branch and adapts the test. The lab personas' rps must follow the new tiers (T10).
   - Cause 2: peer ratios are noisy at low per-tick counts. T12 calibrates on the host.
 - 2026-10-12 (T6, T11 merged): worker isolation allow-list + black-box vendor indexer; handoff bridge (`integrations/handoff`, :8400, compose profile `handoff`).
+- 2026-10-12 (T19 review of handoff + demo): fixed in T20 by the T2 session, which owns `integrations/handoff/` + `tools/` for this task (the T1 session is on T18, in `narrator/`).
+  - Partner updates fail closed: no token configured → 503. Compose keeps an empty default, because a `:?` would break every `compose up`.
+  - Hold actions are deduplicated.
+  - History and cases pruned.
+  - Per-message exception isolation in the bridge.
+  - Demo preflight for attacks the lab can't run; robust cleanup; config-based defaults.
 - 2026-10-12: Cost bucket is debited with the worker-measured CPU (`X-TenantGuard-Cpu-Ms`) rather than an estimate, so it is a real resource quota, not a request count.
