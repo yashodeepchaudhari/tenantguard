@@ -9,13 +9,14 @@ from typing import List
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from tenantguard_common.contracts import (H_CLASS, H_CPU_MS, H_TENANT, OverridesView, Quota, TelemetryFrame,
+from tenantguard_common.contracts import (H_CLASS, H_CONTROL_TOKEN, H_CPU_MS, H_TENANT, OverridesView, Quota, TelemetryFrame,
                                           TenantAdminView, TenantConfig)
 
 from tenantguard_gateway.app import create_app
 from tenantguard_gateway.core import Gateway
 from tenantguard_gateway.settings import GatewaySettings
 
+TOKEN = {H_CONTROL_TOKEN: "dev"}
 WORKERS = {"w0": "http://w0", "w1": "http://w1", "w2": "http://w2", "spare": "http://spare"}
 
 
@@ -44,10 +45,10 @@ class Upstream:
                               json={"server": req.url.host, "tenant": req.headers.get(H_TENANT)})
 
 
-def make(tenants, mode="industry", window=8, max_wait_ms=1000.0, tick_ms=250, ticker=False):
+def make(tenants, mode="industry", window=8, max_wait_ms=1000.0, tick_ms=250, ticker=False, **kw):
     up = Upstream()
     s = GatewaySettings(default_mode=mode, initial_window=window, tick_ms=tick_ms,
-                        max_wait_ms={"interactive": max_wait_ms, "batch": max_wait_ms * 5})
+                        max_wait_ms={"interactive": max_wait_ms, "batch": max_wait_ms * 5}, **kw)
     gw = Gateway(s, tenants, WORKERS, client=httpx.AsyncClient(transport=httpx.MockTransport(up)),
                  rng=random.Random(7))
     app = create_app(gw, run_ticker=ticker)
@@ -55,7 +56,7 @@ def make(tenants, mode="industry", window=8, max_wait_ms=1000.0, tick_ms=250, ti
 
 
 def client(app) -> httpx.AsyncClient:
-    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://gw")
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://gw", headers=TOKEN)
 
 
 def run(coro):
@@ -189,7 +190,7 @@ def test_bounded_wait_expires_with_503_and_is_never_forwarded():
     assert len(up.seen) == 1                                 # expired ones never reached a worker
     r503 = next(r for r in rs if r.status_code == 503)
     assert r503.json()["error"] == "queue_timeout" and r503.headers["Retry-After"] == "1"
-    assert gw.sched.total() == 0 and gw.slots["w0"] == 0 and gw.registry.get("A").pending == 0
+    assert gw.queued() == 0 and gw.slots["w0"] == 0 and gw.registry.get("A").pending == 0
     f = gw.tick()
     q = next(q for q in f.queues if q.tenant == "A")
     assert q.expired_503 == 3 and q.admitted == 4 and q.completed == 1
@@ -326,7 +327,7 @@ def test_admin_add_tenant_and_conflicts():
 # ---------- telemetry ----------
 def test_telemetry_ws_frames_latest_and_metrics():
     gw, app, up = make([tenant("A"), tenant("K", rate_rps=0.1, burst=1)], tick_ms=100, ticker=True)
-    with TestClient(app) as tc:
+    with TestClient(app, headers=TOKEN) as tc:
         frames = []
         with tc.websocket_connect("/internal/telemetry") as ws:
             h = {"X-API-Key": "key-A"}

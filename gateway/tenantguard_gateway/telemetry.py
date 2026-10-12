@@ -22,7 +22,7 @@ def percentile(xs: Sequence[float], p: float) -> float:
 
 
 class _TenantTick:
-    __slots__ = ("waits", "e2e", "admitted", "rejected", "expired")
+    __slots__ = ("waits", "e2e", "admitted", "rejected", "expired", "retries")
 
     def __init__(self) -> None:
         self.waits: List[float] = []
@@ -30,6 +30,7 @@ class _TenantTick:
         self.admitted = 0
         self.rejected = 0
         self.expired = 0
+        self.retries = 0
 
 
 class _CellTick:
@@ -50,6 +51,8 @@ class Telemetry:
         self.c_expired: Dict[str, int] = defaultdict(int)
         self.c_admitted: Dict[str, int] = defaultdict(int)
         self.c_cpu_ms: Dict[str, float] = defaultdict(float)
+        self.c_retries: Dict[str, int] = defaultdict(int)
+        self.c_charged_ms: Dict[str, float] = defaultdict(float)
         self.c_cpu_missing: Dict[Tuple[str, str], int] = defaultdict(int)   # (tenant, server)
         self.h_e2e: Dict[str, List[int]] = defaultdict(lambda: [0] * (len(LAT_BUCKETS_MS) + 1))
         self.h_e2e_sum: Dict[str, float] = defaultdict(float)
@@ -74,8 +77,17 @@ class Telemetry:
     def dispatched(self, tenant: str, wait_ms: float) -> None:
         self._tenants[tenant].waits.append(wait_ms)
 
+    def retry(self, tenant: str) -> None:
+        self._tenants[tenant].retries += 1
+        self.c_retries[tenant] += 1
+
+    def charged(self, tenant: str, cpu_ms: float) -> None:
+        self.c_charged_ms[tenant] += cpu_ms
+
     def cpu_missing(self, tenant: str, server: str) -> None:
         """Worker answered without a usable X-TenantGuard-Cpu-Ms: debited 0, counted here."""
+        self.c_retries: Dict[str, int] = defaultdict(int)
+        self.c_charged_ms: Dict[str, float] = defaultdict(float)
         self.c_cpu_missing[(tenant, server)] += 1
 
     def done(self, tenant: str, server: str, upstream_ms: float, e2e_ms: float, status: int,
@@ -110,7 +122,7 @@ class Telemetry:
             queues.append(QueueStat(
                 tenant=t, depth=depth(t), wait_p95_ms=percentile(tt.waits, 95),
                 p95_ms=percentile(tt.e2e, 95), completed=len(tt.e2e), admitted=tt.admitted,
-                rejected_429=tt.rejected, expired_503=tt.expired, inflight=inflight(t)))
+                rejected_429=tt.rejected, expired_503=tt.expired, retries=tt.retries, inflight=inflight(t)))
         self._tenants = defaultdict(_TenantTick)
         self._cells = defaultdict(_CellTick)
         self.frames += 1

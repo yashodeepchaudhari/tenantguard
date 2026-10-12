@@ -1,0 +1,14 @@
+.git
+reshdata
+enhanced-prompts
+docs
+ui
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+**/*.db
+**/*.db-wal
+**/*.db-shm
+lab/results
+**/screenshots
+*.pdf

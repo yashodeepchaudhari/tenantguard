@@ -44,6 +44,11 @@ Product/design background: `docs/FINAL-PLAN.md` (scope tiers, demo), `enhanced-p
 10a. **No AI attribution in git (user rule):** never add `Co-Authored-By: Claude…`, "Generated with Claude Code", or any AI/assistant name to commit messages, PR bodies or files. Plain commit messages only.
 11. **Offline-first:** no external network at runtime except the optional Claude narrator (which has a template fallback).
 12. **Numbers on slides come only from measured runs** (`lab/results/*.json`).
+12a. **This laptop is NOT a Docker host (user rule, 2026-10-12: the laptop hung).**
+  - No docker build/compose/containers here; Docker runs only on the friend's laptop.
+  - Locally run at most **3 workers + gateway + brain**, and kill every process right after each proof run.
+  - Only one session runs a local stack at a time; ask the coordinator first.
+  - The laptop has 8 cores / 7.8 GB, and the Claude sessions themselves use most of the RAM.
 13. **Machine quirks:** Windows 11; PowerShell plus Git Bash. Docker Desktop must be running before any `docker compose` (it was found stopped on 2026-10-12). Use `127.0.0.1`, not `localhost`. Some peers run in "prompting" mode, so permission prompts may appear in their terminals. **Never rewrite UTF-8 files with Windows PowerShell 5 `Get-Content -Raw`/`Set-Content`**: it mis-decodes them and garbles `→ × ≥ §` (this happened on 2026-10-12). Use the Edit tool or Python with `encoding="utf-8"`.
 
 ## §3 Ownership
@@ -310,19 +315,58 @@ Build:
 5. Keep the Control Room on one 1080p screen; add a nav.
 6. Tests + e2e for the new pages; screenshots in `ui/screenshots/`.
 
+### T10: Lab wave 2 + crash-test (T5 session, same worktree)
+**You are TASK T10:** when this is finished, every attack in the demo can be launched, and one command produces the full OFF / Industry / TenantGuard scorecard as RunResult files. That includes the hidden-cost attacks that defeat a plain rate limiter.
+
+You own `lab/**`.
+
+Build:
+1. **Wave 2 attacks** (replace the 501s):
+   - `background_bomb`: POST /api/write bursts → heavy tagged bg jobs
+   - `blackbox_bomb`: POST /api/ingest {docs}; T6 is adding it on the worker, so until it merges, run against a stub and skip the live proof
+   - `cache_flood`: many distinct /api/read keys to evict others
+   - `faulty_server`: worker POST /admin/fault with `FaultReq` from contracts, header X-Admin-Token = env TENANTGUARD_ADMIN_TOKEN; the target is a worker URL from config
+   - `honest_spike`: 8× the persona's normal mix, staying within plan quota
+2. **crash-test runner:** `python -m tenantguard_lab crashtest --scenarios whale,blackbox_bomb,... --modes off,industry,tenantguard --runs N --random-culprit`. It runs RunReq sequentially and writes one RunResult each, plus a summary JSON (`lab/results/summary-<ts>.json`: mean/median per scenario × mode, culprit-correct rate from brain incidents, innocents penalised = incidents/LimitsCmds on non-attackers). If the summary needs fields, propose a `CrashSummary` contract to me.
+3. **Docker-host readiness:** the lab runs on THIS laptop, pointing at the friend's laptop. Make all target URLs come from env (`TENANTGUARD_GATEWAY_URL`, `TENANTGUARD_BRAIN_URL`, `TENANTGUARD_WORKER_URLS`). Add `lab/README.md` "run against the Docker host" with exact commands.
+4. Tests (no stack needed).
+
+Proof: unit tests + a tiny live run of 1 scenario × 3 modes (ask for the stack slot first). The full crash-test runs later on the Docker host.
+
+### T11: Handoff bridge, Web PS3 convergence (T1 session, same worktree)
+**You are TASK T11:** when this is finished, every TenantGuard incident automatically becomes a case in the Web PS3 "Digital Handoff" app, with an owner, pending actions and deadlines. An on-call engineer's handoff, acknowledge or approve in their app flows back and takes effect in TenantGuard live.
+
+You own a NEW top-level dir `integrations/handoff/` (package `tenantguard_handoff`, FastAPI on :8400, Dockerfile, tests). Do not edit `brain/` (T8 owns it). Request any brain endpoint you need from the coordinator.
+
+Inputs:
+- `enhanced-prompts/convergence-web.md` (the agreed contract)
+- `docs/convergence/` (5 sample cases, case-update examples, `handoff-models.py`)
+
+Build:
+1. **Case models:** propose moving `docs/convergence/handoff-models.py` into `contracts.py` (send the exact text). Follow the review rule: IST "HH:MM:SS" strings only on display fields named `*_ist`; epoch floats elsewhere; the adapter converts.
+2. **Outbound:** subscribe to brain WS `/ws/events` (IncidentEvent + StateSnapshot, reconnecting). Build/update a Case per incident_id: title, severity, status, context (verdict, affected = barcode neighbours, evidence_link `http://<ui-host>:5173/case/<id>`, summary from detail), pending_actions (with deadlines from action TTLs), history. `POST {WEB_URL}/cases` on every change (idempotent by case_id), with retry + backoff. Never block, and drop stale updates.
+3. **Inbound:** `POST /cases/update` accepts CaseUpdateOwner / CaseUpdateDecision. Owner → stored, and shown in a `GET /cases/{id}` view. Decision approve/reject/extend/release/resolve → mapped to gateway control (LimitsCmd/BlockCmd/RelocateCmd/TTL extend) via the control token, honouring safety (no permanent block; TTL ≤ ttl_max_s). Note: the brain owns the throttle ladder, so for now decisions apply only to actions the bridge marked pending. Coordinate with me before anything fights the brain.
+4. **Mock Web app** `integrations/handoff/tools/mock_web.py` (receives cases, prints them, can send updates) for a demo without the partner team.
+5. Config: `WEB_URL`, the brain/gateway URLs and the token all from env; add yaml keys only via the coordinator.
+6. Tests: model round-trip of all sample files, event→case mapping, decision→control mapping, the Web app down never blocks, unknown case_id → 404.
+
+Proof: run the mock web + bridge against a recorded event stream (use `brain/tools/fake_gateway.py` + the brain, after asking for the slot) and show a case created → owner change → approve → control command sent.
+
 ## Task table
 
 | Task | Branch | Worktree | Session | Status |
 |---|---|---|---|---|
 | T1 Gateway | task/T1-gateway | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
-| T7 Gateway wave 2 | task/T7-gateway-adaptive | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | in progress |
+| T7 Gateway wave 2 | task/T7-gateway-adaptive | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
+| T11 Handoff bridge (Web PS3 convergence) | task/T11-handoff-bridge | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | assigned |
 | T2 Workers | task/T2-workers | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged** (9cebaaf) |
 | T6 Workers wave 2 | task/T6-worker-blackbox | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | assigned |
 | T3 Brain | task/T3-brain | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | **merged** |
 | T8 Brain integration + health/rescue/decoder | task/T8-brain-detect | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | in progress |
 | T4 UI | task/T4-ui | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | **merged** |
 | T9 UI wave 2 | task/T9-ui-casefile | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | in progress |
-| T5 Lab | task/T5-lab | D:\yashodeep\codeAstra-T5 | codeastra-t5-79 | in progress |
+| T5 Lab | task/T5-lab | D:\yashodeep\codeAstra-T5 | codeastra-t5-79 | **merged** |
+| T10 Lab wave 2 + crash-test | task/T10-lab-crashtest | D:\yashodeep\codeAstra-T5 | codeastra-t5-79 | assigned |
 | Convergence samples | n/a (main dir, docs/convergence/) | main | codeastra-21 | assigned |
 | Review | n/a | main | codeastra-2b | standby |
 
@@ -379,4 +423,16 @@ Build:
   - Brain: time-based baseline (`baseline_half_life_s`, frozen while a neighbour over-uses), hold by `hold_ratio`, sends serialised per tenant, reconcile overrides on start.
   - The UI reads thresholds from `StateSnapshot.noisy_thresholds`.
   - Gateway fixes are T7 step 0; brain fixes T8; UI fixes T9; lab token T5.
+- 2026-10-12: **Docker host is live.**
+  - Friend's laptop `laptop-f8bqbdsi\preeti`: 20 logical CPUs, Docker VM 8 GB.
+  - Reached over **Tailscale 100.112.232.8** (stable across networks; Wi-Fi IP 10.228.100.60 is a fallback). SSH alias `tg-host` is in ~/.ssh/config.
+  - Docker context `tg-host`. Stack command: `docker --context tg-host compose -p codeastra up -d --build`, run from the main repo; it builds from the coordinator's files.
+  - The UI and lab on this laptop use `http://100.112.232.8:8000` (gateway) and `:8200` (brain).
+  - Only the coordinator drives the host; sessions ask the coordinator for host runs.
+- 2026-10-12 (T7, merged): gateway path guard (raw path forwarded), control-token routers, finite TTL/quota bounds, capped body stream, the X-Request-Id rule, disconnect debit. Gradient window on worker-side *excess* latency; three lanes; retry budget; charge/reference_costs (tenantguard only). **Lab note:** the whale must vary its query, because identical failed searches count as retries.
+- 2026-10-12 (T11, accepted):
+  - The partner wire format lives only in the bridge; `CaseView` etc. in contracts §6 use epoch + `*_ist`.
+  - The bridge assigns `INC-NNNN` case IDs (persisted) next to incident_id.
+  - Human release/extend go to the brain as `OperatorCmd` (`POST /api/operator`, T8 adds it) so humans and the ladder never fight. Quarantine approve → gateway BlockCmd, TTL-bound.
+  - Severity: warn low, throttle/deprioritize medium, quarantine/blocked high. Default verdict over_plan until the brain emits verdicts.
 - 2026-10-12: Cost bucket is debited with the worker-measured CPU (`X-TenantGuard-Cpu-Ms`) rather than an estimate, so it is a real resource quota, not a request count.

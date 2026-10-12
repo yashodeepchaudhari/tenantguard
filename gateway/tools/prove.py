@@ -16,8 +16,10 @@ from typing import Optional
 import httpx
 import websockets
 from tenantguard_common.config import load_settings, load_tenants
+from tenantguard_common.contracts import H_CONTROL_TOKEN
 
 KEYS = {t.id: t.api_key for t in load_tenants()}
+TOKEN = {H_CONTROL_TOKEN: os.environ.get("TENANTGUARD_CONTROL_TOKEN", "dev")}
 GW = ""
 
 
@@ -112,7 +114,7 @@ def show(title: str, obj) -> None:
 
 
 async def main() -> None:
-    async with httpx.AsyncClient(base_url=GW, timeout=30) as c:
+    async with httpx.AsyncClient(base_url=GW, timeout=30, headers=TOKEN) as c:
         r = await c.get("/api/light")
         r2 = await c.get("/api/light", headers={"X-API-Key": "tk_nobody"})
         show("1. identity: no key / unknown key", [r.status_code, r.json(), r2.status_code])

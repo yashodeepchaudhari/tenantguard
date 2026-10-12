@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from typing import Dict, Iterable, List, Optional
 
 from tenantguard_common.contracts import Quota, TenantConfig
@@ -36,16 +37,16 @@ def scale_quota(q: Quota, factor: float) -> Quota:
                  cost_ms_per_s=q.cost_ms_per_s * factor, concurrency=max(1, round(q.concurrency * factor)))
 
 
-def quota_problems(q: Quota) -> List[str]:
+def quota_problems(q: Quota, maxima: Optional[Dict[str, float]] = None) -> List[str]:
+    """Every field finite, > 0 and <= its maximum (gateway.quota_max)."""
     errs = []
-    if not q.rate_rps > 0:
-        errs.append("rate_rps must be > 0")
-    if q.burst < 1:
-        errs.append("burst must be >= 1")
-    if not q.cost_ms_per_s > 0:
-        errs.append("cost_ms_per_s must be > 0")
-    if q.concurrency < 1:
-        errs.append("concurrency must be >= 1")
+    for name in ("rate_rps", "burst", "cost_ms_per_s", "concurrency"):
+        v = getattr(q, name)
+        hi = (maxima or {}).get(name)
+        if not (isinstance(v, (int, float)) and math.isfinite(v) and v > 0):
+            errs.append(f"{name} must be a finite number > 0")
+        elif hi is not None and v > hi:
+            errs.append(f"{name} must be <= {hi:g}")
     return errs
 
 
