@@ -49,7 +49,10 @@ worker:
   cache_guaranteed_share: 0.125   # per-tenant guaranteed slice of the cache
   bg_threads: 4
   seed_rows: 1000
-  blackbox: {cpu_ms_per_doc: 2.0, queue_max: 5000}   # "vendor indexer": CPU not attributed to any tenant
+  blackbox: {cpu_ms_per_doc: 2.0, queue_max: 5000}
+  max_request_s: 30             # any single request (e.g. /api/export) must finish within this
+  bg_pending: {per_tenant: 200, total: 1000}   # background-job backlog caps (503 bg_backlog)
+  mem_baseline_mb: 80           # RSS reserved for the process; worker-wide memory cap = mem_limit_mb - this   # "vendor indexer": CPU not attributed to any tenant
 
 brain:
   tick_ms: 250

@@ -299,4 +299,14 @@ Done = pytest passes + the measured black-box noisy-neighbor numbers + calibrati
   - Code reaches Laptop A via a private GitHub remote (pending user OK).
   - Laptop A needs ≥ 8 cores / 16 GB; with fewer, lower `worker.cpus` or use the 6-worker layout.
   - Services must therefore bind `0.0.0.0` and allow CORS from the UI origin; nothing may assume 127.0.0.1 for a peer service (always read URLs from config/env).
+- 2026-10-12 (2b review of T2): these fixes are folded into T6 as step 0, before the black-box work:
+  - #1/#2: tenant allow-list, exact match, else 400 unknown_tenant
+  - #3: deterministic suite (drain jobs before close, close under lock, poll instead of sleep)
+  - #4: export bounded by `worker.max_request_s`
+  - #5: bg backlog caps `worker.bg_pending`
+  - #6: worker-wide memory cap
+  - #7: FaultReq from contracts
+  - #8: 500s carry the CPU header
+
+  T1: treat a missing `X-TenantGuard-Cpu-Ms` header as 0.
 - 2026-10-12: Cost bucket is debited with the worker-measured CPU (`X-TenantGuard-Cpu-Ms`) rather than an estimate, so it is a real resource quota, not a request count.
