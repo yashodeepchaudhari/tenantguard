@@ -499,7 +499,7 @@ Build:
 ### T27: Dashboard clarity fix (T4 session) - user not satisfied
 **You are TASK T27:** when this is finished, a person who has never seen TenantGuard can look at the Control Room for 10 seconds and say what is happening, who is affected, why, and whether the system is doing the right thing. Nothing jumps or overlaps at 1920×1080 or 1366×768.
 
-The user's screenshot (`C:\Users\HARSHA~1\AppData\Local\Temp\claude\D--yashodeep-codeAstra\2055adb8-3563-462a-a7e5-aaccd03f498b\images\4.png`) shows:
+The user's screenshot (shared in the coordinator chat) shows:
 1. The status sentence renders as a huge red 6+ line paragraph that changes size each update, so the page jumps.
 2. The 3×3 server grid text overlaps itself and the panels below.
 3. The bottom panels (p95 chart, CPU stacked, launcher, timeline) are squashed and overlap.

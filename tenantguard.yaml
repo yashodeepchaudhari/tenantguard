@@ -61,6 +61,8 @@ worker:
   max_request_s: 30             # any single request (e.g. /api/export) must finish within this
   bg_pending: {per_tenant: 200, total: 1000}   # background-job backlog caps (503 bg_backlog)
   mem_baseline_mb: 80           # RSS reserved for the process; worker-wide memory cap = mem_limit_mb - this   # "vendor indexer": CPU not attributed to any tenant
+  memory_trim_s: 30            # periodic malloc_trim on glibc
+  max_classes_per_tenant: 256   # per-tenant class meters; overflow folds into "other"
 
 brain:
   tick_ms: 250
