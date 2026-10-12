@@ -261,6 +261,16 @@ class ServerView(BaseModel):
     status: Literal["healthy", "slow", "drained"]
 
 
+class ImpactView(BaseModel):
+    """Brain-owned business impact since `since` (UI keeps its own meter as a fallback)."""
+    since: float                        # epoch s when counting started (brain start or reset)
+    revenue_protected_rs: float         # sum of victims' monthly_revenue_rs x SLO-violation seconds avoided / 2_592_000
+    customers_shielded: List[str]       # threatened tenants that stayed within SLO
+    slo_violation_avoided_s: float
+    slo_violation_suffered_s: float
+    innocents_penalised: List[str]      # acted on while their own score < warn; must stay empty
+
+
 class StateSnapshot(BaseModel):
     type: Literal["state"] = "state"
     ts: float
@@ -271,6 +281,7 @@ class StateSnapshot(BaseModel):
     fairness: float               # Jain index 0..1 over per-tenant (completed rps / weight) of active tenants
     status_sentence: str
     brain_ok: bool = True
+    impact: Optional[ImpactView] = None
     noisy_thresholds: Dict[str, float] = Field(default_factory=dict)   # e.g. {"warn":1.5,"throttle":2.0,"quarantine":4.0} from brain.noisy; UI must use these, not its own copies
 
 
