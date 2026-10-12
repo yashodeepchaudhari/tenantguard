@@ -522,6 +522,30 @@ Build:
 
 Done = screenshots at both sizes from the REAL host (fixed brain), plus the tests.
 
+### T26: Final docs refresh (T1 session, worktree codeAstra-T1)
+**You are TASK T26:** when this is finished, every doc tells the truth about the FINAL system on master (59d0920 + 3fd756b), with measured numbers.
+
+Branch: `git checkout -b task/T26-docs-final master` (your old WIP branch task/T26-docs-refresh may be reused for text, but start from master). For this task you own `README.md`, `docs/SUBMISSION.md`, `docs/SETUP.md`, `docs/architecture.html` + `docs/Architecture.pdf`, and `prototype-docs/**`.
+
+Facts to apply (all on master):
+1. **Merged:**
+   - T12 brain: DockerProver relocation proof; 5 verdicts; calibration (sustained signals, SLA floor ≈25 ms, over_use 1.6, min_hurt_neighbours 4, warn hold 5 s); held hosts; ChargeCmd sender; tuning keys now in tenantguard.yaml.
+   - Also merged: T10 tiers/SLA/run marks; T25 scorecard runner; T17 billing; tier rebalance (A pro, F ent, G free, L ent; per-tenant sla_p95_ms); T28 worker memory fix; T27/T30 UI clarity.
+2. **Wave-2 lab attacks are NOT included** (user decision). Say "not included", never "in progress". The faulty-server scene is triggered via the worker's /admin/fault.
+3. **Measured scorecard:** `lab/results/summary-scorecard-host.json` + 18 RunResult files. Medians, victim p99 baseline→attack→after (ms):
+   - whale off 149→691→254; whale industry 157→176→165; whale tenantguard 158→183→154;
+   - flood off 200→162→186; flood industry 166→164→163; flood tenantguard 143→144→175;
+   - innocents penalised: none in any run.
+
+   State honestly: whale and flood are contained by the gateway limits that both protected modes share, so industry ≈ tenantguard on these two. The brain's distinct value is shown by the host-acceptance scenarios (PLAN decisions log 2026-10-13): a big-plan whale (named 99%, proved R=0.88, honest_growth, victims rerouted) and a faulty server (host_fault, 5.1× idle, no tenant blamed). Quote those from the log, labelled "host acceptance run".
+   - Note the anomaly: one OFF-mode flood run recorded 1,522 refused requests (likely a mode-switch carry-over).
+4. Test counts on master: gateway 94, worker 53 + 1 Linux-only skip, brain 166, lab 49, billing 25, handoff 47, narrator 9, tools 16 (459 Python); UI unit + e2e per ui/.
+5. Update the `11_FILES_*` catalogs for changed code: brain (prover, verdicts, health, decoder, held hosts, charge), lab (scorecard.py, marks), billing (new file `11_FILES_billing.md`), ui (T27/T30), worker (already done in T29). Update 00_INDEX, 01_OVERVIEW status, 05 sequence diagrams (prover/verdict/held-host), 06 risks, 07 unique, 09 config (all new yaml keys), 10 testing.
+6. Re-render the PDF and check it page by page.
+7. No tool attribution anywhere. Plain commits.
+
+Done = the files updated, the term grep empty, the PDF checked; report the file list.
+
 ## Task table
 
 | Task | Branch | Worktree | Session | Status |
