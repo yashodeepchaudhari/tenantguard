@@ -15,8 +15,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence
 
-MIN_WEIGHT = 0.0
-
 
 @dataclass
 class RescuePlan:
