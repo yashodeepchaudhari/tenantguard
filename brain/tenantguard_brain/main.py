@@ -2,15 +2,18 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
+import math
 import time
 from contextlib import asynccontextmanager
 from typing import List, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from tenantguard_common.contracts import IncidentEvent, StateSnapshot
+from tenantguard_common.contracts import H_CONTROL_TOKEN, ControlAck, IncidentEvent, OperatorCmd, StateSnapshot
 
 from . import settings as settings_mod
 from .runtime import Runtime
@@ -44,6 +47,21 @@ def create_app(cfg: Optional[settings_mod.BrainSettings] = None, start_loops: bo
     def incidents(incident_id: Optional[str] = None, tenant: Optional[str] = None,
                   limit: int = 200) -> List[IncidentEvent]:
         return rt.brain.book.events(incident_id=incident_id, tenant=tenant, limit=limit)
+
+    @app.post("/api/operator", response_model=ControlAck)
+    def operator(cmd: OperatorCmd, token: Optional[str] = Header(None, alias=H_CONTROL_TOKEN)):
+        def fail(code: int, detail: str):
+            return JSONResponse(ControlAck(ok=False, detail=detail).model_dump(), status_code=code)
+        if not hmac.compare_digest(token or "", cfg.control_token):
+            return fail(401, "missing or wrong control token")
+        if not math.isfinite(cmd.until_s) or not (0 < cmd.until_s <= cfg.ttl_max_s):
+            return fail(400, f"until_s must be finite and in (0, {cfg.ttl_max_s:g}]")
+        if cmd.tenant not in rt.brain.tenants:
+            return fail(404, f"unknown tenant {cmd.tenant}")
+        events = rt.brain.operator(cmd, time.time())
+        rt._publish(events)
+        return ControlAck(ok=True, detail=f"{cmd.decision} {cmd.tenant} by {cmd.by}"
+                          + (f" for {cmd.until_s:g} s" if cmd.decision != "resume" else ""))
 
     @app.get("/api/debug")
     def debug() -> dict:

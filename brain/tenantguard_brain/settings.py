@@ -31,6 +31,7 @@ class BrainSettings:
     baseline_half_life_s: float = 60.0
     default_mode: str = "tenantguard"
     control_token: str = "dev"
+    ttl_max_s: float = 3600.0
     min_victim_impact: float = 0.2
     slow_peer_ratio: float = 1.6
     slow_abs_ms: float = 8.0
@@ -76,6 +77,7 @@ def load(raw: dict | None = None) -> BrainSettings:
         baseline_half_life_s=float(noisy.get("baseline_half_life_s", 60.0)),
         default_mode=str(raw["gateway"].get("default_mode", "tenantguard")),
         control_token=os.environ.get("TENANTGUARD_CONTROL_TOKEN", "dev"),
+        ttl_max_s=float(raw["gateway"].get("ttl_max_s", 3600)),
         min_victim_impact=float(noisy.get("min_victim_impact", 0.2)),
         slow_peer_ratio=float(health.get("slow_peer_ratio", 1.6)),
         slow_abs_ms=float(health.get("slow_abs_ms", 8)),

@@ -9,8 +9,8 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Deque, Dict, List, Optional, Tuple
 
-from tenantguard_common.contracts import (IncidentEvent, LimitsCmd, OverridesView, RouteWeightsCmd, ServerView,
-                                          StateSnapshot, TelemetryFrame, TenantView, WorkerStats)
+from tenantguard_common.contracts import (IncidentEvent, LimitsCmd, OperatorCmd, OverridesView, RouteWeightsCmd,
+                                          ServerView, StateSnapshot, TelemetryFrame, TenantView, WorkerStats)
 
 from . import ladder as lad
 from .fairness import jain, normalized_throughput
@@ -42,6 +42,15 @@ class Sent:
     at: float
     ttl: float
     ok: Optional[bool] = None      # None = in flight
+
+
+@dataclass
+class OperatorHold:
+    decision: str                  # release | extend
+    until: float
+    by: str
+    case_id: Optional[str] = None
+    suppressed: bool = False       # a 'would escalate' note was already emitted
 
 
 @dataclass
@@ -89,6 +98,7 @@ class Brain:
         self.calm = True
         self.hurt_off = cfg.min_victim_impact / 2.0
         self.s3 = Stage3(self)
+        self.holds: Dict[str, OperatorHold] = {}
 
     # ------------------------------------------------------------------ ingest
     def ingest_frame(self, frame: TelemetryFrame, now: float) -> None:
@@ -293,9 +303,13 @@ class Brain:
             not (s.flagged and s.score >= self.p.warn) for s in self.scores.values())
 
         fresh = self.telemetry_fresh(now)
+        res.events.extend(self._expire_holds(now))
         if fresh and self.mode == ACTING_MODE:
             for t, st in self.ladders.items():
                 sd = self.scores[t]
+                if t in self.holds:
+                    res.events.extend(self._held_tick(t, sd, now))
+                    continue                # a human decision owns this tenant until the hold ends
                 sig = lad.Signal(score=sd.score, flagged=sd.flagged, unhurt=sd.victim_impact < self.hurt_off)
                 tr = lad.step(st, sig, now, self.p)
                 if tr:
@@ -312,6 +326,89 @@ class Brain:
         res.route_cmds = routes
         res.commands = self._commands(now)
         return res
+
+    # ------------------------------------------------------------------ operator decisions
+    def operator(self, cmd: OperatorCmd, now: float) -> List[IncidentEvent]:
+        """Apply a human decision (validated by the caller). The ladder obeys it, so humans and the ladder
+        never fight: release = back to normal and no re-escalation until the hold ends; extend = keep the
+        current level/factors (TTLs keep being renewed) until the hold ends; resume = cancel any hold."""
+        t, who = cmd.tenant, cmd.by
+        st = self.ladders[t]
+        until = now + cmd.until_s
+        case = f" (case {cmd.case_id})" if cmd.case_id else ""
+        out: List[IncidentEvent] = []
+        if cmd.decision == "resume":
+            had = self.holds.pop(t, None)
+            if had:
+                self._restart_holds(st, now)
+            inc = self.book.open.get(t)
+            if inc is not None:
+                out.append(self.book.emit(inc, now, "level_change", level=st.level, prev_level=st.level,
+                                          action=f"operator resume by {who}",
+                                          detail=f"Operator resume by {who}{case}: "
+                                                 + ("the automatic ladder is back in charge."
+                                                    if had else "there was no operator hold.")))
+            return out
+        self.holds[t] = OperatorHold(cmd.decision, until, who, cmd.case_id)
+        if cmd.decision == "release":
+            inc = self.book.open_for(t, now)
+            prev = st.level
+            tr = lad.reset(st, now, f"operator release by {who}")
+            action = (self._action_text(1.0, 1.0, "normal") if tr else None)
+            out.append(self.book.emit(inc, now, "level_change", level="normal", prev_level=prev,
+                                      action=f"operator release by {who}" + (f"; {action}" if action else ""),
+                                      detail=f"Operator hold by {who}{case}: released {self.tenants[t].name} ({t}) "
+                                             f"from {prev} to normal; limits cleared and no automatic escalation "
+                                             f"for {cmd.until_s:g} s."))
+        else:  # extend
+            inc = self.book.open_for(t, now)
+            out.append(self.book.emit(inc, now, "level_change", level=st.level, prev_level=st.level,
+                                      action=f"operator extend by {who}",
+                                      detail=f"Operator hold by {who}{case}: keeping {self.tenants[t].name} ({t}) at "
+                                             f"{st.level} (factor {st.factor:.2f}, weight factor "
+                                             f"{st.weight_factor:.2f}) for {cmd.until_s:g} s; overrides are renewed "
+                                             f"until then, then the automatic ladder resumes."))
+        return out
+
+    @staticmethod
+    def _restart_holds(st: lad.LadderState, now: float) -> None:
+        """The ladder saw no ticks during an operator hold: every rung needs a fresh, full hold."""
+        for hd in (st.warn, st.throttle, st.quarantine, st.calm):
+            hd.samples.clear()
+            hd.start = None
+        st.last_recover_at = None
+
+    def _held_tick(self, t: str, sd: ScoreDetail, now: float) -> List[IncidentEvent]:
+        h = self.holds[t]
+        if h.decision != "release" or h.suppressed or not (sd.flagged and sd.score >= self.p.warn):
+            return []
+        h.suppressed = True
+        inc = self.book.open_for(t, now)
+        return [self.book.emit(inc, now, "level_change", level="normal", prev_level="normal",
+                               action=f"operator hold by {h.by}",
+                               detail=f"Operator hold by {h.by}: escalation suppressed until the hold ends in "
+                                      f"{h.until - now:.0f} s. {self._evidence(t)}")]
+
+    def _expire_holds(self, now: float) -> List[IncidentEvent]:
+        out = []
+        for t, h in list(self.holds.items()):
+            if now < h.until:
+                continue
+            del self.holds[t]
+            st = self.ladders[t]
+            self._restart_holds(st, now)
+            inc = self.book.open.get(t)
+            if inc is None:
+                continue
+            out.append(self.book.emit(inc, now, "level_change", level=st.level, prev_level=st.level,
+                                      action=f"operator hold by {h.by} ended",
+                                      detail=f"Operator hold by {h.by} ({h.decision}) ended; the automatic ladder "
+                                             f"resumes from {st.level}."))
+            if st.level == "normal" and not st.acting:
+                out.append(self.book.emit(inc, now, "closed", level="normal",
+                                          detail=f"Incident closed after the operator hold by {h.by}."))
+                self.book.close(inc, now)
+        return out
 
     # ------------------------------------------------------------------ incidents
     def _evidence(self, t: str) -> str:
@@ -363,7 +460,7 @@ class Brain:
                                       detail=f"{self.tenants[t].name} ({t}) is back to its full plan; "
                                              f"neighbours have stayed healthy. Watching for {self.p.hold['warn']:g} s "
                                              f"before closing."))
-        if tr.level == "normal":
+        if tr.level == "normal" and t not in self.holds:
             dur = now - inc.opened_at
             out.append(self.book.emit(inc, now, "closed", level="normal",
                                       detail=f"Incident closed after {dur:.0f} s (worst level: {inc.peak}). "
