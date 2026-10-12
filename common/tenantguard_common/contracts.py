@@ -97,7 +97,8 @@ class QueueStat(BaseModel):
     completed: int
     admitted: int
     rejected_429: int            # refused by admission (rate / cost / concurrency / block)
-    expired_503: int             # dropped after bounded wait
+    expired_503: int             # dropped after bounded wait, or batch shed under saturation
+    retries: int = 0             # requests identified as retries (repeated Idempotency-Key, or a repeat of a request that failed with 429/503/5xx in the last retry_budget.window_s)
     inflight: int
 
 
@@ -198,6 +199,19 @@ class ReferenceCostsCmd(BaseModel):
     costs: Dict[str, float]                   # cls -> reference CPU ms
 
 
+class ChargeCmd(BaseModel):
+    """Brain -> gateway POST /control/charge: CPU a tenant used OUTSIDE the request path (background jobs), debited from its cost bucket.
+
+    Not an override: no TTL, applied once, only in `tenantguard` mode (otherwise acked with detail "ignored: mode").
+    Gateway returns 400 if cpu_ms < 0 or not finite, or the tenant is unknown.
+    `charge_id` makes resends idempotent (the gateway remembers the last 1024 ids); None = always apply.
+    """
+    tenant: str
+    cpu_ms: float                 # CPU ms to debit
+    period_s: float = 1.0         # interval the charge covers (informational, for metrics)
+    charge_id: Optional[str] = None
+
+
 class Heartbeat(BaseModel):
     ts: float                                 # sender's clock; gateway uses its OWN receive time for fail-static
 
@@ -277,6 +291,13 @@ class IncidentEvent(BaseModel):
     action: Optional[str] = None
     detail: str = ""                      # plain-English reason (every action stores why)
     report: Optional[dict] = None
+
+
+class FaultReq(BaseModel):
+    """Worker POST /admin/fault (header X-Admin-Token). Simulates a faulty host."""
+    latency_ms: float = Field(0.0, ge=0, le=10_000)
+    cpu_burn_pct: float = Field(0.0, ge=0, le=100)
+    duration_s: Optional[float] = Field(None, gt=0, le=3600)   # auto-clear; None = until DELETE
 
 
 # ---------- 5. Lab (lab service :8300) ----------

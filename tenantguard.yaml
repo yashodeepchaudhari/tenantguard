@@ -38,6 +38,9 @@ gateway:
   cost_bucket_s: 2              # cost bucket capacity = cost_ms_per_s * this
   express_cost_ms: 5            # classes cheaper than this skip ahead
   fail_static_after_s: 2
+  batch_routes: ["/api/export"]
+  upstream_timeout_s: 30
+  retry_budget: {ratio: 0.1, window_s: 10, min_allowed: 3}   # retries allowed <= max(min_allowed, ratio * first attempts in window); else 429 retry_budget
   limiter: {min_window: 2, max_window: 64, initial_window: 8}
 
 worker:
@@ -45,6 +48,14 @@ worker:
   mem_limit_mb: 256
   body_limit_bytes: 1048576
   tenant_mem_budget_mb: 32
+  cache_mb: 8
+  cache_guaranteed_share: 0.125   # per-tenant guaranteed slice of the cache
+  bg_threads: 4
+  seed_rows: 1000
+  blackbox: {cpu_ms_per_doc: 2.0, queue_max: 5000}
+  max_request_s: 30             # any single request (e.g. /api/export) must finish within this
+  bg_pending: {per_tenant: 200, total: 1000}   # background-job backlog caps (503 bg_backlog)
+  mem_baseline_mb: 80           # RSS reserved for the process; worker-wide memory cap = mem_limit_mb - this   # "vendor indexer": CPU not attributed to any tenant
 
 brain:
   tick_ms: 250
@@ -58,6 +69,13 @@ brain:
     hold_s: {warn: 2, throttle: 2, deprioritize: 4, quarantine: 6, recover: 10}
     throttle_factor: 0.5        # AIMD multiplicative decrease
     recover_step: 0.1           # additive increase per recovery tick
+    min_victim_impact: 0.2      # neighbours must be hurt at least this much before anyone is flagged
+    baseline_alpha: 0.05        # calm-period EWMA for baseline p95
+    recover_tick_s: 1.0
+    throttle_floor: 0.25        # lowest factor reached by AIMD before deprioritize
+    deprioritize_weight: 0.25
+    quarantine_factor: 0.1
+    quarantine_weight: 0.1
   # Stage 3: TenantGuard (calibrated at H3-H4)
   health:
     probe_window_ticks: 8
