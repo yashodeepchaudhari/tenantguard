@@ -73,7 +73,7 @@ brain:
     throttle: 2.0
     quarantine: 4.0
     recover_below: 1.0
-    hold_s: {warn: 2, throttle: 2, deprioritize: 4, quarantine: 6, recover: 10}
+    hold_s: {warn: 5, throttle: 2, deprioritize: 4, quarantine: 6, recover: 10}
     throttle_factor: 0.5        # AIMD multiplicative decrease
     recover_step: 0.1           # additive increase per recovery tick
     min_victim_impact: 0.2      # neighbours must be hurt at least this much before anyone is flagged

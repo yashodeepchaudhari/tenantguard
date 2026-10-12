@@ -36,7 +36,7 @@ def test_whale_is_detected_throttled_and_recovers(cfg):
     assert {c.tenant for _, c in commands} == {"K"}
     # detected during the attack (starts at +20 s), within a few seconds
     detected = [e for e in events if e.stage == "detected"]
-    assert len(detected) == 1 and 20 < detected[0].ts - T0 < 26
+    assert len(detected) == 1 and 20 < detected[0].ts - T0 < 29          # 5 s window + 5 s warn hold
     # the ladder walk: warn -> throttle (x0.5) and only as far down as needed. With the balanced layout
     # (no server hosts all the enterprise tenants) K's neighbours stop being hurt after the first halving,
     # so the ladder holds at 0.5 (later commands at 0.5 are TTL renewals) and never needs 0.25.
@@ -45,7 +45,7 @@ def test_whale_is_detected_throttled_and_recovers(cfg):
     factors = [c.factor for _, c in commands]
     assert factors[0] == 0.5
     lowest = min(factors)
-    assert lowest in (0.5, 0.25)                                  # x0.5 steps only, floor 0.25
+    assert lowest >= cfg.ladder.throttle_floor - 1e-9             # never below the floor (AIMD may halve 0.8 -> 0.4)
     assert all(b >= a or b == a * 0.5 for a, b in zip(factors, factors[1:]))   # down only by halving
     # recovery after the attack stops (+60 s): back to full plan and incident closed
     assert brain.ladders["K"].level == "normal" and brain.ladders["K"].factor == 1.0
@@ -79,10 +79,18 @@ def test_every_event_explains_why(cfg):
 
 
 def test_actions_are_renewed_while_needed(cfg):
-    brain, _, _, commands, _ = whale_run(cfg)
-    # K stays throttled ~35 s with TTL 60 s: at least one renewal of an unchanged factor (every ttl/4)
-    same = [(a, b) for (_, a), (_, b) in zip(commands, commands[1:]) if a.factor == b.factor]
-    assert same
+    from tenantguard_brain.core import Sent
+    brain = Brain(cfg)
+    st = brain.ladders["K"]
+    st.level, st.factor = "throttle", 0.5
+    ttl = cfg.ladder.ttl_throttle
+    brain.sent["K"] = Sent(0.5, 1.0, T0, ttl, ok=True)
+    assert brain._commands(T0 + ttl / 4 - 1) == []                       # not yet
+    renew = brain._commands(T0 + ttl / 4)                                 # every ttl/4 while acting
+    assert [(c.tenant, c.factor, c.weight_factor, c.ttl_s) for c in renew] == [("K", 0.5, 1.0, ttl)]
+    brain.mark_sent(renew[0], False, T0 + ttl / 4)                        # refused -> retried after 1 s
+    assert brain._commands(T0 + ttl / 4 + 0.5) == []
+    assert [c.factor for c in brain._commands(T0 + ttl / 4 + 1.0)] == [0.5]
 
 
 def test_failed_sends_are_retried(cfg):
