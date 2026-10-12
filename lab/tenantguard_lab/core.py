@@ -51,11 +51,13 @@ class RunInfo:
     planned_end: float = 0.0
     result: Optional[RunResult] = None
     error: Optional[str] = None
+    marks: Optional[Marks] = None     # actual phase timestamps, set when the timeline finishes
 
     def view(self) -> Dict[str, Any]:
         return {"run_id": self.run_id, "state": self.state, "phase": self.phase, "scenario": self.req.scenario,
                 "mode": self.req.mode, "attacker": self.attacker, "started_at": self.started_at,
                 "planned_end": self.planned_end, "error": self.error,
+                "marks": dict(self.marks.__dict__) if self.marks else None,
                 "result": self.result.model_dump() if self.result else None}
 
 
@@ -257,6 +259,7 @@ class Lab(ScenarioDriver):
     async def _run(self, info: RunInfo, tl: Timeline) -> None:
         try:
             marks = await run_timeline(self, info.req, info.attacker, tl)
+            info.marks = marks
             info.phase = "computing"
             ttd = await self.time_to_detect(marks, info.attacker)
             result = compute_result(

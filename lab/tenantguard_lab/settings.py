@@ -27,13 +27,17 @@ class Persona:
     tenant: TenantConfig
     rps: float
     mix: Dict[str, float]
-    sla_p95_ms: float = 100.0
     end_users: int = 0
     note: str = ""
 
     @property
     def id(self) -> str:
         return self.tenant.id
+
+    @property
+    def sla_p95_ms(self) -> float:
+        """The layout (TenantConfig) is the source of truth for SLA."""
+        return float(self.tenant.sla_p95_ms)
 
 
 @dataclass
@@ -86,7 +90,7 @@ def load_config(personas_path: Optional[Path] = None) -> LabConfig:
             raise ValueError(f"persona {tid}: unknown request kinds {sorted(unknown)}")
         personas[tid] = Persona(
             tenant=t, rps=float(p.get("rps", 5.0)), mix=dict(mix),
-            sla_p95_ms=float(p.get("sla_p95_ms", 100.0)), end_users=int(p.get("end_users", 0)),
+            end_users=int(p.get("end_users", 0)),
             note=p.get("note", ""),
         )
 
