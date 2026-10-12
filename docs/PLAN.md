@@ -496,6 +496,32 @@ Build:
 3. Tests with a mocked lab/brain transport.
 4. The real run happens on the Docker host via the coordinator. Send the exact command.
 
+### T27: Dashboard clarity fix (T4 session) - user not satisfied
+**You are TASK T27:** when this is finished, a person who has never seen TenantGuard can look at the Control Room for 10 seconds and say what is happening, who is affected, why, and whether the system is doing the right thing. Nothing jumps or overlaps at 1920×1080 or 1366×768.
+
+The user's screenshot (`C:\Users\HARSHA~1\AppData\Local\Temp\claude\D--yashodeep-codeAstra\2055adb8-3563-462a-a7e5-aaccd03f498b\images\4.png`) shows:
+1. The status sentence renders as a huge red 6+ line paragraph that changes size each update, so the page jumps.
+2. The 3×3 server grid text overlaps itself and the panels below.
+3. The bottom panels (p95 chart, CPU stacked, launcher, timeline) are squashed and overlap.
+4. A, B and G show THROTTLE with no visible reason, and there's no indicator of whether an attack is running.
+
+Build:
+1. **Fixed-height status bar:**
+   - A one-line headline from structured data: `No attack · 12 tenants healthy` / `Attack: whale on K · 9 tenants protected` / `Server w4 slow · 4 tenants moved away · no tenant blamed`.
+   - A small second line of details, truncated; the full brain sentence in a tooltip.
+   - Normal text size.
+2. **Scenario badge** from lab `/lab/status`: Calm traffic / Attack: whale on K (0:42 left) / No traffic.
+3. **Why line on every non-normal tile:** a short reason from the latest IncidentEvent for that tenant, plus a link to its Case File. A badge never appears without a reason.
+4. **Layout:**
+   - Grid min-heights; fixed-size server tiles with clamped text; fixed chart heights (~220 px).
+   - Nothing overlaps at 1366×768 or 1920×1080 (scrolling is fine).
+   - Playwright screenshots at both sizes, plus an e2e assertion that the panels' bounding boxes don't overlap.
+5. **Legend line:** `p95 = slowest 5% response time · THROTTLE = its limits are reduced · fair share = its tier's portion`.
+6. Keep the T24 suites green; add tests for the headline builder and the scenario badge.
+
+Done = screenshots at both sizes from the REAL host (fixed brain), plus the tests.
+
+## Task table
 
 | Task | Branch | Worktree | Session | Status |
 |---|---|---|---|---|
@@ -505,6 +531,7 @@ Build:
 | T14 Demo driver (`tools/demo.py`) | task/T14-demo-runbook | D:\yashodeep\codeAstra-T1 | codeastra-t1-32 | **merged** |
 | T16 Submission docs | task/T16-submission-docs | D:\yashodeep\codeAstra-T1 | codeastra-t1-32 | **merged** (re-check after T10/T12) |
 | T24 Playwright e2e verification | task/T24-playwright | D:\yashodeep\codeAstra-T4 | codeastra-t4-0e | assigned |
+| T27 Dashboard clarity fix | task/T27-ui-clarity | D:\yashodeep\codeAstra-T4 | codeastra-t4-0e | assigned (top priority) |
 | T22 Prototype docs pack (`prototype-docs/`, 20 files, 6.7k lines) | T22a/b/c + 2b | 4 writers | T1, T2, T4, 2b | **merged** |
 | T23 Handoff tools token + telemetry counter bug + docstring | task/T23-handoff-token-tools | D:\yashodeep\codeAstra-T1 | codeastra-t1-32 | assigned |
 | T21 Narrator template-only (user decision) | task/T21-narrator-template-only | D:\yashodeep\codeAstra-T1 | codeastra-t1-32 | **merged** (with the coordinator scrub branch) |
