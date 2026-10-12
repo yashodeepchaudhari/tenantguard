@@ -242,12 +242,28 @@ Prove it: run against a stub gateway (a 10-line FastAPI that sleeps 2 ms), then 
 
 ---
 
+### T6: Workers wave 2 (same session as T2, same worktree)
+**You are TASK T6:** when this is finished, the worker hosts a realistic "vendor component" whose CPU no tenant meter can see. That is the hidden-cost attack every rate limiter misses. The lab can also calibrate traffic from measured endpoint costs.
+
+You own `worker/**`.
+
+Build:
+1. `blackbox.py`: a separate `multiprocessing` child process (the "vendor indexer") fed by a queue. `POST /api/ingest {docs:int}` enqueues work: each doc costs a fixed CPU amount inside the child. The handler itself stays cheap (<1 ms), so `X-TenantGuard-Cpu-Ms` and the tenant meters stay small. The child's CPU, read with psutil on the child, is reported ONLY as cumulative `WorkerStats.blackbox_cpu_ms`, never per tenant. The queue is bounded (drop + count when full). The child is restarted if it dies.
+2. The black-box work must really slow co-located tenants: verify that `/api/light` p95 for tenant A on the same worker rises under sustained ingest from K, while K's own handler CPU stays near zero. Report the numbers, as in the T2 demo.
+3. Import `FaultReq` from `tenantguard_common.contracts` (now added) instead of the local model. Keep the behaviour.
+4. Read the new yaml keys (`worker.cache_mb`, `cache_guaranteed_share`, `bg_threads`, `seed_rows`, now in `tenantguard.yaml`), and add `worker.blackbox: {cpu_ms_per_doc, queue_max}`. Send that key to the coordinator as a request; default it in code meanwhile.
+5. `worker/tools/calibrate.py`: inside Docker (0.5 CPU), measure the mean/p95 handler CPU and latency of every endpoint at default params, and write `worker/calibration.json`. T5 uses it to size the personas to ~30% fleet CPU. Run it in Docker on this laptop if Docker is up; otherwise locally, and say which.
+6. Tests: black-box CPU never appears in tenant meters; the queue bound; child restart; FaultReq from contracts.
+
+Done = pytest passes + the measured black-box noisy-neighbor numbers + calibration.json committed. Same protocol: started / blocked / done to `codeastra-ea`; no AI attribution in commits.
+
 ## Task table
 
 | Task | Branch | Worktree | Session | Status |
 |---|---|---|---|---|
 | T1 Gateway | task/T1-gateway | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | in progress |
-| T2 Workers | task/T2-workers | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | in progress |
+| T2 Workers | task/T2-workers | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged** (9cebaaf) |
+| T6 Workers wave 2 | task/T6-worker-blackbox | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | assigned |
 | T3 Brain | task/T3-brain | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | in progress |
 | T4 UI | task/T4-ui | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | in progress |
 | T5 Lab | task/T5-lab | D:\yashodeep\codeAstra-T5 | codeastra-t5-79 | in progress |

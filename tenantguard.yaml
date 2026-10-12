@@ -45,6 +45,10 @@ worker:
   mem_limit_mb: 256
   body_limit_bytes: 1048576
   tenant_mem_budget_mb: 32
+  cache_mb: 8
+  cache_guaranteed_share: 0.125   # per-tenant guaranteed slice of the cache
+  bg_threads: 4
+  seed_rows: 1000
 
 brain:
   tick_ms: 250

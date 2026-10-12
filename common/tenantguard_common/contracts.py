@@ -279,6 +279,13 @@ class IncidentEvent(BaseModel):
     report: Optional[dict] = None
 
 
+class FaultReq(BaseModel):
+    """Worker POST /admin/fault (header X-Admin-Token). Simulates a faulty host."""
+    latency_ms: float = Field(0.0, ge=0, le=10_000)
+    cpu_burn_pct: float = Field(0.0, ge=0, le=100)
+    duration_s: Optional[float] = Field(None, gt=0, le=3600)   # auto-clear; None = until DELETE
+
+
 # ---------- 5. Lab (lab service :8300) ----------
 AttackName = Literal["flood", "whale", "hog", "memory", "retry_storm", "background_bomb",
                      "blackbox_bomb", "cache_flood", "faulty_server", "honest_spike"]
