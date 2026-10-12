@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hmac
 import logging
+import os
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -24,12 +26,13 @@ from typing import Dict, List, Optional, Set
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
 from pydantic import ValidationError  # noqa: E402
 
 from tenantguard_common.config import load_settings, load_tenants  # noqa: E402
-from tenantguard_common.contracts import (BlockCmd, ControlAck, DrainCmd, Heartbeat, LimitsCmd,  # noqa: E402
-                                          ModeBody, OverridesView, RelocateCmd, RouteWeightsCmd,
-                                          TelemetryFrame)
+from tenantguard_common.contracts import (H_CONTROL_TOKEN, BlockCmd, ControlAck, DrainCmd,  # noqa: E402
+                                          FaultReq, Heartbeat, LimitsCmd, ModeBody, OverridesView,
+                                          RelocateCmd, RouteWeightsCmd, TelemetryFrame)
 
 from tenantguard_brain.sim import Simulator, whale_scenario  # noqa: E402
 
@@ -103,6 +106,35 @@ def build_app(args) -> FastAPI:
     @app.get("/internal/telemetry/latest", response_model=Optional[TelemetryFrame])
     def latest():
         return st["latest"]
+
+    token = os.environ.get("TENANTGUARD_CONTROL_TOKEN", "dev")
+
+    @app.middleware("http")
+    async def control_token(request: Request, call_next):
+        # like the real gateway: /admin/* and /control/* need the control token
+        if request.url.path.startswith(("/admin", "/control")) and                 not hmac.compare_digest(request.headers.get(H_CONTROL_TOKEN, ""), token):
+            return JSONResponse({"ok": False, "detail": "missing or wrong control token"}, status_code=401)
+        return await call_next(request)
+
+    @app.get("/fake/workers/{server}/canary")
+    async def canary(server: str):
+        sim: Simulator = st["sim"]
+        if server not in sim.workers:
+            raise HTTPException(404, "unknown server")
+        await asyncio.sleep(sim.canary_ms(server) / 1000.0)
+        return {"ok": True}
+
+    @app.post("/fake/workers/{server}/admin/fault")
+    def set_fault(server: str, body: FaultReq):
+        st["sim"].set_fault(server, body.latency_ms)
+        log.info("FAULT %s latency_ms=%g", server, body.latency_ms)
+        return {"server": server, "latency_ms": body.latency_ms}
+
+    @app.delete("/fake/workers/{server}/admin/fault")
+    def clear_fault(server: str):
+        st["sim"].set_fault(server, 0.0)
+        log.info("FAULT %s cleared", server)
+        return {"server": server, "latency_ms": 0.0}
 
     @app.get("/fake/workers/{server}/stats")
     def stats(server: str):
@@ -196,9 +228,19 @@ def build_app(args) -> FastAPI:
     @app.post("/control/route_weights", response_model=ControlAck)
     async def control_rw(request: Request):
         cmd: RouteWeightsCmd = await parse(request, RouteWeightsCmd)
+        sim: Simulator = st["sim"]
+        for t, w in cmd.weights.items():
+            if t not in sim.tenants:
+                raise HTTPException(400, f"unknown tenant {t}")
+            bad = [s for s in w if s not in sim.workers]
+            if bad or any(v < 0 for v in w.values()) or not any(v > 0 for v in w.values()):
+                raise HTTPException(400, f"bad weights for {t}: {w}")
         route_weights.update(cmd.weights)
+        sim.apply_route_weights(cmd.weights, cmd.ttl_s)
         control_log.append({"ts": time.time(), "kind": "route_weights", **cmd.model_dump()})
-        return ControlAck(ok=True, detail="stored (not simulated)")
+        log.info("CONTROL route_weights %s ttl=%gs", {t: {s: round(v, 2) for s, v in w.items()}
+                                                       for t, w in cmd.weights.items()}, cmd.ttl_s)
+        return ControlAck(ok=True, detail="applied")
 
     @app.post("/control/relocate", response_model=ControlAck)
     async def control_relocate(request: Request):

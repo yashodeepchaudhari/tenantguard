@@ -98,16 +98,21 @@ def test_queue_occupancy_dimension():
     assert sc["K"].dominant == "queue" and sc["K"].flagged
 
 
-def test_baseline_ewma():
-    b = BaselineTracker(alpha=0.1)
+def test_baseline_ewma_is_time_based():
+    b = BaselineTracker(half_life_s=60, warmup=4)
     assert b.get("A") is None and not b.ready("A")
+    t = 0.0
     for v in (10, 12, 8, 10):
-        b.update("A", v)
+        t += 0.25
+        b.update("A", v, t)
     assert b.get("A") == pytest.approx(10.0)          # warm-up = running mean
     assert b.ready("A")
-    for _ in range(6):
-        b.update("A", 10)
-    b.update("A", 20)                                  # n = 11: alpha = max(0.1, 1/11) = 0.1
-    assert b.get("A") == pytest.approx(11.0)
-    b.update("A", 0)                                   # a tick with no completions is ignored
-    assert b.get("A") == pytest.approx(11.0)
+    b.update("A", 20, t + 60)                          # one half-life later: halfway to the new value
+    assert b.get("A") == pytest.approx(15.0)
+    b2 = BaselineTracker(half_life_s=60, warmup=0)
+    b2.update("A", 10, 0)
+    for i in range(1, 241):                            # 60 s of 4 Hz samples at 20 ms
+        b2.update("A", 20, i * 0.25)
+    assert b2.get("A") == pytest.approx(15.0, abs=0.01)  # same half-life whatever the sample rate
+    b.update("A", 0, t + 61)                           # a tick with no completions is ignored
+    assert b.get("A") == pytest.approx(15.0)

@@ -9,14 +9,15 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Deque, Dict, List, Optional, Tuple
 
-from tenantguard_common.contracts import (IncidentEvent, LimitsCmd, ServerView, StateSnapshot,
-                                          TelemetryFrame, TenantView, WorkerStats)
+from tenantguard_common.contracts import (IncidentEvent, LimitsCmd, OperatorCmd, OverridesView, RouteWeightsCmd,
+                                          ServerView, StateSnapshot, TelemetryFrame, TenantView, WorkerStats)
 
 from . import ladder as lad
-from .fairness import jain, normalized_throughput, peer_ratio
+from .fairness import jain, normalized_throughput
 from .incidents import Incident, IncidentBook
 from .score import BaselineTracker, ScoreDetail, compute_scores, shares, slowdown
 from .settings import BrainSettings
+from .stage3 import Stage3
 
 ACTING_MODE = "tenantguard"
 
@@ -29,6 +30,9 @@ class StatSample:
     tenant_cpu_ms: Dict[str, float]  # handler + bg CPU ms in dt
     total_cpu_ms: float
     limit_cores: float
+    tenant_bg_ms: Dict[str, float] = field(default_factory=dict)        # bg CPU ms in dt
+    tenant_evictions: Dict[str, int] = field(default_factory=dict)      # evictions caused in dt
+    blackbox_ms: float = 0.0                                             # unattributed CPU ms in dt
 
 
 @dataclass
@@ -41,8 +45,18 @@ class Sent:
 
 
 @dataclass
+class OperatorHold:
+    decision: str                  # release | extend
+    until: float
+    by: str
+    case_id: Optional[str] = None
+    suppressed: bool = False       # a 'would escalate' note was already emitted
+
+
+@dataclass
 class TickResult:
     commands: List[LimitsCmd] = field(default_factory=list)
+    route_cmds: List[RouteWeightsCmd] = field(default_factory=list)
     events: List[IncidentEvent] = field(default_factory=list)
 
 
@@ -75,13 +89,16 @@ class Brain:
         self.prev_stats: Dict[str, WorkerStats] = {}
         self.stat_samples: Deque[StatSample] = deque()
         self.worker_seen_at: Dict[str, float] = {}
-        self.baseline = BaselineTracker(cfg.baseline_alpha)
+        self.baseline = BaselineTracker(cfg.baseline_half_life_s)
+        self.slowdowns: Dict[str, Optional[float]] = {}
         self.ladders: Dict[str, lad.LadderState] = {t: lad.LadderState() for t in self.tenants}
         self.scores: Dict[str, ScoreDetail] = {}
         self.book = IncidentBook()
         self.sent: Dict[str, Sent] = {}
         self.calm = True
         self.hurt_off = cfg.min_victim_impact / 2.0
+        self.s3 = Stage3(self)
+        self.holds: Dict[str, OperatorHold] = {}
 
     # ------------------------------------------------------------------ ingest
     def ingest_frame(self, frame: TelemetryFrame, now: float) -> None:
@@ -89,15 +106,67 @@ class Brain:
         self.mode = frame.mode
         self.last_frame_at = now
         self._prune(now)
+        self.s3.on_frame(frame, now)
         if not self.calm:
             return
         for q in frame.queues:
             if q.tenant not in self.tenants or q.completed <= 0 or q.p95_ms <= 0:
                 continue        # contracts: skip ticks with completed == 0
+            if self._baseline_frozen(q.tenant):
+                continue
             base = self.baseline.get(q.tenant)
             if base is not None and self.baseline.ready(q.tenant) and q.p95_ms > 2.0 * max(base, self.cfg.slow_abs_ms):
                 continue        # an outlier in a calm period is not "normal"
-            self.baseline.update(q.tenant, q.p95_ms)
+            self.baseline.update(q.tenant, q.p95_ms, now)
+
+    def ingest_canary(self, server: str, rtt_ms: float, now: float) -> None:
+        self.s3.on_canary(server, rtt_ms, now)
+
+    def adopt_overrides(self, ov: OverridesView, now: float) -> Tuple[List[IncidentEvent], List[LimitsCmd]]:
+        """On start-up: take over limits a previous brain run left on the gateway, so they keep being
+        managed (renewed, relaxed by AIMD, cleared) instead of lingering unmanaged until their TTL.
+        Limits for unknown tenants are cleared. Route weights are left to expire: the server loop
+        recomputes them every tick if a server is still slow."""
+        events: List[IncidentEvent] = []
+        clears: List[LimitsCmd] = []
+        for t, cmd in ov.limits.items():
+            if t not in self.ladders:
+                clears.append(LimitsCmd(tenant=t, factor=1.0, weight_factor=1.0, ttl_s=self.p.ttl_throttle))
+                continue
+            if cmd.factor >= 1 - lad.EPS and cmd.weight_factor >= 1 - lad.EPS:
+                continue
+            st = self.ladders[t]
+            if st.level != "normal" or st.acting:
+                continue                    # this run already manages the tenant: its state wins
+            st.factor, st.weight_factor = cmd.factor, cmd.weight_factor
+            st.level = st.peak = self.p.level_for(cmd.factor, cmd.weight_factor)
+            st.changed_at = now
+            inc = self.book.open_for(t, now)
+            ttl = self.p.ttl_for(st.level)
+            self.sent[t] = Sent(cmd.factor, cmd.weight_factor, now, ttl, ok=True)
+            events.append(self.book.emit(
+                inc, now, "detected", level=st.level, prev_level="normal",
+                action=self._action_text(cmd.factor, cmd.weight_factor, st.level),
+                detail=f"Adopted an override left by a previous brain run (factor {cmd.factor:.2f}, weight factor "
+                       f"{cmd.weight_factor:.2f}, incident {cmd.incident_id or '?'}). It will be renewed while "
+                       f"needed and relaxed when neighbours are calm."))
+        return events, clears
+
+    def cpu_by_server(self, now: float) -> Dict[str, Dict[str, float]]:
+        return self._cpu_by_server(now, max(self.cfg.probe_window_s, 3 * self.cfg.stats_poll_s))
+
+    def server_capacity(self, now: float) -> Dict[str, float]:
+        lim = {s: l for s, (_, l) in self._server_cpu(now, 3 * self.cfg.stats_poll_s).items()}
+        servers = set(self.cfg.fleet_servers) | set(self.cfg.worker_urls)
+        return {s: 1000.0 * (lim.get(s) or self.cfg.default_cores) for s in servers}
+
+    def _baseline_frozen(self, t: str) -> bool:
+        """Don't learn a tenant's 'normal' while it is hurt, or while a neighbour over-uses its share:
+        a moderate attack that never crosses a threshold would otherwise become the new baseline."""
+        sd = self.slowdowns.get(t)
+        if sd is not None and sd >= self.cfg.min_victim_impact:
+            return True
+        return any(self.scores[n].usage_ratio > 1.0 for n in self.neighbours.get(t, []) if n in self.scores)
 
     def ingest_stats(self, st: WorkerStats, now: float) -> None:
         self.worker_seen_at[st.server] = now
@@ -105,13 +174,16 @@ class Brain:
         self.prev_stats[st.server] = st
         if prev is None or prev.started_at != st.started_at or st.ts <= prev.ts or st.cpu_total_ms < prev.cpu_total_ms:
             return              # first sample or the worker restarted: counters reset, no diff
-        before = {u.tenant: u.handler_cpu_ms + u.bg_cpu_ms for u in prev.tenants}
-        cpu = {}
+        before = {u.tenant: u for u in prev.tenants}
+        cpu, bg, ev = {}, {}, {}
         for u in st.tenants:
-            d = u.handler_cpu_ms + u.bg_cpu_ms - before.get(u.tenant, 0.0)
-            cpu[u.tenant] = max(0.0, d)
+            b = before.get(u.tenant)
+            cpu[u.tenant] = max(0.0, u.handler_cpu_ms + u.bg_cpu_ms - ((b.handler_cpu_ms + b.bg_cpu_ms) if b else 0.0))
+            bg[u.tenant] = max(0.0, u.bg_cpu_ms - (b.bg_cpu_ms if b else 0.0))
+            ev[u.tenant] = max(0, u.evictions_caused - (b.evictions_caused if b else 0))
         self.stat_samples.append(StatSample(now, st.server, st.ts - prev.ts, cpu,
-                                            st.cpu_total_ms - prev.cpu_total_ms, st.cpu_limit_cores))
+                                            st.cpu_total_ms - prev.cpu_total_ms, st.cpu_limit_cores,
+                                            bg, ev, max(0.0, st.blackbox_cpu_ms - prev.blackbox_cpu_ms)))
         self._prune(now)
 
     def _prune(self, now: float) -> None:
@@ -210,6 +282,7 @@ class Brain:
         for t in self.tenants:
             base = self.baseline.get(t) if self.baseline.ready(t) else None
             slow[t] = slowdown(agg[t].p95 if t in agg else None, base, self.cfg.slow_abs_ms)
+        self.slowdowns = slow
         queue = {t: a.occupancy / max(1, a.ticks) for t, a in agg.items()}
         servers = {s for t in self.tenants.values() for s in t.servers}
         limits = {s: lim for s, (_, lim) in self._server_cpu(now, cpu_window).items()}
@@ -230,9 +303,13 @@ class Brain:
             not (s.flagged and s.score >= self.p.warn) for s in self.scores.values())
 
         fresh = self.telemetry_fresh(now)
+        res.events.extend(self._expire_holds(now))
         if fresh and self.mode == ACTING_MODE:
             for t, st in self.ladders.items():
                 sd = self.scores[t]
+                if t in self.holds:
+                    res.events.extend(self._held_tick(t, sd, now))
+                    continue                # a human decision owns this tenant until the hold ends
                 sig = lad.Signal(score=sd.score, flagged=sd.flagged, unhurt=sd.victim_impact < self.hurt_off)
                 tr = lad.step(st, sig, now, self.p)
                 if tr:
@@ -244,8 +321,94 @@ class Brain:
                     res.events.extend(self._on_transition(t, tr, now))
         # stale telemetry: hold every ladder where it is (no evidence either way), keep renewing
 
+        ev, routes = self.s3.tick(now, acting=fresh and self.mode == ACTING_MODE)
+        res.events.extend(ev)
+        res.route_cmds = routes
         res.commands = self._commands(now)
         return res
+
+    # ------------------------------------------------------------------ operator decisions
+    def operator(self, cmd: OperatorCmd, now: float) -> List[IncidentEvent]:
+        """Apply a human decision (validated by the caller). The ladder obeys it, so humans and the ladder
+        never fight: release = back to normal and no re-escalation until the hold ends; extend = keep the
+        current level/factors (TTLs keep being renewed) until the hold ends; resume = cancel any hold."""
+        t, who = cmd.tenant, cmd.by
+        st = self.ladders[t]
+        until = now + cmd.until_s
+        case = f" (case {cmd.case_id})" if cmd.case_id else ""
+        out: List[IncidentEvent] = []
+        if cmd.decision == "resume":
+            had = self.holds.pop(t, None)
+            if had:
+                self._restart_holds(st, now)
+            inc = self.book.open.get(t)
+            if inc is not None:
+                out.append(self.book.emit(inc, now, "level_change", level=st.level, prev_level=st.level,
+                                          action=f"operator resume by {who}",
+                                          detail=f"Operator resume by {who}{case}: "
+                                                 + ("the automatic ladder is back in charge."
+                                                    if had else "there was no operator hold.")))
+            return out
+        self.holds[t] = OperatorHold(cmd.decision, until, who, cmd.case_id)
+        if cmd.decision == "release":
+            inc = self.book.open_for(t, now)
+            prev = st.level
+            tr = lad.reset(st, now, f"operator release by {who}")
+            action = (self._action_text(1.0, 1.0, "normal") if tr else None)
+            out.append(self.book.emit(inc, now, "level_change", level="normal", prev_level=prev,
+                                      action=f"operator release by {who}" + (f"; {action}" if action else ""),
+                                      detail=f"Operator hold by {who}{case}: released {self.tenants[t].name} ({t}) "
+                                             f"from {prev} to normal; limits cleared and no automatic escalation "
+                                             f"for {cmd.until_s:g} s."))
+        else:  # extend
+            inc = self.book.open_for(t, now)
+            out.append(self.book.emit(inc, now, "level_change", level=st.level, prev_level=st.level,
+                                      action=f"operator extend by {who}",
+                                      detail=f"Operator hold by {who}{case}: keeping {self.tenants[t].name} ({t}) at "
+                                             f"{st.level} (factor {st.factor:.2f}, weight factor "
+                                             f"{st.weight_factor:.2f}) for {cmd.until_s:g} s; overrides are renewed "
+                                             f"until then, then the automatic ladder resumes."))
+        return out
+
+    @staticmethod
+    def _restart_holds(st: lad.LadderState, now: float) -> None:
+        """The ladder saw no ticks during an operator hold: every rung needs a fresh, full hold."""
+        for hd in (st.warn, st.throttle, st.quarantine, st.calm):
+            hd.samples.clear()
+            hd.start = None
+        st.last_recover_at = None
+
+    def _held_tick(self, t: str, sd: ScoreDetail, now: float) -> List[IncidentEvent]:
+        h = self.holds[t]
+        if h.decision != "release" or h.suppressed or not (sd.flagged and sd.score >= self.p.warn):
+            return []
+        h.suppressed = True
+        inc = self.book.open_for(t, now)
+        return [self.book.emit(inc, now, "level_change", level="normal", prev_level="normal",
+                               action=f"operator hold by {h.by}",
+                               detail=f"Operator hold by {h.by}: escalation suppressed until the hold ends in "
+                                      f"{h.until - now:.0f} s. {self._evidence(t)}")]
+
+    def _expire_holds(self, now: float) -> List[IncidentEvent]:
+        out = []
+        for t, h in list(self.holds.items()):
+            if now < h.until:
+                continue
+            del self.holds[t]
+            st = self.ladders[t]
+            self._restart_holds(st, now)
+            inc = self.book.open.get(t)
+            if inc is None:
+                continue
+            out.append(self.book.emit(inc, now, "level_change", level=st.level, prev_level=st.level,
+                                      action=f"operator hold by {h.by} ended",
+                                      detail=f"Operator hold by {h.by} ({h.decision}) ended; the automatic ladder "
+                                             f"resumes from {st.level}."))
+            if st.level == "normal" and not st.acting:
+                out.append(self.book.emit(inc, now, "closed", level="normal",
+                                          detail=f"Incident closed after the operator hold by {h.by}."))
+                self.book.close(inc, now)
+        return out
 
     # ------------------------------------------------------------------ incidents
     def _evidence(self, t: str) -> str:
@@ -297,7 +460,7 @@ class Brain:
                                       detail=f"{self.tenants[t].name} ({t}) is back to its full plan; "
                                              f"neighbours have stayed healthy. Watching for {self.p.hold['warn']:g} s "
                                              f"before closing."))
-        if tr.level == "normal":
+        if tr.level == "normal" and t not in self.holds:
             dur = now - inc.opened_at
             out.append(self.book.emit(inc, now, "closed", level="normal",
                                       detail=f"Incident closed after {dur:.0f} s (worst level: {inc.peak}). "
@@ -367,22 +530,23 @@ class Brain:
         names = list(self.cfg.worker_urls) or sorted(set(sp95) | set(scpu))
         for s in names:
             p95 = sp95.get(s)
-            pr = peer_ratio(s, sp95)
-            others = [v for k, v in sp95.items() if k != s and v]
-            med = sorted(others)[len(others) // 2] if others else 0.0
-            slow = p95 is not None and pr >= self.cfg.slow_peer_ratio and p95 - med >= self.cfg.slow_abs_ms
+            h = self.s3.health.servers.get(s)
             ms, lim = scpu.get(s, (0.0, 0.0))
-            servers.append(ServerView(server=s, p95_ms=round(p95 or 0.0, 2), peer_ratio=round(pr, 3),
+            servers.append(ServerView(server=s, p95_ms=round(p95 or 0.0, 2),
+                                      peer_ratio=round(h.peer_ratio, 3) if h else 1.0,
                                       cpu_pct=round(100.0 * ms / (lim * 1000.0), 1) if lim > 0 else 0.0,
-                                      status="slow" if slow else "healthy"))
+                                      status="slow" if h and h.slow else "healthy"))
         fleet = [scpu[s] for s in self.cfg.fleet_servers if s in scpu]
         cap = sum(lim * 1000.0 for _, lim in fleet)
         util = min(1.0, sum(ms for ms, _ in fleet) / cap) if cap > 0 else 0.0
         fair = jain(normalized_throughput(rps, self.weights).values())
-        return StateSnapshot(ts=now, mode=self.mode or "off", tenants=tenants, servers=servers,
+        return StateSnapshot(ts=now, mode=self.mode or self.cfg.default_mode, tenants=tenants, servers=servers,
                              utilization=round(util, 4), fairness=round(fair, 4),
                              status_sentence=self.status_sentence(now, util, fair),
-                             brain_ok=self.telemetry_fresh(now))
+                             brain_ok=self.telemetry_fresh(now),
+                             noisy_thresholds={"warn": self.p.warn, "throttle": self.p.throttle,
+                                               "quarantine": self.p.quarantine,
+                                               "recover_below": self.p.recover_below})
 
     def status_sentence(self, now: float, util: float, fair: float) -> str:
         if self.last_frame_at is None:
@@ -403,8 +567,11 @@ class Brain:
                         f"{f.usage_ratio:.1f}x its fair share and hurting neighbours; brain actions are off "
                         f"in this mode. {tail}")
             return f"Mode '{self.mode}': brain is observing only. {tail}"
+        srv = self.s3.status()            # server incident, if any, leads the sentence
         if st.level == "normal":
-            return f"All {len(self.tenants)} tenants healthy. {tail}"
+            return f"{srv} {tail}" if srv else f"All {len(self.tenants)} tenants healthy. {tail}"
+        if srv:
+            tail = f"{srv} {tail}"
         usage = f"{sd.usage_ratio:.1f}x its fair share" if sd else "over its fair share"
         hurt = len([v for v, s in sd.victims if s >= self.hurt_off]) if sd else 0
         if st.level == "warn" and not st.acting:
@@ -423,8 +590,16 @@ class Brain:
             "mode": self.mode, "calm": self.calm,
             "scores": {t: {k: (round(v, 4) if isinstance(v, float) else v) for k, v in vars(s).items()
                            if k != "victims"} for t, s in self.scores.items()},
-            "ladders": {t: vars(s) for t, s in self.ladders.items()},
+            "ladders": {t: {"level": s.level, "factor": s.factor, "weight_factor": s.weight_factor,
+                            "changed_at": s.changed_at, "peak": s.peak} for t, s in self.ladders.items()},
             "baseline_p95_ms": {t: round(v, 2) for t, v in self.baseline.value.items()},
             "sent": {t: vars(s) for t, s in self.sent.items()},
             "open_incidents": {t: i.incident_id for t, i in self.book.open.items()},
+            "servers": {s: {"source": h.source, "level_ms": h.level_ms, "peer_ms": h.peer_ms,
+                            "peer_ratio": round(h.peer_ratio, 3), "slow_now": h.slow_now, "slow": h.slow}
+                        for s, h in self.s3.health.servers.items()},
+            "decoding": ({"culprits": [vars(c) for c in self.s3.decoding.culprits],
+                          "host_suspects": self.s3.decoding.host_suspects,
+                          "confidence": self.s3.decoding.top_confidence} if self.s3.decoding else None),
+            "rescue": (vars(self.s3.plan) if self.s3.plan else None),
         }

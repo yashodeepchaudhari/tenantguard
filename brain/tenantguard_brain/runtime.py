@@ -1,16 +1,18 @@
-"""I/O around the pure Brain: telemetry WS, worker /stats polling, heartbeat, control sends, UI hub."""
+"""I/O around the pure Brain: telemetry WS, worker /stats + /canary polling, heartbeat, control sends,
+start-up adoption of leftover overrides, and the UI hub."""
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
-from typing import List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 import httpx
 import websockets
+from pydantic import BaseModel
 
-from tenantguard_common.contracts import Heartbeat, LimitsCmd, TelemetryFrame, WorkerStats
+from tenantguard_common.contracts import (H_CONTROL_TOKEN, Heartbeat, IncidentEvent, LimitsCmd, OverridesView,
+                                          TelemetryFrame, WorkerStats)
 
 from .core import Brain
 from .settings import BrainSettings
@@ -43,6 +45,47 @@ class Hub:
             q.put_nowait(text)
 
 
+Post = Callable[[str, BaseModel], "asyncio.Future[bool]"]
+Done = Callable[[BaseModel, bool], None]
+
+
+class Sender:
+    """Serialised delivery per key (e.g. one key per tenant's limits).
+
+    At most one request per key is in flight; a command submitted while another is in flight replaces
+    any older unsent one (latest wins), so the gateway can never end up with a stale command that
+    overtook a newer one. Task references are held until the task finishes.
+    """
+
+    def __init__(self, post: Post):
+        self.post = post
+        self.pending: Dict[str, Tuple[str, BaseModel, Done]] = {}
+        self.running: Dict[str, asyncio.Task] = {}
+
+    def submit(self, key: str, path: str, model: BaseModel, done: Done) -> None:
+        self.pending[key] = (path, model, done)
+        if key not in self.running:
+            self.running[key] = asyncio.create_task(self._run(key))
+
+    async def _run(self, key: str) -> None:
+        try:
+            while key in self.pending:
+                path, model, done = self.pending.pop(key)
+                ok = False
+                try:
+                    ok = await self.post(path, model)
+                finally:
+                    done(model, ok)
+        finally:
+            self.running.pop(key, None)      # synchronously, before any new submit can see a stale entry
+
+    async def close(self) -> None:
+        tasks = list(self.running.values())
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 class Runtime:
     def __init__(self, cfg: BrainSettings, brain: Optional[Brain] = None):
         self.cfg = cfg
@@ -50,11 +93,13 @@ class Runtime:
         self.hub = Hub()
         self.client: Optional[httpx.AsyncClient] = None
         self.tasks: List[asyncio.Task] = []
+        self.sender = Sender(self._post)
         self.telemetry_connected = False
         self.gateway_ok: Optional[bool] = None
         self.worker_ok: dict = {}
         self.sent_count = 0
         self.heartbeats = 0
+        self.adopted: Optional[bool] = None
 
     @property
     def ws_url(self) -> str:
@@ -65,11 +110,15 @@ class Runtime:
             base = "ws://" + base[len("http://"):]
         return base + "/internal/telemetry"
 
+    @property
+    def control_headers(self) -> dict:
+        return {H_CONTROL_TOKEN: self.cfg.control_token}
+
     async def start(self) -> None:
         self.client = httpx.AsyncClient(timeout=httpx.Timeout(1.0, connect=1.0),
                                         limits=httpx.Limits(max_connections=64, max_keepalive_connections=32))
-        for coro in (self._telemetry_loop(), self._stats_loop(), self._heartbeat_loop(),
-                     self._tick_loop(), self._snapshot_loop()):
+        for coro in (self._adopt_once(), self._telemetry_loop(), self._stats_loop(), self._canary_loop(),
+                     self._heartbeat_loop(), self._tick_loop(), self._snapshot_loop()):
             self.tasks.append(asyncio.create_task(coro))
         log.info("brain started: gateway=%s workers=%d", self.cfg.gateway_url, len(self.cfg.worker_urls))
 
@@ -78,8 +127,67 @@ class Runtime:
             t.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
         self.tasks.clear()
+        await self.sender.close()
         if self.client:
             await self.client.aclose()
+
+    # ------------------------------------------------------------ gateway calls
+    async def _post(self, path: str, model: BaseModel) -> bool:
+        try:
+            r = await self.client.post(self.cfg.gateway_url + path, json=model.model_dump(),
+                                       headers=self.control_headers)
+            if r.status_code >= 400:
+                log.warning("gateway refused %s %s: %s %s", path, model, r.status_code, r.text[:200])
+                return False
+            return True
+        except Exception as e:
+            log.warning("control send %s failed (%s)", path, type(e).__name__)
+            return False
+
+    def _publish(self, events: List[IncidentEvent]) -> None:
+        for ev in events:
+            log.info("incident %s %s %s %s->%s: %s", ev.incident_id, ev.stage, ev.tenant,
+                     ev.prev_level, ev.level, ev.detail)
+            self.hub.publish(ev.model_dump_json())
+
+    def _limits_done(self, cmd: BaseModel, ok: bool) -> None:
+        self.brain.mark_sent(cmd, ok, time.time())
+        if ok:
+            self.sent_count += 1
+            log.info("sent limits %s factor=%.2f weight_factor=%.2f ttl=%gs", cmd.tenant, cmd.factor,
+                     cmd.weight_factor, cmd.ttl_s)
+
+    def _routes_done(self, cmd: BaseModel, ok: bool) -> None:
+        self.brain.s3.mark_routes(ok, time.time())
+        if ok:
+            self.sent_count += 1
+            log.info("sent route weights for %s ttl=%gs", sorted(cmd.weights), cmd.ttl_s)
+
+    def send_limits(self, cmd: LimitsCmd) -> None:
+        self.sender.submit(f"limits:{cmd.tenant}", "/control/limits", cmd, self._limits_done)
+
+    # ------------------------------------------------------------ start-up
+    async def _adopt_once(self) -> None:
+        """Take over (or clear) overrides a previous brain run left on the gateway."""
+        while True:
+            try:
+                r = await self.client.get(self.cfg.gateway_url + "/admin/overrides", headers=self.control_headers)
+                r.raise_for_status()
+                ov = OverridesView.model_validate(r.json())
+                events, clears = self.brain.adopt_overrides(ov, time.time())
+                self._publish(events)
+                for c in clears:
+                    self.send_limits(c)
+                self.adopted = True
+                if events or clears:
+                    log.info("adopted %d and cleared %d leftover overrides", len(events), len(clears))
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                self.adopted = False
+                log.info("GET /admin/overrides failed (%s); retrying", type(e).__name__)
+                await asyncio.sleep(2.0)
 
     # ------------------------------------------------------------ ingest
     async def _telemetry_loop(self) -> None:
@@ -123,11 +231,27 @@ class Runtime:
             await asyncio.gather(*(self._poll_one(s, u) for s, u in self.cfg.worker_urls.items()))
             await asyncio.sleep(max(0.05, self.cfg.stats_poll_s - (time.monotonic() - t0)))
 
+    async def _canary_one(self, server: str, url: str) -> None:
+        t0 = time.perf_counter()
+        try:
+            r = await self.client.get(url + "/canary")
+            if r.status_code < 500:
+                self.brain.ingest_canary(server, (time.perf_counter() - t0) * 1000.0, time.time())
+        except Exception:
+            pass                         # an unreachable worker shows up in /stats (workers_ok)
+
+    async def _canary_loop(self) -> None:
+        while True:
+            t0 = time.monotonic()
+            await asyncio.gather(*(self._canary_one(s, u) for s, u in self.cfg.worker_urls.items()))
+            await asyncio.sleep(max(0.05, self.cfg.canary_s - (time.monotonic() - t0)))
+
     async def _heartbeat_loop(self) -> None:
         while True:
             try:
                 r = await self.client.post(self.cfg.gateway_url + "/control/heartbeat",
-                                           json=Heartbeat(ts=time.time()).model_dump())
+                                           json=Heartbeat(ts=time.time()).model_dump(),
+                                           headers=self.control_headers)
                 self.gateway_ok = r.status_code < 400
                 self.heartbeats += 1
             except asyncio.CancelledError:
@@ -137,32 +261,16 @@ class Runtime:
             await asyncio.sleep(self.cfg.heartbeat_s)
 
     # ------------------------------------------------------------ decide + act
-    async def _send(self, cmd: LimitsCmd) -> None:
-        ok = False
-        try:
-            r = await self.client.post(self.cfg.gateway_url + "/control/limits", json=cmd.model_dump())
-            ok = r.status_code < 400
-            if not ok:
-                log.warning("gateway refused %s: %s %s", cmd, r.status_code, r.text[:200])
-        except Exception as e:
-            log.warning("control send failed (%s): %s", type(e).__name__, cmd)
-        self.brain.mark_sent(cmd, ok, time.time())
-        if ok:
-            self.sent_count += 1
-            log.info("sent limits %s factor=%.2f weight_factor=%.2f ttl=%gs", cmd.tenant, cmd.factor,
-                     cmd.weight_factor, cmd.ttl_s)
-
     async def _tick_loop(self) -> None:
         while True:
             t0 = time.monotonic()
             try:
                 res = self.brain.tick(time.time())
-                for ev in res.events:
-                    log.info("incident %s %s %s %s->%s: %s", ev.incident_id, ev.stage, ev.tenant,
-                             ev.prev_level, ev.level, ev.detail)
-                    self.hub.publish(ev.model_dump_json())
+                self._publish(res.events)
                 for cmd in res.commands:
-                    asyncio.create_task(self._send(cmd))
+                    self.send_limits(cmd)
+                for rc in res.route_cmds:
+                    self.sender.submit("routes", "/control/route_weights", rc, self._routes_done)
             except Exception:
                 log.exception("tick failed; skipping")
             await asyncio.sleep(max(0.01, self.cfg.tick_s - (time.monotonic() - t0)))
@@ -181,16 +289,14 @@ class Runtime:
         b = self.brain
         return {
             "ok": True,
-            "mode": b.mode,
+            "mode": b.mode or self.cfg.default_mode,
             "telemetry_connected": self.telemetry_connected,
             "last_frame_age_s": round(now - b.last_frame_at, 2) if b.last_frame_at else None,
             "gateway_ok": self.gateway_ok,
+            "overrides_adopted": self.adopted,
             "workers_ok": self.worker_ok,
             "heartbeats_sent": self.heartbeats,
             "commands_sent": self.sent_count,
+            "sends_in_flight": len(self.sender.running),
             "ui_clients": len(self.hub.clients),
         }
-
-
-def dumps(obj) -> str:
-    return json.dumps(obj, default=str)

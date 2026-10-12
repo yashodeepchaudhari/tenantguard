@@ -9,6 +9,8 @@ from urllib.parse import urlparse
 from tenantguard_common.config import load_settings, load_tenants, worker_urls
 from tenantguard_common.contracts import TenantConfig
 
+from .decoder import DecoderParams
+from .health import HealthParams
 from .ladder import LadderParams
 
 
@@ -26,13 +28,21 @@ class BrainSettings:
     view_window_s: float = 5.0     # TenantView window (contracts: "last 5 s")
     server_window_s: float = 2.0   # ServerView window (contracts: "last 2 s")
     history_s: float = 60.0        # rolling state kept in memory
-    baseline_alpha: float = 0.05
+    baseline_half_life_s: float = 60.0
+    default_mode: str = "tenantguard"
+    control_token: str = "dev"
+    ttl_max_s: float = 3600.0
     min_victim_impact: float = 0.2
     slow_peer_ratio: float = 1.6
     slow_abs_ms: float = 8.0
     fleet_servers: List[str] = field(default_factory=list)
     default_cores: float = 0.5        # worker.cpus, until a worker reports cpu_limit_cores
     default_window: int = 8           # gateway.limiter.initial_window, until telemetry reports it
+    health: HealthParams = field(default_factory=HealthParams)
+    decoder: DecoderParams = field(default_factory=DecoderParams)
+    rescue_guard: float = 0.7
+    rescue_ttl_s: float = 120.0
+    canary_s: float = 1.0
     host: str = "0.0.0.0"
     port: int = 8200
     cors_origins: List[str] = field(default_factory=list)
@@ -64,13 +74,21 @@ def load(raw: dict | None = None) -> BrainSettings:
         ladder=LadderParams.from_yaml(noisy, brain.get("ttl_s", {})),
         noisy=noisy,
         probe_window_s=health.get("probe_window_ticks", 8) * tick_s,
-        baseline_alpha=float(noisy.get("baseline_alpha", 0.05)),
+        baseline_half_life_s=float(noisy.get("baseline_half_life_s", 60.0)),
+        default_mode=str(raw["gateway"].get("default_mode", "tenantguard")),
+        control_token=os.environ.get("TENANTGUARD_CONTROL_TOKEN", "dev"),
+        ttl_max_s=float(raw["gateway"].get("ttl_max_s", 3600)),
         min_victim_impact=float(noisy.get("min_victim_impact", 0.2)),
         slow_peer_ratio=float(health.get("slow_peer_ratio", 1.6)),
         slow_abs_ms=float(health.get("slow_abs_ms", 8)),
         fleet_servers=sorted(layout_servers),
         default_cores=float(raw.get("worker", {}).get("cpus", 0.5)),
         default_window=int(raw["gateway"].get("limiter", {}).get("initial_window", 8)),
+        health=HealthParams.from_yaml(health, tick_s),
+        decoder=DecoderParams.from_yaml(health, brain.get("decoder")),
+        rescue_guard=float(brain.get("rescue_capacity_guard", 0.7)),
+        rescue_ttl_s=float(brain.get("ttl_s", {}).get("rescue", brain.get("ttl_s", {}).get("relocate", 120))),
+        canary_s=float(health.get("canary_s", 1.0)),
         host=os.environ.get("TENANTGUARD_BRAIN_HOST", "0.0.0.0"),
         port=int(os.environ.get("TENANTGUARD_BRAIN_PORT", brain_url.port or 8200)),
         cors_origins=[o.strip() for o in origins.split(",") if o.strip()],
