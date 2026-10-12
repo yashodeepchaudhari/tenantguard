@@ -49,6 +49,7 @@ Product/design background: `docs/FINAL-PLAN.md` (scope tiers, demo), `enhanced-p
   - Locally run at most **3 workers + gateway + brain**, and kill every process right after each proof run.
   - Only one session runs a local stack at a time; ask the coordinator first.
   - The laptop has 8 cores / 7.8 GB, and the Claude sessions themselves use most of the RAM.
+12b. **The coordinator never runs git commands that change a live session's worktree** (checkout, merge, branch switch). It sends the session the exact commands instead. (Learned 2026-10-12: a branch switch landed T15b's commit on the wrong branch.) After every merge, the coordinator verifies `git log` shows the merge commit before announcing it.
 13. **Machine quirks:** Windows 11; PowerShell plus Git Bash. Docker Desktop must be running before any `docker compose` (it was found stopped on 2026-10-12). Use `127.0.0.1`, not `localhost`. Some peers run in "prompting" mode, so permission prompts may appear in their terminals. **Never rewrite UTF-8 files with Windows PowerShell 5 `Get-Content -Raw`/`Set-Content`**: it mis-decodes them and garbles `→ × ≥ §` (this happened on 2026-10-12). Use the Edit tool or Python with `encoding="utf-8"`.
 
 ## §3 Ownership
@@ -391,23 +392,63 @@ Build:
 5. **Handoff:** a Cases column showing the bridge's `CaseView` (GET :8400/cases) with owner + pending actions, when the bridge is reachable.
 6. Keep the Control Room on one 1080p screen (a toggle between tiles and the flow view is fine). Tests, e2e, screenshots.
 
+### T16: Submission docs (T1 session, same worktree)
+**You are TASK T16:** when this is finished, a judge who opens the repo understands TenantGuard in 2 minutes and can run it in 10. Everything says TenantGuard, matches the real Python stack, and quotes only measured numbers.
+
+You own (delegated by the coordinator for this task only): `README.md`, `docs/architecture.html`, `docs/Architecture.pdf`, new `docs/SETUP.md`, new `docs/SUBMISSION.md`. Do not touch `docs/PLAN.md` or `docs/FINAL-PLAN.md`.
+
+Build:
+1. **README.md:** the one-line pitch; the problem in 3 lines; a Mermaid architecture diagram (data / control / management planes + 5 isolation layers); a component table with ports; a quick start (Docker host + local); how to run the demo (`tools/demo.py`); the "not just a rate limit" evidence (3-mode scorecard, black-box: `ingest` 0.07 ms visible vs 20.25 ms hidden CPU from `worker/calibration.json`); repo map.
+2. **docs/architecture.html + PDF:** rewrite the earlier version (it shows a FastAPI + Redis + Postgres stack that we didn't build). Show the real architecture, components and tech stack. Keep "Version 1 technical / Version 2 simple flow". Render the PDF with headless Edge like before (`msedge --headless=new --print-to-pdf`); check the page breaks.
+3. **docs/SETUP.md:** the two-laptop + Tailscale setup, Docker host steps (link DOCKER-HOST-SETUP.md), local dev, env vars, tokens, ports.
+4. **docs/SUBMISSION.md:** PS3 checklist → where implemented (file paths); AI-tool disclosure (state plainly that AI coding assistants were used in development; the product's Claude narrator is a feature); known limitations; roadmap.
+5. Numbers: only from committed result files (lab/results or calibration.json). Mark anything else "to be measured".
+
+No code changes. Done = files rendered and checked (open the PDF pages as images via a headless screenshot, as before).
+
+### T17: Fair billing + "Why was I slow?" (T2 session, same worktree)
+**You are TASK T17:** when this is finished, every tenant sees a fair bill. They pay only for the resources they used, at calm reference prices; victims are never charged for an attack and get SLA credits. A victim can ask "Why was I slow?" and get a plain-English, anonymised answer.
+
+You own a NEW dir `billing/` (package `tenantguard_billing`, FastAPI on :8600, Dockerfile, tests). Read-only consumer: never sends control commands.
+
+Inputs (from env URLs; inside compose: http://w0..w8:8100, brain:8200, gateway:8000):
+- worker `/stats` (cumulative per-tenant handler/bg/db CPU, per-class costs, blackbox)
+- brain `/api/incidents` + WS `/ws/events`
+- gateway `/admin/tenants` (control token)
+- the layout (revenue, SLA)
+
+Build:
+1. **Metering:** per tenant per minute, handler + bg CPU-ms, DB ms, requests. Diff the cumulative counters (handle worker restarts via `started_at`).
+2. **Reference pricing:** a price per CPU-ms per tier from yaml (propose `billing:` keys). Charge each request class at its *calm* reference cost (EWMA updated only when no incident is open), so contention never inflates a victim's bill.
+3. **SLA credits:** per victim, SLO-violation-seconds (p95 > `sla_p95_ms` from the lab personas, or a yaml default) during incidents → credit % per the yaml table.
+4. **True-cost line** for a named culprit: black-box CPU on its servers during its incident is attributed to it as an "unmetered cost" line (evidence: decoder confidence).
+5. **"Why was I slow?":** `GET /why/{tenant}?from=&to=` → a sentence like *"Between 14:02:10 and 14:02:12, another tenant's workload slowed 1 of your 3 servers. Your traffic was moved to healthy servers in 0.9 s. A 4% service credit has been applied."* Built from brain incident stages; never reveals the other tenant.
+6. API: `GET /bills`, `GET /bills/{tenant}`, `GET /why/{tenant}`. Propose contract models (`BillView`, `WhyView`) to the coordinator first.
+7. Tests: counter diffing incl. restarts, calm-price freeze during incidents, credits math, anonymisation (the culprit id never appears in a victim's text), restarts.
+
+Proof: unit tests + a run against the Docker host (I'll add the compose service and run it there; send me the exact commands).
+
 ## Task table
 
 | Task | Branch | Worktree | Session | Status |
 |---|---|---|---|---|
 | T1 Gateway | task/T1-gateway | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
 | T7 Gateway wave 2 | task/T7-gateway-adaptive | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
-| T11 Handoff bridge (Web PS3 convergence) | task/T11-handoff-bridge | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | assigned |
+| T11 Handoff bridge (Web PS3 convergence) | task/T11-handoff-bridge | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
+| T14 Demo driver (`tools/demo.py`) | task/T14-demo-runbook | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
+| T16 Submission docs | task/T16-submission-docs | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | assigned |
 | T2 Workers | task/T2-workers | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged** (9cebaaf) |
-| T6 Workers wave 2 | task/T6-worker-blackbox | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | assigned |
+| T6 Workers wave 2 | task/T6-worker-blackbox | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged** |
+| T15 Worker calibration in-container | task/T15-worker-calib | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged**; host calibration committed (fa011b3) |
+| T17 Fair billing + "Why was I slow?" | task/T17-billing | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | assigned |
 | T3 Brain | task/T3-brain | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | **merged** |
 | T8 Brain integration + health/rescue/decoder | task/T8-brain-detect | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | **merged** |
-| T12 Brain prover + verdicts | task/T12-brain-prover | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | assigned |
+| T12 Brain prover + verdicts + calibration | task/T12-brain-prover | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | in progress (merges coord/layout-balance) |
 | T4 UI | task/T4-ui | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | **merged** |
 | T9 UI wave 2 | task/T9-ui-casefile | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | **merged** |
-| T13 UI wave 3 (story + Docker-host run) | task/T13-ui-story | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | assigned |
+| T13 UI wave 3 (story + Docker-host run) | task/T13-ui-story | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | in progress |
 | T5 Lab | task/T5-lab | D:\yashodeep\codeAstra-T5 | codeastra-t5-79 | **merged** |
-| T10 Lab wave 2 + crash-test | task/T10-lab-crashtest | D:\yashodeep\codeAstra-T5 | codeastra-t5-79 | assigned |
+| T10 Lab wave 2 + crash-test | task/T10-lab-crashtest | D:\yashodeep\codeAstra-T5 | codeastra-t5-79 | in progress |
 | Convergence samples | n/a (main dir, docs/convergence/) | main | codeastra-21 | assigned |
 | Review | n/a | main | codeastra-2b | standby |
 
@@ -489,4 +530,11 @@ Build:
     - (c) run `ssh tg-host "cd /d C:\Users\preeti\tenantguard-deploy && docker compose -p codeastra up -d --build"`, a single SSH session.
   - All 13 containers are healthy. From this laptop: gateway `http://100.112.232.8:8000` (healthz 200, admin 401 without token), brain `:8200`; mode tenantguard, fleet CPU 2% idle.
   - Workers are reachable only inside the Docker network.
+- 2026-10-12 (calm run on the Docker host): the brain flagged servers as slow with NO attack.
+  - Cause 1: the AG(2,3) tier assignment put ALL 4 enterprise tenants on w0 (load 21 vs 10 on w2).
+    - Fix: rebalanced tiers on branch `coord/layout-balance`: A pro, F enterprise, G free, L enterprise; D, J enterprise and K pro kept for the story.
+    - Server load spread is now 11–16 rps; max 2 enterprise per server.
+    - It breaks one tuned brain test, so T12 merges the branch and adapts the test. The lab personas' rps must follow the new tiers (T10).
+  - Cause 2: peer ratios are noisy at low per-tick counts. T12 calibrates on the host.
+- 2026-10-12 (T6, T11 merged): worker isolation allow-list + black-box vendor indexer; handoff bridge (`integrations/handoff`, :8400, compose profile `handoff`).
 - 2026-10-12: Cost bucket is debited with the worker-measured CPU (`X-TenantGuard-Cpu-Ms`) rather than an estimate, so it is a real resource quota, not a request count.

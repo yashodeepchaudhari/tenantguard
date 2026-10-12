@@ -3,17 +3,17 @@
   "note": "9 servers, 12 tenants. Any two tenants share at most one server. Tiers balanced so every server gets a similar load (max 2 enterprise per server). Demo API keys only.",
   "servers": ["w0", "w1", "w2", "w3", "w4", "w5", "w6", "w7", "w8"],
   "tenants": [
-    {"id": "A", "name": "Aarogya Health",     "tier": "pro", "servers": ["w0", "w1", "w2"], "api_key": "tk_A_demo", "monthly_revenue_rs": 400000, "protected": true},
-    {"id": "B", "name": "BazaarKart",         "tier": "pro",        "servers": ["w3", "w4", "w5"], "api_key": "tk_B_demo", "monthly_revenue_rs": 250000},
-    {"id": "C", "name": "Chitra Studio",      "tier": "free",       "servers": ["w6", "w7", "w8"], "api_key": "tk_C_demo", "monthly_revenue_rs": 0},
-    {"id": "D", "name": "DhanSetu Payments",  "tier": "enterprise", "servers": ["w0", "w3", "w6"], "api_key": "tk_D_demo", "monthly_revenue_rs": 1200000, "protected": true},
-    {"id": "E", "name": "Ekalavya Learn",     "tier": "pro",        "servers": ["w1", "w4", "w7"], "api_key": "tk_E_demo", "monthly_revenue_rs": 200000},
-    {"id": "F", "name": "FitZone",          "tier": "enterprise",       "servers": ["w2", "w5", "w8"], "api_key": "tk_F_demo", "monthly_revenue_rs": 700000},
-    {"id": "G", "name": "GaadiGo",            "tier": "free", "servers": ["w0", "w4", "w8"], "api_key": "tk_G_demo", "monthly_revenue_rs": 0},
-    {"id": "H", "name": "HisaabBooks",        "tier": "pro",        "servers": ["w1", "w5", "w6"], "api_key": "tk_H_demo", "monthly_revenue_rs": 150000},
-    {"id": "I", "name": "IdliExpress",        "tier": "free",       "servers": ["w2", "w3", "w7"], "api_key": "tk_I_demo", "monthly_revenue_rs": 0},
-    {"id": "J", "name": "JhatpatMart",        "tier": "enterprise", "servers": ["w0", "w5", "w7"], "api_key": "tk_J_demo", "monthly_revenue_rs": 1500000},
-    {"id": "K", "name": "KaamKaro",           "tier": "pro",        "servers": ["w1", "w3", "w8"], "api_key": "tk_K_demo", "monthly_revenue_rs": 180000},
-    {"id": "L", "name": "LokVani News",       "tier": "enterprise",       "servers": ["w2", "w4", "w6"], "api_key": "tk_L_demo", "monthly_revenue_rs": 650000}
+    {"id": "A", "name": "Aarogya Health",     "tier": "pro", "servers": ["w0", "w1", "w2"], "api_key": "tk_A_demo", "monthly_revenue_rs": 400000, "protected": true, "sla_p95_ms": 50},
+    {"id": "B", "name": "BazaarKart",         "tier": "pro",        "servers": ["w3", "w4", "w5"], "api_key": "tk_B_demo", "monthly_revenue_rs": 250000, "sla_p95_ms": 80},
+    {"id": "C", "name": "Chitra Studio",      "tier": "free",       "servers": ["w6", "w7", "w8"], "api_key": "tk_C_demo", "monthly_revenue_rs": 0, "sla_p95_ms": 150},
+    {"id": "D", "name": "DhanSetu Payments",  "tier": "enterprise", "servers": ["w0", "w3", "w6"], "api_key": "tk_D_demo", "monthly_revenue_rs": 1200000, "protected": true, "sla_p95_ms": 40},
+    {"id": "E", "name": "Ekalavya Learn",     "tier": "pro",        "servers": ["w1", "w4", "w7"], "api_key": "tk_E_demo", "monthly_revenue_rs": 200000, "sla_p95_ms": 80},
+    {"id": "F", "name": "FitZone",          "tier": "enterprise",       "servers": ["w2", "w5", "w8"], "api_key": "tk_F_demo", "monthly_revenue_rs": 700000, "sla_p95_ms": 50},
+    {"id": "G", "name": "GaadiGo",            "tier": "free", "servers": ["w0", "w4", "w8"], "api_key": "tk_G_demo", "monthly_revenue_rs": 0, "sla_p95_ms": 150},
+    {"id": "H", "name": "HisaabBooks",        "tier": "pro",        "servers": ["w1", "w5", "w6"], "api_key": "tk_H_demo", "monthly_revenue_rs": 150000, "sla_p95_ms": 80},
+    {"id": "I", "name": "IdliExpress",        "tier": "free",       "servers": ["w2", "w3", "w7"], "api_key": "tk_I_demo", "monthly_revenue_rs": 0, "sla_p95_ms": 150},
+    {"id": "J", "name": "JhatpatMart",        "tier": "enterprise", "servers": ["w0", "w5", "w7"], "api_key": "tk_J_demo", "monthly_revenue_rs": 1500000, "sla_p95_ms": 50},
+    {"id": "K", "name": "KaamKaro",           "tier": "pro",        "servers": ["w1", "w3", "w8"], "api_key": "tk_K_demo", "monthly_revenue_rs": 180000, "sla_p95_ms": 80},
+    {"id": "L", "name": "LokVani News",       "tier": "enterprise",       "servers": ["w2", "w4", "w6"], "api_key": "tk_L_demo", "monthly_revenue_rs": 650000, "sla_p95_ms": 50}
   ]
 }

@@ -7,9 +7,13 @@ Sequential, one request at a time, keep-alive, as tenant A. Per endpoint it reco
 - bg_cpu_ms, blackbox_cpu_ms : deferred CPU per request (write / ingest)
 - latency_ms       : client-side wall time
 
-    docker compose -f docker-compose.yml -f worker/compose.dev.yml up -d w1
-    python tools/calibrate.py --url http://127.0.0.1:18101 --where docker
-Stdlib only, so it runs anywhere.
+Inside a worker container (real 0.5-CPU cgroup; the image ships worker/tools), from the Docker host:
+    docker compose exec -T w1 python tools/calibrate.py --where docker --out - > cal.tmp && mv cal.tmp worker/calibration.json
+(The tool waits up to --wait-s for /healthz; on any failure it exits non-zero with nothing on stdout, and the
+temp-file + mv keeps the committed calibration.json intact.)
+From another machine against a published port:
+    python tools/calibrate.py --url http://<host>:18101 --where docker-remote
+Stdlib only, so it runs anywhere. Progress goes to stderr; with --out - the JSON goes to stdout.
 """
 from __future__ import annotations
 
@@ -83,6 +87,23 @@ def tenant_row(stats: dict) -> dict:
     return next(t for t in stats["tenants"] if t["tenant"] == TENANT)
 
 
+def wait_healthy(url: str, wait_s: float) -> None:
+    end = time.monotonic() + wait_s
+    last = ""
+    while True:
+        try:
+            c = Client(url)
+            status, body, _, _ = c.call("GET", "/healthz", tenant=None)
+            if status == 200 and body.get("ok") and body.get("blackbox", {}).get("running", True):
+                return
+            last = f"HTTP {status} {body}"
+        except (OSError, http.client.HTTPException, ValueError) as e:
+            last = repr(e)
+        if time.monotonic() >= end:
+            raise SystemExit(f"worker at {url} not healthy after {wait_s:.0f} s: {last}")
+        time.sleep(0.5)
+
+
 def run(url: str, where: str, scale: float) -> dict:
     c = Client(url)
     s = c.stats()
@@ -128,12 +149,14 @@ def run(url: str, where: str, scale: float) -> dict:
         r = result[name]
         print(f"{name:10} n={n:4} handler {r['handler_cpu_ms']['mean']:8.3f} ms (p95 {r['handler_cpu_ms']['p95']:8.3f})"
               f"  process {r['process_cpu_ms']:8.3f}  bg {r['bg_cpu_ms']:6.3f}  bb {r['blackbox_cpu_ms']:7.3f}"
-              f"  latency {r['latency_ms']['mean']:8.2f} ms (p95 {r['latency_ms']['p95']:8.2f})", flush=True)
+              f"  latency {r['latency_ms']['mean']:8.2f} ms (p95 {r['latency_ms']['p95']:8.2f})",
+              file=sys.stderr, flush=True)
     return {
         "meta": {"where": where, "url": url, "server": s["server"], "cpu_limit_cores": s["cpu_limit_cores"],
                  "ts": time.time(), "tenant": TENANT, "client_platform": sys.platform,
-                 "method": "sequential single client, keep-alive; latency measured client-side "
-                           "(includes host->container port forwarding when run against Docker)",
+                 "method": "sequential single client, keep-alive; latency measured client-side. In-container "
+                           "runs share the cgroup with the client (adds client CPU to latency, not to "
+                           "handler/process CPU); remote runs include network/port-forwarding time",
                  "notes": {"handler_cpu_ms": "X-TenantGuard-Cpu-Ms: what the gateway cost bucket is debited",
                            "process_cpu_ms": "worker process-tree CPU per request (incl. HTTP overhead, bg, "
                                              "black box): size fleet load with this against cpu_limit_cores",
@@ -148,14 +171,21 @@ def run(url: str, where: str, scale: float) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--url", default="http://127.0.0.1:18101")
+    ap.add_argument("--url", default="http://127.0.0.1:8100", help="worker base URL (default: this container)")
     ap.add_argument("--where", default="docker", help="label stored in meta.where (docker | local)")
     ap.add_argument("--scale", type=float, default=1.0, help="multiply sample counts")
-    ap.add_argument("--out", default=str(Path(__file__).resolve().parents[1] / "calibration.json"))
+    ap.add_argument("--wait-s", type=float, default=90, help="wait this long for /healthz before starting")
+    ap.add_argument("--out", default=str(Path(__file__).resolve().parents[1] / "calibration.json"),
+                    help="output file, or '-' for stdout")
     args = ap.parse_args()
+    wait_healthy(args.url, args.wait_s)
     data = run(args.url, args.where, args.scale)
-    Path(args.out).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    print(f"wrote {args.out}")
+    text = json.dumps(data, indent=2) + "\n"
+    if args.out == "-":
+        sys.stdout.write(text)
+    else:
+        Path(args.out).write_text(text, encoding="utf-8")
+        print(f"wrote {args.out}", file=sys.stderr)
 
 
 if __name__ == "__main__":
