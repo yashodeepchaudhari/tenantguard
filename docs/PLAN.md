@@ -257,14 +257,48 @@ Build:
 
 Done = pytest passes + the measured black-box noisy-neighbor numbers + calibration.json committed. Same protocol: started / blocked / done to `codeastra-ea`; no AI attribution in commits.
 
+### T7: Gateway wave 2 (T1 session, same worktree)
+**You are TASK T7:** when this is finished, the gateway is fully adaptive. The queue lives at the gateway with a per-worker window that tracks real latency, retry storms are capped, cheap requests never wait behind whales, and background CPU is charged to the tenant who caused it.
+
+You own `gateway/**`. Ask before contract/yaml changes (send exact proposals).
+
+Build:
+1. **Adaptive per-worker window** (gradient limiter): `new = old × (minRTT/sampleRTT) + sqrt(old)`, clamped to `gateway.limiter` min/max, with minRTT decaying slowly. Exposed in `LimiterStat.window`. Active in industry + tenantguard; off = fixed.
+2. **Express lane:** requests whose class reference cost < `gateway.express_cost_ms` skip ahead of heavy items (still per-tenant fair). Prove that light p95 stays flat while a whale is queued.
+3. **Retry budget:** a request is a retry if it repeats an `Idempotency-Key`, or (tenant, class, body-hash) within 10 s. Retries are allowed up to `gateway.retry_budget` (propose the key, default 0.1) of the tenant's recent requests, else 429 reason `retry_budget`. Telemetry/metrics count retries.
+4. **Batch class:** `X-TenantGuard-Class: batch` header or `batch_routes` → batch; bounded wait 5000 ms; batch is shed first when a worker's window is saturated.
+5. **Control `charge`** (new contract, propose it): `{tenant, cpu_ms}`, which debits the cost bucket. The brain will send per-tenant bg CPU each second (closing "background work included").
+6. **Control `reference_costs`** (ReferenceCostsCmd exists): overrides the class cost EWMA for DRR.
+7. Read `gateway.upstream_timeout_s` and `batch_routes` from yaml (keys now exist).
+8. Tests for each, plus mutation checks.
+
+Prove it against real workers: the whale vs light p95 with/without the express lane; a retry storm capped; window values moving under load.
+
+### T8: Brain integration + Stage 3 detection (T3 session, same worktree)
+**You are TASK T8:** when this is finished, the brain is proven end to end against the real gateway and workers. It can also tell *which server* is slow, rescue victims by routing around it within about a second, and name the culprit from the barcode pattern, including the hidden-cost case no meter sees.
+
+You own `brain/**`.
+
+Build:
+1. **Integration first:** run the real gateway (master) + real workers + the brain locally. Drive K with a whale (a curl/httpx loop with K's key, or `brain/tools/`) and show the ladder walking on REAL telemetry. Report the event log. This laptop is CPU-starved (~97%), so run 9 workers (no spare/quarantine) and keep traffic modest.
+2. **Health:** per server, peer_ratio = p95(server) / median(p95 of other servers) over `probe_window_ticks`; slow when ≥ `slow_peer_ratio` and +`slow_abs_ms`, for `open_after_ticks`. Fill `ServerView.peer_ratio`/`status`.
+3. **Rescue:** on slow servers, send RouteWeightsCmd shifting each affected tenant's weight to its healthy barcode servers, capped by `rescue_capacity_guard`. Stage `rescued` in IncidentEvent.
+4. **Decoder:** score each tenant from barcode coverage (min and mean of the logistic p_s over its 3 servers) + "stuck" (all its servers slow) + ledger hints (bg_cpu growth, evictions_caused, blackbox_cpu growth on all its servers). Softmax over candidates + `host_fault` + `none`; explain-away for 2 culprits. Stage `named` with Suspects. Pure module + tests, including the property "for all 66 culprit pairs with clean signals, the decoder returns exactly that pair".
+5. **Host fault:** a slow server that no candidate explains → host suspect (verdict later). Use the worker's `/admin/fault` to prove it live.
+6. Prover/relocation (`docker update`) comes in the next task (it needs the Docker host); leave a clean interface.
+
+Prove it live: (a) fault-inject w4 → rescue shifts B/E/G/L away within ~1–2 s and names "host suspect w4", no tenant blamed; (b) K hammering /api/search on its 3 servers → named K with confidence.
+
 ## Task table
 
 | Task | Branch | Worktree | Session | Status |
 |---|---|---|---|---|
-| T1 Gateway | task/T1-gateway | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | in progress |
+| T1 Gateway | task/T1-gateway | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
+| T7 Gateway wave 2 | task/T7-gateway-adaptive | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | assigned |
 | T2 Workers | task/T2-workers | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged** (9cebaaf) |
 | T6 Workers wave 2 | task/T6-worker-blackbox | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | assigned |
-| T3 Brain | task/T3-brain | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | in progress |
+| T3 Brain | task/T3-brain | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | **merged** |
+| T8 Brain integration + health/rescue/decoder | task/T8-brain-detect | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | assigned |
 | T4 UI | task/T4-ui | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | in progress |
 | T5 Lab | task/T5-lab | D:\yashodeep\codeAstra-T5 | codeastra-t5-79 | in progress |
 | Convergence samples | n/a (main dir, docs/convergence/) | main | codeastra-21 | assigned |
@@ -309,4 +343,7 @@ Done = pytest passes + the measured black-box noisy-neighbor numbers + calibrati
   - #8: 500s carry the CPU header
 
   T1: treat a missing `X-TenantGuard-Cpu-Ms` header as 0.
+- 2026-10-12 (T3, accepted): the noisy score uses **barcode-scoped shares**: tenant CPU / capacity of its own servers vs weight / Σ active weights per server. victim_impact is averaged over barcode neighbours. Global shares flagged calm free-tier tenants at ~1.55×. New keys are under `brain.noisy`.
+- 2026-10-12 (T1, accepted): TTLs keep expiring during fail-static (auto-undo beats stale punishment). Overrides apply only in `tenantguard` mode. Bounded wait applies in all modes. New keys: `gateway.batch_routes`, `gateway.upstream_timeout_s`.
+- 2026-10-12: This laptop hits ~97% CPU with 11 workers + sessions, so latency tails here are machine noise. Real numbers come from the Docker host (friend's laptop).
 - 2026-10-12: Cost bucket is debited with the worker-measured CPU (`X-TenantGuard-Cpu-Ms`) rather than an estimate, so it is a real resource quota, not a request count.
