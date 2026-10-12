@@ -35,8 +35,9 @@ function useRows(history: HistoryPoint[], key: 'p95' | 'cpu') {
     if (!history.length) return []
     const last = history[history.length - 1].ts
     return history.map((p) => {
-      const row: Record<string, number> = { t: Math.round((p.ts - last) * 10) / 10 }
-      for (const [k, v] of Object.entries(p[key])) row[k] = key === 'cpu' ? v * 100 : Math.max(1, v)
+      const row: Record<string, number | null> = { t: Math.round((p.ts - last) * 10) / 10 }
+      // p95 0 = nothing completed: leave a gap instead of drawing a fake 1 ms
+      for (const [k, v] of Object.entries(p[key])) row[k] = key === 'cpu' ? v * 100 : v > 0 ? Math.max(1, v) : null
       return row
     })
   }, [history, key])

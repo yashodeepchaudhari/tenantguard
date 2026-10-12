@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { IncidentEvent } from '../types.ts'
-import { barcodeMatch, caseIndex, reportSections, summarizeCase } from './case.ts'
+import { barcodeMatch, caseIndex, reportSections, stepTime, summarizeCase } from './case.ts'
 
 const ev = (o: Partial<IncidentEvent>): IncidentEvent => ({
   type: 'incident',
@@ -36,6 +36,14 @@ describe('case file', () => {
     expect(c.action).toBe('limits factor=0.5')
     expect(c.level).toBe('throttle')
     expect(c.detail).toBe('back to baseline')
+  })
+
+  it("a brain that only sends 'closed' still completes the Resolved step", () => {
+    const c = summarizeCase('x', [ev({ incident_id: 'x', stage: 'detected', ts: 1 }), ev({ incident_id: 'x', stage: 'closed', ts: 9 })])
+    expect(c.closed).toBe(true)
+    expect(stepTime(c, 'resolved')).toEqual({ ts: 9, via: 'closed' })
+    expect(stepTime(c, 'detected')).toEqual({ ts: 1, via: 'detected' })
+    expect(stepTime(c, 'verdict')).toBeNull()
   })
 
   it('an open case is not closed', () => {

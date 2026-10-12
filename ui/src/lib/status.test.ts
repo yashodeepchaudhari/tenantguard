@@ -22,6 +22,8 @@ describe('status colours', () => {
 
   it('no traffic is idle (grey), not green', () => {
     expect(tenantStatus({ level: 'normal', p95_ms: 0, rps: 0 }, th)).toBe('idle')
+    expect(tenantStatus({ level: 'normal', p95_ms: 0, rps: 0.04 }, th)).toBe('idle') // p95 0 = no data, not fast
+    expect(tenantStatus({ level: 'warn', p95_ms: 0, rps: 0 }, th)).toBe('warn')
   })
 
   it('server cells: slow red, hot amber, drained grey', () => {

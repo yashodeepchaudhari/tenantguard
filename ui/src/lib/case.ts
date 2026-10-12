@@ -66,6 +66,15 @@ export function summarizeCase(id: string, events: IncidentEvent[]): CaseSummary 
   }
 }
 
+/** When a step was reached. The Wave 1 brain ends incidents with `closed` and never sends
+ *  `resolved`, so `closed` also completes the Resolved step. */
+export function stepTime(c: Pick<CaseSummary, 'reached'>, step: Stage): { ts: number; via: Stage } | null {
+  const ts = c.reached[step]
+  if (ts !== undefined) return { ts, via: step }
+  if (step === 'resolved' && c.reached.closed !== undefined) return { ts: c.reached.closed, via: 'closed' }
+  return null
+}
+
 /** How many of the slow servers are in the suspect's barcode (its 3 servers). */
 export function barcodeMatch(barcode: string[], slow: string[]): { matched: string[]; missing: string[]; score: number } {
   const b = new Set(barcode)

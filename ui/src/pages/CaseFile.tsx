@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { LevelBadge } from '../components/LevelBadge.tsx'
 import { ServerGrid } from '../components/ServerGrid.tsx'
-import { barcodeMatch, CASE_STEPS, reportSections, summarizeCase, type CaseSummary, type ReportSection } from '../lib/case.ts'
+import { barcodeMatch, CASE_STEPS, reportSections, stepTime, summarizeCase, type CaseSummary, type ReportSection } from '../lib/case.ts'
 import { clock } from '../lib/format.ts'
 import { useBackend, useLive, useNow } from '../lib/liveContext.ts'
 import { STATUS_HEX } from '../lib/status.ts'
@@ -26,8 +26,9 @@ function Stepper({ c }: { c: CaseSummary }) {
   return (
     <ol className="grid grid-cols-7 gap-2" data-testid="case-steps">
       {CASE_STEPS.map((s, i) => {
-        const ts = c.reached[s]
-        const done = ts !== undefined
+        const hit = stepTime(c, s)
+        const done = hit !== null
+        const ts = hit?.ts ?? 0
         return (
           <li
             key={s}
@@ -35,7 +36,10 @@ function Stepper({ c }: { c: CaseSummary }) {
             className={`rounded-lg border-2 px-3 py-2 ${done ? 'border-accent bg-accent/10' : 'border-dashed border-ink-700 text-ink-500'}`}
           >
             <div className="text-xs font-semibold uppercase tracking-wider text-ink-300">step {i + 1}</div>
-            <div className={`text-lg font-bold ${done ? 'text-ink-100' : ''}`}>{STEP_LABEL[s]}</div>
+            <div className={`text-lg font-bold ${done ? 'text-ink-100' : ''}`}>
+              {STEP_LABEL[s]}
+              {hit && hit.via !== s && <span className="ml-1 text-sm font-normal text-ink-300">({hit.via})</span>}
+            </div>
             <div className="font-mono text-sm">{done ? `${clock(ts)} · +${(ts - t0).toFixed(1)} s` : 'not reached'}</div>
           </li>
         )

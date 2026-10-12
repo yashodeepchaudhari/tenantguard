@@ -34,10 +34,16 @@ function Tile({ t, selected, onSelect }: { t: TenantView; selected: boolean; onS
         <span className="text-xs uppercase tracking-wider text-ink-300">{t.tier}</span>
       </div>
       <div className="flex items-baseline justify-between gap-2">
-        <span className={`text-3xl font-bold leading-tight ${NUMBER[status]}`}>
-          {p95Num}
-          <span className="unit">{p95Unit} p95</span>
-        </span>
+        {t.p95_ms > 0 ? (
+          <span className={`text-3xl font-bold leading-tight ${NUMBER[status]}`}>
+            {p95Num}
+            <span className="unit">{p95Unit} p95</span>
+          </span>
+        ) : (
+          <span className="text-2xl font-bold leading-tight text-ink-500" title="no completed requests in the last 5 s">
+            no traffic
+          </span>
+        )}
         <span className="text-right text-sm leading-tight text-ink-300">
           {rps(t.rps)}
           {t.rejected_rps >= 0.5 && (

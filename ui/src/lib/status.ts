@@ -19,7 +19,8 @@ export function levelStatus(level: Level): Status {
 export function tenantStatus(t: Pick<TenantView, 'level' | 'p95_ms' | 'rps'>, th: Thresholds): Status {
   const byLevel = levelStatus(t.level)
   if (byLevel === 'bad') return 'bad'
-  if (t.rps <= 0 && t.p95_ms <= 0) return byLevel === 'warn' ? 'warn' : 'idle'
+  // p95_ms == 0 means nothing completed in the window: no data, not fast (contract QueueStat/TenantView)
+  if (t.p95_ms <= 0) return byLevel === 'warn' ? 'warn' : 'idle'
   const byLatency: Status = t.p95_ms >= th.p95BadMs ? 'bad' : t.p95_ms >= th.p95WarnMs ? 'warn' : 'ok'
   return rank(byLatency) > rank(byLevel) ? byLatency : byLevel
 }
