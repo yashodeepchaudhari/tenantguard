@@ -1,7 +1,7 @@
 // @live: the real detection loop on the Docker host. Run only with E2E_LIVE=1 against a stack
 // with calm traffic available (lab). calm -> whale on K -> a K incident within 60 s -> stop the
 // whale -> K recovers (normal, full quota) within 90 s.
-import { TOKEN_HEADER, URLS, until } from './env.ts'
+import { ALLOW_WRITES, TOKEN_HEADER, URLS, until, WRITES_OFF } from './env.ts'
 import { expect, test } from './fixtures.ts'
 
 interface TenantView {
@@ -13,6 +13,7 @@ interface TenantView {
 
 test('@live whale on K is detected, acted on, and recovers', async ({ page, request, services }) => {
   test.setTimeout(240_000)
+  test.skip(!ALLOW_WRITES, WRITES_OFF)
   test.skip(!services.lab, `lab not reachable at ${URLS.lab}`)
   test.skip(!!services.labRun, `lab scenario run ${services.labRun} in progress`)
 

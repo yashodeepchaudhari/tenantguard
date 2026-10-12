@@ -22,6 +22,11 @@ export const URLS = {
 
 export const TOKEN_HEADER = { 'X-TenantGuard-Control-Token': URLS.token }
 
+/** Tests that change state (mode, quotas, attacks) run against the mock stack, and against a real
+ *  stack only when E2E_ALLOW_WRITES=1 is set on purpose: a shared host may be mid-measurement. */
+export const ALLOW_WRITES = MOCK || env.E2E_ALLOW_WRITES === '1'
+export const WRITES_OFF = 'real stack: state-changing test skipped (set E2E_ALLOW_WRITES=1 to allow)'
+
 /** Demo API key for a tenant (layouts/ag23.json). */
 export const apiKey = (tenant: string) => `tk_${tenant}_demo`
 

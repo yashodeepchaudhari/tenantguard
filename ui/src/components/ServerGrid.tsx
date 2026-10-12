@@ -31,23 +31,34 @@ function Cell({ sv, s, lit, compact, note }: { sv: string; s: ServerView | undef
       data-testid={`server-${sv}`}
       data-status={s?.status ?? 'unknown'}
       data-lit={lit ? '1' : '0'}
-      className={`relative flex min-h-0 flex-col justify-between rounded-lg border-2 px-2 ${compact ? 'py-1' : 'py-1.5'} ${FRAME[st]} ${
+      className={`relative flex min-w-0 flex-col justify-between overflow-hidden rounded-lg border-2 px-2 ${compact ? 'min-h-[58px] py-1' : 'min-h-[84px] py-1.5'} ${FRAME[st]} ${
         lit ? 'outline outline-[3px] outline-offset-1 outline-accent' : ''
       }`}
       style={drained ? HATCH : undefined}
       title={s ? `${sv}: ${s.status}, p95 ${ms(s.p95_ms)}, ${s.peer_ratio.toFixed(2)}× peers, CPU ${s.cpu_pct.toFixed(0)} %` : `${sv}: no data`}
     >
-      <div className="flex items-baseline justify-between gap-1">
-        <span className="text-lg font-black leading-none text-ink-100">{sv}</span>
-        <span className={`text-xs font-bold uppercase ${TEXT[st]}`}>{s?.status ?? '–'}</span>
-      </div>
-      {note && <div className="text-sm font-semibold text-accent">{note}</div>}
-      {s && (
-        <>
-          <div className={`font-bold leading-tight ${compact ? 'text-base' : 'text-xl'} ${TEXT[st]}`}>
+      <div className="flex min-w-0 items-baseline justify-between gap-1">
+        <span className="shrink-0 text-lg font-black leading-none text-ink-100">{sv}</span>
+        {compact && s && (
+          <span className={`min-w-0 truncate text-sm font-bold leading-none ${TEXT[st]}`}>
             {s.peer_ratio.toFixed(1)}
             <span className="unit">× peers</span>
-          </div>
+          </span>
+        )}
+        {/* colour already says healthy; the word is kept for slow / drained / no data */}
+        {(!compact || s?.status !== 'healthy') && (
+          <span className={`shrink-0 text-xs font-bold uppercase leading-none ${TEXT[st]}`}>{s?.status ?? '–'}</span>
+        )}
+      </div>
+      {note && <div className="truncate text-sm font-semibold text-accent">{note}</div>}
+      {s && (
+        <>
+          {!compact && (
+            <div className={`truncate text-xl font-bold leading-tight ${TEXT[st]}`}>
+              {s.peer_ratio.toFixed(1)}
+              <span className="unit">× peers</span>
+            </div>
+          )}
           <div className="flex items-center gap-1.5">
             <div className="h-1.5 flex-1 rounded bg-ink-800">
               <div className={`h-full rounded ${BAR[st]}`} style={{ width: `${Math.min(100, s.cpu_pct)}%` }} />
@@ -71,13 +82,13 @@ export function ServerGrid({ servers, highlight = [], highlightLabel, compact = 
         <div className="panel-title">{title}</div>
         {highlightLabel && <span className="truncate text-sm font-semibold text-accent">{highlightLabel}</span>}
       </div>
-      <div className="grid min-h-0 flex-1 grid-cols-3 grid-rows-3 gap-1.5">
+      <div className="grid min-h-0 flex-1 grid-cols-3 grid-rows-3 gap-1.5" data-testid="server-grid">
         {FLEET.map((sv) => (
           <Cell key={sv} sv={sv} s={by.get(sv)} lit={lit.has(sv)} compact={compact} note={annotate?.[sv]} />
         ))}
       </div>
       {extra.length > 0 && (
-        <div className="mt-1 flex gap-3 text-xs text-ink-300">
+        <div className="mt-1 flex gap-3 truncate text-xs text-ink-300">
           {extra.map((s) => (
             <span key={s.server} data-testid={`server-${s.server}`}>
               {s.server}: <b className={TEXT[serverStatus(s)]}>{s.status}</b> · {s.cpu_pct.toFixed(0)} % CPU

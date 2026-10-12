@@ -1,7 +1,7 @@
 // Operator flows in the dashboard. Every effect is verified through the backend's own API,
 // not just the UI. Anything the suite changes (mode, quota) is restored afterwards.
 import type { APIRequestContext, Page } from '@playwright/test'
-import { TOKEN_HEADER, URLS, until } from './env.ts'
+import { ALLOW_WRITES, TOKEN_HEADER, URLS, until, WRITES_OFF } from './env.ts'
 import { expect, test } from './fixtures.ts'
 
 const MODE_LABEL = { off: 'OFF', industry: 'Industry', tenantguard: 'TenantGuard' } as const
@@ -39,6 +39,7 @@ test('picking a tenant tile outlines its barcode servers', async ({ page, reques
 })
 
 test('mode toggle round-trip is applied by the gateway', async ({ page, request, services }) => {
+  test.skip(!ALLOW_WRITES, WRITES_OFF)
   test.skip(!!services.labRun, `lab scenario run ${services.labRun} in progress: not changing the mode`)
   await openControlRoom(page)
   const before = await getMode(request)
@@ -61,6 +62,7 @@ test('attack launcher offers exactly the five supported attacks', async ({ page 
 })
 
 test('attack launcher starts an attack, shows it running, and stops it', async ({ page, request, services }) => {
+  test.skip(!ALLOW_WRITES, WRITES_OFF)
   test.skip(!services.lab, `lab not reachable at ${URLS.lab}`)
   test.skip(!!services.labRun, `lab scenario run ${services.labRun} in progress: not launching attacks`)
   await openControlRoom(page)
@@ -84,6 +86,7 @@ test('attack launcher starts an attack, shows it running, and stops it', async (
 })
 
 test('Tenants page edits a quota through PATCH and the change is restored', async ({ page, request, services }) => {
+  test.skip(!ALLOW_WRITES, WRITES_OFF)
   test.skip(!!services.labRun, `lab scenario run ${services.labRun} in progress: not editing quotas`)
   const quotaOf = async () =>
     (await (await request.get(`${URLS.gateway}/admin/tenants`, { headers: TOKEN_HEADER })).json()).find((t: { id: string }) => t.id === 'E').quota
