@@ -1,0 +1,64 @@
+# Traffic lab personas and attack profiles. Every lab tunable lives here.
+#
+# Calm traffic is open-loop Poisson per tenant. Effective rate = rps * rate_scale.
+# Calibration target: ~30% of fleet CPU (9 workers x worker.cpus from tenantguard.yaml).
+# Check it against the real fleet with `python -m tenantguard_lab calibrate`, which runs
+# calm traffic, reads every worker's /stats and prints the rate_scale to use.
+
+# Calm load ~116 req/s. CPU comes from request weight (search n), not request count: an httpx client costs
+# ~3 ms CPU per request on the dev laptop, so one lab process tops out near 270 req/s, and a Python gateway
+# pays a similar per-request cost. est_cpu_ms below follow worker/README (search ~0.35 us/doc); the estimate
+# is ~30% of 4500 CPU-ms/s (9 x 0.5 cores). Recalibrate on the real fleet with `calibrate`.
+rate_scale: 1.0
+autostart: true            # the lab server starts calm traffic on boot (env TENANTGUARD_LAB_AUTOSTART=0 disables)
+default_attacker: K        # tenant used by /lab/run when RunReq.tenant is empty
+target_fleet_util: 0.30
+
+client:
+  timeout_s: 10.0
+  max_inflight_per_tenant: 64     # calm traffic: arrivals beyond this are counted as client_dropped
+  max_inflight_per_attack: 512
+  attack_isolation: process        # each attack in its own process so it can't inflate victim latency; 'inline' = same loop
+  keyspace: 1000                   # /api/read and /api/write keys k0000..k0999 (worker seed_rows)
+
+# What each request kind is. est_cpu_ms is only used for the calibration estimate printout.
+endpoints:
+  light:  {method: GET,  path: /api/light,  est_cpu_ms: 0.8}
+  read:   {method: GET,  path: /api/read,   est_cpu_ms: 1.0}
+  search: {method: GET,  path: /api/search, params: {n: 200000}, est_cpu_ms: 70.0}
+  write:  {method: POST, path: /api/write,  est_cpu_ms: 7.0}    # handler + background indexing
+
+# Default request mix (weights, normalised). Personas may override.
+mix: {light: 0.45, read: 0.30, search: 0.15, write: 0.10}
+
+# id -> persona. Names and tiers come from the layout; these add behaviour and profile.
+personas:
+  A: {rps: 14, sla_p95_ms: 50,  end_users: 2000000, note: "hospital records, steady reads"}
+  B: {rps: 10, sla_p95_ms: 80,  end_users: 900000,  mix: {light: 0.35, read: 0.30, search: 0.25, write: 0.10}, note: "catalogue search heavy"}
+  C: {rps: 5,  sla_p95_ms: 150, end_users: 40000,   note: "image studio, small free plan"}
+  D: {rps: 14, sla_p95_ms: 40,  end_users: 3000000, mix: {light: 0.50, read: 0.25, search: 0.05, write: 0.20}, note: "payments, write heavy"}
+  E: {rps: 10, sla_p95_ms: 80,  end_users: 600000,  note: "online classes"}
+  F: {rps: 5,  sla_p95_ms: 150, end_users: 30000,   note: "fitness tracker"}
+  G: {rps: 14, sla_p95_ms: 50,  end_users: 1500000, note: "ride hailing"}
+  H: {rps: 10, sla_p95_ms: 80,  end_users: 300000,  mix: {light: 0.40, read: 0.25, search: 0.10, write: 0.25}, note: "accounting, write heavy"}
+  I: {rps: 5,  sla_p95_ms: 150, end_users: 50000,   note: "food delivery"}
+  J: {rps: 14, sla_p95_ms: 50,  end_users: 5000000, note: "e-commerce, sale days"}
+  K: {rps: 10, sla_p95_ms: 80,  end_users: 250000,  note: "task marketplace, usual culprit in demos"}
+  L: {rps: 5,  sla_p95_ms: 150, end_users: 80000,   mix: {light: 0.40, read: 0.50, search: 0.05, write: 0.05}, note: "news, read heavy"}
+
+# Attack profiles at intensity 1.0 (AttackReq.intensity multiplies the rate / concurrency).
+attacks:
+  flood:       {multiplier: 10, endpoint: light}                  # 10x persona rps of /api/light
+  whale:       {rps: 2.0, params: {n: 1500000}, max_inflight: 32} # few, very heavy /api/search (~525 ms CPU each)
+  hog:         {concurrency: 24, path: /api/export, params: {rows: 1000, chunk: 50, pause_ms: 50}}  # ~1 s each, closed loop
+  memory:      {rps: 4.0, params: {mb: 24, hold_ms: 1000}, max_inflight: 32}  # overlapping holds exceed the 32 MB tenant budget
+  retry_storm: {multiplier: 3, endpoint: read, max_retries: 50}   # retries at once on 429/503, ignores Retry-After
+
+# Scripted run (POST /lab/run): warmup is discarded, then calm_s -> attack_s -> calm_s.
+run:
+  warmup_s: 3
+  cold_start_s: 10          # extra warmup if calm traffic was off: fresh connections take ~9 s to settle on Windows
+  recover_ratio: 1.5        # recovered when victim p99 <= ratio x baseline ...
+  recover_hold_s: 5         # ... for this many consecutive seconds
+  bucket_s: 1.0
+  victim_kinds: [light, read]   # interactive requests whose latency is the victims' SLO; [] = every calm request
