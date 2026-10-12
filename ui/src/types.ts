@@ -251,3 +251,61 @@ export interface LabStatus {
   calm_running: boolean
   run?: string | null
 }
+
+// ---------- 6. Handoff cases (bridge integrations/handoff on :8400) ----------
+export type Verdict = 'costly_pattern' | 'over_plan' | 'honest_growth' | 'host_fault' | 'mitigated_no_blame'
+export type Severity = 'low' | 'medium' | 'high'
+export type CaseStatus = 'waiting_for_decision' | 'in_progress' | 'resolved' | 'closed'
+export type CaseDecision = 'approve' | 'reject' | 'extend' | 'release' | 'resolve'
+export type ActionState = 'pending' | 'approved' | 'rejected' | 'extended' | 'released' | 'resolved' | 'expired'
+
+export interface CaseContext {
+  verdict: Verdict
+  affected: string[] // victim tenant ids (barcode neighbours), may be empty
+  evidence_link: string // http://<ui-host>:5173/case/<incident_id>
+  summary: string
+}
+
+export interface CaseAction {
+  action_id: string // "A1", "A2", ... unique within a case
+  text: string
+  deadline_at: number // epoch s; after it TenantGuard applies its safe default (TTL auto-undo)
+  deadline_ist: string // display only, "HH:MM:SS" IST
+  state: ActionState
+  decided_by?: string | null
+  decided_at?: number | null
+}
+
+export interface CaseHistoryItem {
+  at: number // epoch s
+  time_ist: string // display only
+  event: string
+}
+
+/** Bridge GET /cases (list) and GET /cases/{case_id}. */
+export interface CaseView {
+  case_id: string // "INC-0001", assigned by the bridge
+  incident_id: string // brain IncidentEvent.incident_id
+  tenant?: string | null
+  title: string
+  severity: Severity
+  status: CaseStatus
+  context: CaseContext
+  actions: CaseAction[]
+  history: CaseHistoryItem[]
+  owner?: string | null
+  owner_since_at?: number | null
+  owner_since_ist?: string | null
+  created_at: number
+  updated_at: number
+  delivered_at?: number | null // last successful POST to the Web app; null = not yet delivered
+}
+
+/** Human decision -> brain POST /api/operator (control token required). */
+export interface OperatorCmd {
+  tenant: string
+  decision: 'release' | 'extend' | 'resume'
+  until_s: number
+  by: string
+  case_id?: string | null
+}

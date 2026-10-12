@@ -20,7 +20,7 @@ Their PS even says: **"Convergence: Web + Cybersecurity + Cloud"**, so we are th
 | Their PS needs | TenantGuard gives them |
 |---|---|
 | Case creation and ownership | Every incident = one case |
-| Centralized context and documents | Verdict, affected customers, evidence link, AI report |
+| Centralized context and documents | Verdict, affected customers, evidence link, incident report |
 | Pending actions and deadline tracking | Our actions have timers, e.g. "Quarantine of K ends in 2 min: extend or release?" |
 | Handoff completeness check | "Can't hand off: INC-104 still needs an approval" |
 | New-owner acknowledgement | New owner clicks Acknowledge → TenantGuard shows the new owner |

@@ -1,12 +1,12 @@
 ## Enhanced Implementation Prompt
 
 ### Objective
-Build **TenantGuard**, a multi-tenant isolation and noisy-neighbour defense platform. A Go gateway enforces fair, cost-based per-tenant admission and scheduling. A Python brain detects interference, rescues victims within about a second, names the culprit with shuffle-sharded "barcodes", proves it with a relocation test, picks one of five verdicts, acts with auto-undo, and explains every incident (fair billing, "Why was I slow?", grounded Claude-written reports). A React dashboard shows it live, including a blind phone test and an OFF / Industry / TenantGuard scorecard.
+Build **TenantGuard**, a multi-tenant isolation and noisy-neighbour defense platform. A Go gateway enforces fair, cost-based per-tenant admission and scheduling. A Python brain detects interference, rescues victims within about a second, names the culprit with shuffle-sharded "barcodes", proves it with a relocation test, picks one of five verdicts, acts with auto-undo, and explains every incident (fair billing, "Why was I slow?", evidence-based incident reports). A React dashboard shows it live, including a blind phone test and an OFF / Industry / TenantGuard scorecard.
 
 ### Context
 - **Tech stack:**
   - Gateway: Go 1.22+ (`net/http`, `httputil.ReverseProxy`, WebSocket library).
-  - Workers, brain, traffic lab, relay: Python 3.12 (FastAPI, uvicorn, asyncio, httpx, psutil, numpy, pydantic, PyYAML, `docker` SDK, `anthropic` SDK).
+  - Workers, brain, traffic lab, relay: Python 3.12 (FastAPI, uvicorn, asyncio, httpx, psutil, numpy, pydantic, PyYAML, `docker` SDK).
   - UI: React 18 + Vite + TypeScript + Tailwind + Recharts.
   - Infra: Docker Compose with cgroup v2 limits; Azure Ubuntu VM with Caddy.
 - **Deployment topology:**
@@ -152,15 +152,10 @@ Build **TenantGuard**, a multi-tenant isolation and noisy-neighbour defense plat
     - True-cost lines for costly patterns.
     - "Why was I slow?" records per victim, with the offender anonymised.
 33. `events.py`: a WebSocket broadcast of contract 4 for every stage (detected, rescued, named, proving, verdict, resolved, explained), plus a full state snapshot at 2 Hz for the UI.
-34. `narrator.py` (Claude):
-    - Use the official `anthropic` SDK with model `claude-opus-5-5`, `output_config={"effort": "low"}`, and structured output via `client.messages.parse(..., output_format=IncidentReport)`.
-    - `IncidentReport` fields (Pydantic): `headline`, `timeline: list[str]`, `cause`, `evidence_points: list[str]`, `action_taken`, `operator_recommendation`.
-    - A second call on the **anonymised** evidence returns `CustomerMessage {message}`.
-    - Put the stable system prompt first, with `cache_control={"type": "ephemeral"}`. The system prompt instructs: use only facts in the evidence JSON; write plain English for a non-expert.
-    - Run asynchronously off the decision path.
-    - Grounding check: every tenant ID, server ID and number in the output must appear in the evidence. If the check fails, or `stop_reason == "refusal"`, or the API errors, show the deterministic template report.
-    - Show the template instantly and replace it with the AI report when it arrives.
-    - Decisions are never made by the narrator.
+34. `narrator.py`:
+    - Build `IncidentReport` (`headline`, `timeline: list[str]`, `cause`, `evidence_points: list[str]`, `action_taken`, `operator_recommendation`) deterministically from the evidence pack.
+    - Build `CustomerMessage {message}` from the **anonymised** evidence.
+    - Run off the decision path. Decisions are never made by the narrator.
 
 **E. Traffic lab (Python)**
 35. Twelve tenant clients as **personas**: A Aarogya Health, B BazaarKart, C Chitra Studio, D DhanSetu Payments, E Ekalavya Learn, F FitZone, G GaadiGo, H HisaabBooks, I IdliExpress, J JhatpatMart, K KaamKaro, L LokVani News. Each has:
@@ -191,7 +186,7 @@ Build **TenantGuard**, a multi-tenant isolation and noisy-neighbour defense plat
     - Confidence bar per suspect.
     - Mode toggle (OFF / Industry / TenantGuard).
     - Shadow-mode Approve button and kill switch.
-41. **Case File**: barcode match, harm graph (who made whom wait / who evicted whom), relocation chart (original servers recovering vs. spare absorbing the harm), verdict, action, TTL countdown, evidence hash, AI report (template → AI swap).
+41. **Case File**: barcode match, harm graph (who made whom wait / who evicted whom), relocation chart (original servers recovering vs. spare absorbing the harm), verdict, action, TTL countdown, evidence hash, incident report.
 42. **Scorecard**: OFF / Industry / TenantGuard per attack (table + bar charts) from crash-test JSON and live runs.
 43. **Billing**: per-tenant cost breakdown, credits, true-cost lines, "Why was I slow?" per victim.
 44. **Play** (mobile-first): pick tenant → pick attack → Start → Reveal, showing the judge's pick next to TenantGuard's verdict. No sign-up.
@@ -224,20 +219,6 @@ Build **TenantGuard**, a multi-tenant isolation and noisy-neighbour defense plat
 - **Incident state machine:** `OPEN → RESCUED → NAMED → PROVING → VERDICT → RESOLVED → EXPLAINED → CLOSED`, with `MITIGATED_NO_BLAME` reachable from `NAMED` or `PROVING`.
 - **Docker control:** the brain container mounts `/var/run/docker.sock`. `docker_ctl.py` wraps `container.update(cpu_quota=..., cpu_period=100000)` and scale-out (start a pre-created stopped worker).
 - **Reference costs:** workers report per-class measured cost each second. The brain keeps the EWMA (calm periods only) and pushes the table to `/control/reference_costs` every 5 s.
-- **Narrator call shape** (Python):
-  ```python
-  client = anthropic.Anthropic()
-  resp = client.messages.parse(
-      model="claude-opus-5-5",
-      max_tokens=4000,
-      output_config={"effort": "low"},
-      system=[{"type": "text", "text": NARRATOR_SYSTEM, "cache_control": {"type": "ephemeral"}}],
-      messages=[{"role": "user", "content": evidence_json}],
-      output_format=IncidentReport,
-  )
-  report = resp.parsed_output
-  ```
-  Check `resp.stop_reason` before use. Catch `anthropic.RateLimitError`, `anthropic.APIStatusError` and `anthropic.APIConnectionError` (most specific first) and fall back to the template.
 - **Errors:**
   - The gateway never crashes on a bad control command (it validates and returns 400).
   - The brain logs and skips a tick on missing data.
@@ -301,4 +282,3 @@ Build **TenantGuard**, a multi-tenant isolation and noisy-neighbour defense plat
 - OAuth / user sign-up flows (API keys + optional partner JWT only).
 - Multi-region deployment and a production Redis-backed gateway cluster (roadmap slide only).
 - Envoy filter and Kubernetes operator (roadmap slide only).
-- Letting the AI narrator make or change any decision.

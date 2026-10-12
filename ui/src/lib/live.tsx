@@ -10,7 +10,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
     const script = new URLSearchParams(window.location.search).get('script') !== '0'
     return {
       backend: config.mock ? createMockBackend({ script }) : realBackend,
-      store: new LiveStore(config.historyS),
+      store: new LiveStore({ historyS: config.historyS, sloMs: config.p95WarnMs, warnFallback: config.noisy.warn }),
     }
   }, [])
 
@@ -22,9 +22,26 @@ export function LiveProvider({ children }: { children: ReactNode }) {
       (m) => store.apply(m),
       (s) => store.setConn(s),
     )
+    // gateway admin data shared by the grid, flow view, impact meter and case files
+    const loadTenants = () =>
+      backend
+        .tenants()
+        .then((t) => !cancelled && store.setAdmin(t))
+        .catch(() => {})
+    const loadOverrides = () =>
+      backend
+        .overrides()
+        .then((o) => !cancelled && store.setOverrides(o))
+        .catch(() => !cancelled && store.setOverrides(null))
+    loadTenants()
+    loadOverrides()
+    const t1 = setInterval(loadTenants, 30000)
+    const t2 = setInterval(loadOverrides, 2000)
     return () => {
       cancelled = true
       unsub()
+      clearInterval(t1)
+      clearInterval(t2)
     }
   }, [value])
 

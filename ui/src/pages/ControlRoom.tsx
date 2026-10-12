@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import { AttackLauncher } from '../components/AttackLauncher.tsx'
 import { CpuShareChart, P95Chart } from '../components/Charts.tsx'
+import { FlowView } from '../components/FlowView.tsx'
 import { Gauge } from '../components/Gauge.tsx'
+import { ImpactPanel } from '../components/ImpactPanel.tsx'
 import { IncidentTimeline } from '../components/IncidentTimeline.tsx'
 import { NoisyBars } from '../components/NoisyBars.tsx'
 import { ServerGrid } from '../components/ServerGrid.tsx'
@@ -15,10 +17,51 @@ import { fairnessStatus, tenantStatus, utilizationStatus, worst } from '../lib/s
 
 const SENTENCE: Record<string, string> = { ok: 'text-ink-100', warn: 'text-warn', bad: 'text-bad', idle: 'text-ink-300' }
 
+type View = 'tiles' | 'flow'
+const VIEW_KEY = 'tenantguard.controlRoom.view'
+
+function initialView(): View {
+  const q = new URLSearchParams(window.location.search).get('view')
+  if (q === 'flow' || q === 'tiles') return q
+  try {
+    return window.localStorage.getItem(VIEW_KEY) === 'flow' ? 'flow' : 'tiles'
+  } catch {
+    return 'tiles'
+  }
+}
+
+function ViewToggle({ view, onChange }: { view: View; onChange: (v: View) => void }) {
+  return (
+    <div className="flex flex-col gap-1" role="radiogroup" aria-label="Control Room view">
+      {(['tiles', 'flow'] as const).map((v) => (
+        <button
+          key={v}
+          role="radio"
+          aria-checked={view === v}
+          data-testid={`view-${v}`}
+          onClick={() => onChange(v)}
+          className={`rounded-md px-2 py-0.5 text-sm font-bold ${view === v ? 'bg-accent text-ink-950' : 'border border-ink-700 text-ink-300 hover:text-ink-100'}`}
+        >
+          {v === 'tiles' ? 'Tiles' : 'Flow'}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 export function ControlRoom() {
-  const { snapshot, history, incidents, conn } = useLive()
+  const { snapshot, history, incidents, conn, overrides } = useLive()
   const barcodes = useBarcodes()
   const [picked, setPicked] = useState<string | null>(null)
+  const [view, setViewState] = useState<View>(initialView)
+  const setView = (v: View) => {
+    setViewState(v)
+    try {
+      window.localStorage.setItem(VIEW_KEY, v)
+    } catch {
+      /* storage unavailable: the toggle still works for this visit */
+    }
+  }
 
   if (!snapshot) {
     return (
@@ -47,6 +90,7 @@ export function ControlRoom() {
         <h1 className={`flex-1 text-3xl font-bold leading-tight ${SENTENCE[overall]}`} data-testid="status-sentence">
           {snapshot.status_sentence || '—'}
         </h1>
+        <ImpactPanel />
         <Gauge
           label="Fairness (Jain)"
           value={snapshot.fairness}
@@ -62,26 +106,40 @@ export function ControlRoom() {
           status={utilizationStatus(snapshot.utilization)}
           hint="Share of the w0..w8 CPU limit in use"
         />
+        <ViewToggle view={view} onChange={setView} />
       </section>
 
-      <section className="col-span-12">
-        <TenantTiles tenants={tenants} selected={picked} onSelect={(id) => setPicked((p) => (p === id ? null : id))} />
-      </section>
+      {view === 'flow' ? (
+        <>
+          <section className="panel col-span-12 row-span-2 min-h-[480px] xl:col-span-9 xl:min-h-0">
+            <FlowView snapshot={snapshot} overrides={overrides} barcodes={barcodes} />
+          </section>
+          <section className="panel col-span-12 row-span-2 xl:col-span-3">
+            <NoisyBars tenants={tenants} thresholds={noisyThresholds(snapshot)} />
+          </section>
+        </>
+      ) : (
+        <>
+          <section className="col-span-12">
+            <TenantTiles tenants={tenants} selected={picked} onSelect={(id) => setPicked((p) => (p === id ? null : id))} />
+          </section>
 
-      <section className="panel col-span-12 xl:col-span-5">
-        <P95Chart history={history} tenants={tenants} />
-      </section>
-      <section className="panel col-span-6 xl:col-span-4">
-        <ServerGrid
-          servers={snapshot.servers}
-          highlight={focus ? (barcodes[focus] ?? []) : []}
-          highlightLabel={focus ? `${focus}${focusName ? ` ${focusName}` : ''} · barcode ${(barcodes[focus] ?? []).join(' ')}` : undefined}
-          compact
-        />
-      </section>
-      <section className="panel col-span-6 xl:col-span-3">
-        <NoisyBars tenants={tenants} thresholds={noisyThresholds(snapshot)} />
-      </section>
+          <section className="panel col-span-12 xl:col-span-5">
+            <P95Chart history={history} tenants={tenants} />
+          </section>
+          <section className="panel col-span-6 xl:col-span-4">
+            <ServerGrid
+              servers={snapshot.servers}
+              highlight={focus ? (barcodes[focus] ?? []) : []}
+              highlightLabel={focus ? `${focus}${focusName ? ` ${focusName}` : ''} · barcode ${(barcodes[focus] ?? []).join(' ')}` : undefined}
+              compact
+            />
+          </section>
+          <section className="panel col-span-6 xl:col-span-3">
+            <NoisyBars tenants={tenants} thresholds={noisyThresholds(snapshot)} />
+          </section>
+        </>
+      )}
 
       <section className="panel col-span-12 min-h-0 xl:col-span-5">
         <IncidentTimeline events={incidents} />

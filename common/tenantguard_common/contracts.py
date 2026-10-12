@@ -261,6 +261,16 @@ class ServerView(BaseModel):
     status: Literal["healthy", "slow", "drained"]
 
 
+class ImpactView(BaseModel):
+    """Brain-owned business impact since `since` (UI keeps its own meter as a fallback)."""
+    since: float                        # epoch s when counting started (brain start or reset)
+    revenue_protected_rs: float         # sum of victims' monthly_revenue_rs x SLO-violation seconds avoided / 2_592_000
+    customers_shielded: List[str]       # threatened tenants that stayed within SLO
+    slo_violation_avoided_s: float
+    slo_violation_suffered_s: float
+    innocents_penalised: List[str]      # acted on while their own score < warn; must stay empty
+
+
 class StateSnapshot(BaseModel):
     type: Literal["state"] = "state"
     ts: float
@@ -271,6 +281,7 @@ class StateSnapshot(BaseModel):
     fairness: float               # Jain index 0..1 over per-tenant (completed rps / weight) of active tenants
     status_sentence: str
     brain_ok: bool = True
+    impact: Optional[ImpactView] = None
     noisy_thresholds: Dict[str, float] = Field(default_factory=dict)   # e.g. {"warn":1.5,"throttle":2.0,"quarantine":4.0} from brain.noisy; UI must use these, not its own copies
 
 
@@ -368,6 +379,45 @@ class RunResult(BaseModel):
     time_to_recover_s: Optional[float] = None   # from attack start until victim p99 <= 1.5x baseline for 5 s
     attacker_429: int = 0
     attacker_503: int = 0
+    file: str = ""
+
+
+class CellStats(BaseModel):
+    """One scenario x mode in a CrashSummary."""
+    scenario: AttackName
+    mode: Mode
+    runs: int
+    failed_runs: int = 0
+    victim_p99_ms_median: Optional[PhaseP99] = None
+    victim_p99_ms_mean: Optional[PhaseP99] = None
+    time_to_detect_s_median: Optional[float] = None
+    detected_runs: int = 0
+    time_to_recover_s_median: Optional[float] = None
+    recovered_runs: int = 0
+    attacker_429_median: float = 0.0
+    attacker_503_median: float = 0.0
+    brain_checked_runs: int = 0
+    culprit_named_runs: int = 0
+    innocents_penalised: List[str] = Field(default_factory=list)   # union over runs
+    innocents_penalised_runs: int = 0
+    run_files: List[str] = Field(default_factory=list)
+
+
+class CrashSummary(BaseModel):
+    """lab/results/summary-<ts>.json, written by `python -m tenantguard_lab scorecard`."""
+    created_at: float
+    lab_url: str
+    brain_url: str
+    scenarios: List[AttackName]
+    modes: List[Mode]
+    runs_per_cell: int
+    attacker: Optional[str] = None
+    intensity: float = 1.0
+    calm_s: float = 20
+    attack_s: float = 40
+    aggregate_only: bool = False
+    cells: List[CellStats]
+    skipped: List[str] = Field(default_factory=list)
     file: str = ""
 
 
@@ -496,3 +546,33 @@ class WhyView(BaseModel):
     credit_pct: float
     episodes: List[WhyEpisode]
     sentence: str
+
+
+# ---------- 8. Incident narrator (narrator :8700, read-only consumer of the brain) ----------
+class IncidentReport(BaseModel):
+    """Operator-facing report, built deterministically from the evidence pack."""
+    headline: str
+    timeline: List[str]               # "HH:MM:SS stage: what happened", oldest first
+    cause: str
+    evidence_points: List[str]
+    action_taken: str
+    operator_recommendation: str
+
+
+class CustomerMessage(BaseModel):
+    """For an affected tenant: built from the anonymised pack, so it never names another tenant."""
+    message: str
+
+
+class ReportView(BaseModel):
+    """Narrator GET /reports (list, newest first), GET /reports/{incident_id}, WS /ws/reports (pushed on every change)."""
+    incident_id: str
+    tenant: Optional[str] = None                  # primary/culprit tenant, if any
+    trigger_stage: Stage                          # the stage that produced this version (named | verdict | closed)
+    version: int                                  # +1 on every change for this incident
+    report: IncidentReport
+    customer_message: CustomerMessage
+    evidence: dict                                # the evidence pack this version was built from
+    created_at: float                             # epoch s
+    updated_at: float
+

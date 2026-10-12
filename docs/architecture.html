@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Multi-Tenant Isolation & Noisy-Neighbor Defense Platform - Architecture</title>
+<title>TenantGuard - Architecture</title>
 <style>
   @page { size: A4; margin: 14mm 12mm; }
   * { box-sizing: border-box; }
@@ -10,12 +10,14 @@
   h1 { font-size: 22pt; margin: 0 0 4px; color: #111827; }
   h2 { font-size: 15pt; margin: 18px 0 8px; padding: 6px 10px; color: #fff; background: #1e3a8a; border-radius: 4px; }
   h2.simple { background: #047857; }
-  h3 { font-size: 12pt; margin: 14px 0 6px; color: #1e3a8a; border-bottom: 1.5px solid #c7d2fe; padding-bottom: 2px; }
+  h3 { font-size: 12pt; margin: 14px 0 6px; color: #1e3a8a; border-bottom: 1.5px solid #c7d2fe; padding-bottom: 2px;
+       page-break-after: avoid; }
   h3.simple { color: #047857; border-color: #a7f3d0; }
   pre { font-family: Consolas, "Cascadia Mono", "Courier New", monospace; font-size: 7.6pt; line-height: 1.22;
         background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4px; padding: 8px; margin: 6px 0;
         white-space: pre; overflow: hidden; page-break-inside: avoid; }
   pre.big { font-size: 8.6pt; }
+  pre.arch { font-size: 9.6pt; line-height: 1.18; }
   table { border-collapse: collapse; width: 100%; margin: 6px 0; font-size: 9.5pt; page-break-inside: avoid; }
   th, td { border: 1px solid #cbd5e1; padding: 5px 8px; text-align: left; vertical-align: top; }
   th { background: #e0e7ff; }
@@ -26,260 +28,237 @@
   .tip { border: 1px solid #fcd34d; background: #fffbeb; padding: 8px 12px; border-radius: 4px; margin-top: 12px; }
   .page-break { page-break-before: always; }
   .pitch { font-style: italic; border-left: 4px solid #047857; padding: 6px 12px; background: #ecfdf5; }
+  .note { font-size: 9pt; color: #64748b; margin-top: 2px; }
+  .keep { page-break-inside: avoid; }
+  code { font-family: Consolas, "Cascadia Mono", monospace; font-size: 9pt; background: #f1f5f9; padding: 0 3px; border-radius: 3px; }
 </style>
 </head>
 <body>
 
 <div class="cover">
-  <h1>Multi-Tenant Isolation &amp; Noisy-Neighbor Defense Platform</h1>
-  <p class="sub">CodeAstra 2.0 &middot; Cloud Computing &amp; Distributed Systems &middot; Problem Statement 3</p>
+  <h1>TenantGuard</h1>
+  <p class="sub">Multi-Tenant Isolation &amp; Noisy-Neighbor Defense &middot; CodeAstra 2.0 &middot; Cloud Computing &amp; Distributed Systems &middot; PS 3</p>
   <p style="margin:6px 0 0"><span class="tag">Architecture</span><span class="tag">Tech Stack</span><span class="tag">Project Flow</span></p>
 </div>
 
-<p class="pitch">"We built a mini cloud that gives every tenant a fair share, lets them burst when capacity is free,
-and automatically detects and contains abusive tenants in seconds, without wasting resources or killing anyone's service."</p>
+<p class="pitch">"TenantGuard gives every tenant of a shared service its fair share, and names the tenant behind any slowdown,
+even when the expensive work is invisible to a rate limiter."</p>
 
-<h2>Version 1: Standard Technical Architecture</h2>
+<h2>Version 1: Technical Architecture</h2>
 
-<pre>
-╔════════════════════════════════════════════════════════════════════════════════════╗
-║                                CLIENT / TRAFFIC LAYER                              ║
-║                                                                                    ║
-║   ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────┐    ┌──────────────────┐  ║
-║   │ Tenant A │ │ Tenant B │ │ Tenant C │ │ Tenant X     │    │ Load Generator   │  ║
-║   │ (Gold)   │ │ (Silver) │ │ (Bronze) │ │ (Attacker)   │◄───│ Locust / k6      │  ║
-║   └────┬─────┘ └────┬─────┘ └────┬─────┘ └──────┬───────┘    │ normal + attacks │  ║
-║        └────────────┴─────┬──────┴──────────────┘            └──────────────────┘  ║
-╚═══════════════════════════╪════════════════════════════════════════════════════════╝
-                            │ HTTPS + X-API-Key
-╔═══════════════════════════▼════════════════════════════════════════════════════════╗
-║                          DATA PLANE  (request path)                                ║
-║                                                                                    ║
-║  ┌──────────────────────────────────────────────────────────────────────────────┐  ║
-║  │ (1) API GATEWAY  (FastAPI :8000)                                             │  ║
-║  │   ├─ AuthN: API key → tenant_id, tier                                        │  ║
-║  │   ├─ Multi-dim Token Buckets (Redis Lua, atomic)                             │  ║
-║  │   │     rps │ concurrency │ bandwidth │ CPU-ms budget │ memory budget        │  ║
-║  │   └─ Admission Control: cost estimate → ACCEPT / QUEUE / REJECT (429)        │  ║
-║  └──────────────────────────────────┬───────────────────────────────────────────┘  ║
-║                                     ▼                                              ║
-║  ┌──────────────────────────────────────────────────────────────────────────────┐  ║
-║  │ (2) FAIR SCHEDULER                                                           │  ║
-║  │   Per-tenant queues (Redis Streams)  [A]═══ [B]═══ [C]═══ [X]══════════      │  ║
-║  │   Weighted Deficit Round Robin  (weight = tier × adaptive_factor)            │  ║
-║  │   Bulkhead: max in-flight per tenant   │   Work-conserving (borrow idle)     │  ║
-║  └──────────────┬─────────────────────────────────────────────┬─────────────────┘  ║
-║                 ▼  normal tenants                             ▼  quarantined       ║
-║  ┌───────────────────────────────────────────┐  ┌───────────────────────────────┐  ║
-║  │ (3) WORKER POOL  (Docker, cgroups)        │  │ (3b) PENALTY BOX  (Docker)    │  ║
-║  │  ┌─────────┐ ┌─────────┐ ┌─────────┐      │  │  ┌─────────────────────────┐  │  ║
-║  │  │worker-1 │ │worker-2 │ │worker-3 │      │  │  │ worker-jail             │  │  ║
-║  │  │cpus=1.0 │ │cpus=1.0 │ │cpus=1.0 │      │  │  │ cpus=0.5  mem=256m      │  │  ║
-║  │  │mem=512m │ │mem=512m │ │mem=512m │      │  │  └─────────────────────────┘  │  ║
-║  │  └─────────┘ └─────────┘ └─────────┘      │  └───────────────┬───────────────┘  ║
-║  │  Jobs: cpu │ memory │ db │ io │ light     │                  │                  ║
-║  │  Per-job telemetry: CPU-ms, RSS, DB-ms    │                  │                  ║
-║  └──────────────────────┬────────────────────┘                  │                  ║
-║                         └──────────────────┬────────────────────┘                  ║
-║                                            ▼                                       ║
-║  ┌──────────────────────────────────────────────────────────────────────────────┐  ║
-║  │ (4) DATA ISOLATION   PostgreSQL 16                                           │  ║
-║  │   Row-Level Security (tenant_id)  │  per-tenant conn pool cap                │  ║
-║  │   per-tier statement_timeout      │  query cost accounting                   │  ║
-║  └──────────────────────────────────────────────────────────────────────────────┘  ║
-╚════════════════════════════════════════════════════════════════════════════════════╝
-                   │ metrics (per tenant)                      ▲ policy updates
-                   ▼                                           │ (Redis pub/sub)
-╔══════════════════════════════════════════════════════════════╪═════════════════════╗
-║                          CONTROL PLANE  (feedback loop, every 2 s)                 ║
-║                                                              │                     ║
-║  ┌────────────────────┐   ┌─────────────────────────┐   ┌────┴──────────────────┐  ║
-║  │ (5) METRICS        │   │ (6) NOISY-NEIGHBOR      │   │ (7) ADAPTIVE          │  ║
-║  │    COLLECTOR       │──►│    DETECTOR             │──►│    CONTROLLER         │  ║
-║  │ Prometheus         │   │ share vs fair-share     │   │ L0 Normal             │  ║
-║  │ Docker stats API   │   │ EWMA + z-score spikes   │   │ L1 Warn               │  ║
-║  │ job telemetry      │   │ victim p95 impact       │   │ L2 Throttle (AIMD ×½) │  ║
-║  │ p50/p95/p99 per    │   │ → noisy_score[tenant]   │   │ L3 Deprioritize       │  ║
-║  │ tenant             │   │                         │   │ L4 Quarantine         │  ║
-║  └────────────────────┘   └─────────────────────────┘   │ Recovery (+10%/tick)  │  ║
-║                                                         └───────────────────────┘  ║
-╚════════════════════════════════════════════════════════════════════════════════════╝
-                   │                                           ▲
-                   ▼                                           │
-╔════════════════════════════════════════════════════════════════════════════════════╗
-║                          MANAGEMENT PLANE                                          ║
-║  ┌──────────────────────────────────┐      ┌─────────────────────────────────────┐ ║
-║  │ (8) ADMIN API  (FastAPI, JWT)    │◄────►│ (9) DASHBOARD (React+Recharts, WS)  │ ║
-║  │  /admin/tenants   CRUD           │      │  • per-tenant latency p95/p99       │ ║
-║  │  /admin/tenants/{id}/quota       │      │  • CPU / mem share (stacked)        │ ║
-║  │  /admin/isolation  on/off        │      │  • noisy score + policy level badge │ ║
-║  │  /admin/simulate/{attack}        │      │  • event timeline                   │ ║
-║  │  /admin/events  /metrics/live    │      │  • Jain fairness index, utilization │ ║
-║  └──────────────────────────────────┘      └─────────────────────────────────────┘ ║
-║                         Grafana (:3000) as backup observability                    ║
-╚════════════════════════════════════════════════════════════════════════════════════╝
+<pre class="arch">
+╔══════════════════════════════════════════════════════════════════════════════════════════╗
+║  TRAFFIC  (laptop B)         Traffic lab :8300: 12 Poisson tenant personas + attacks     ║
+║                             (flood, whale, hog, memory, retry storm, black-box bomb ...) ║
+╚═════════════════════════════════════════════╤════════════════════════════════════════════╝
+                                              │ HTTP + X-API-Key
+╔═════════════════════════════════════════════▼════════════════════════════════════════════╗
+║  DATA PLANE  (laptop A, Docker)                                                          ║
+║  ┌────────────────────────────────────────────────────────────────────────────────────┐  ║
+║  │ GATEWAY :8000  (Python, FastAPI + httpx)                                           │  ║
+║  │  1 Identify     SHA-256(X-API-Key) → tenant, tier; path guard; capped body         │  ║
+║  │  2 Classify     class = sha1(method, path, query keys, body size)[:8]              │  ║
+║  │  3 Admit        retry budget · token bucket · CPU-ms cost bucket · concurrency     │  ║
+║  │                 → 429 + Retry-After + RateLimit headers                            │  ║
+║  │  4 Queue        weighted DRR per tenant in 3 lanes: express › interactive › batch  │  ║
+║  │                 bounded wait (503), batch shed first                               │  ║
+║  │  5 Dispatch     per-worker gradient window  (minRTT / sampleRTT on excess latency) │  ║
+║  │  6 Route        tenant barcode: 3 of 9 servers; route weights, relocation, drain   │  ║
+║  │  7 Observe      (tenant × server) p50/p95 every 250 ms → WS /internal/telemetry    │  ║
+║  │  /admin/*  /control/*  (control token, TTL auto-revert, fail-static)  /metrics     │  ║
+║  └──────────────┬───────────────────────────────────────────────────┬─────────────────┘  ║
+║                 ▼                                                   ▼                    ║
+║  ┌─────────────────────────────────────────────────┐   ┌──────────────────────────────┐  ║
+║  │ WORKERS w0..w8  (0.5 CPU / 256 MB cgroups each) │   │ SPARE (resizable)            │  ║
+║  │  tenant ContextVar · SQLite file per tenant     │   │ QUARANTINE (0.25 CPU)        │  ║
+║  │  namespaced cache + guaranteed share            │   │ same image, relocation target│  ║
+║  │  background jobs charged to the tenant          │   └──────────────────────────────┘  ║
+║  │  black-box "vendor indexer" (unattributed CPU)  │                                     ║
+║  │  /stats (per-tenant CPU, DB) · /admin/fault     │                                     ║
+║  └─────────────────────────────────────────────────┘                                     ║
+╚══════════════════════════╤══════════════════════════════════════════╤════════════════════╝
+            telemetry WS   │ 250 ms                       /stats 1 Hz  │
+╔══════════════════════════▼══════════════════════════════════════════▼════════════════════╗
+║  CONTROL PLANE   BRAIN :8200  (Python asyncio, pure-logic modules)                       ║
+║   Stage 2: noisy score = usage share ÷ fair share × victim impact → throttle ladder      ║
+║   Stage 3: server health (peer ratio) → RESCUE (route-around) → barcode DECODER → NAME   ║
+║            → PROVE by relocation (in progress) → verdict                                 ║
+║   every action: TTL, renewed while needed · operator holds (POST /api/operator)          ║
+║   → POST /control/* to the gateway          → WS /ws/events: StateSnapshot + incidents   ║
+╚══════════════════════════════════════════════════════╤═══════════════════════════════════╝
+                                                       │
+╔══════════════════════════════════════════════════════▼═══════════════════════════════════╗
+║  MANAGEMENT PLANE   UI :5173 (React)  Control Room · Tenants · Cases · Scorecard         ║
+║                     Admin API (gateway /admin/*) · Handoff bridge :8400 → Web PS3 app    ║
+╚══════════════════════════════════════════════════════════════════════════════════════════╝
 </pre>
-
-<div class="page-break"></div>
 
 <h3>The 3 Planes</h3>
 <table>
-  <tr><th style="width:22%">Plane</th><th style="width:33%">Purpose</th><th>Components</th></tr>
-  <tr><td><b>Data Plane</b></td><td>Runs tenant work in isolation</td><td>Gateway, Scheduler, Worker Pools, Penalty Box, PostgreSQL</td></tr>
-  <tr><td><b>Control Plane</b></td><td>Watches, decides and reacts automatically</td><td>Metrics Collector, Noisy-Neighbor Detector, Adaptive Controller</td></tr>
-  <tr><td><b>Management Plane</b></td><td>Lets humans see and control the system</td><td>Admin API, Dashboard, Grafana</td></tr>
+  <tr><th style="width:18%">Plane</th><th style="width:30%">Components</th><th>Job</th></tr>
+  <tr><td><b>Data</b></td><td>gateway, w0..w8, spare, quarantine</td><td>Serve every tenant request: identify, admit, queue fairly, route by barcode, measure</td></tr>
+  <tr><td><b>Control</b></td><td>brain</td><td>Watch telemetry + worker stats; rescue victims, name the culprit, throttle with TTLs, explain every action</td></tr>
+  <tr><td><b>Management</b></td><td>admin API, UI, handoff bridge, lab, demo driver</td><td>Operators see and steer it: modes, quotas, cases, attacks, scorecard</td></tr>
 </table>
 
 <h3>The 5 Layers of Isolation (not just a rate limit)</h3>
 <table>
-  <tr><th style="width:18%">Layer</th><th>Mechanism</th><th style="width:34%">Stops</th></tr>
-  <tr><td>L1 Request</td><td>Token buckets: rps, concurrency, bandwidth</td><td>Request floods</td></tr>
-  <tr><td>L2 Cost</td><td>CPU-ms / memory budgets charged after each job</td><td>"Few but heavy" requests</td></tr>
-  <tr><td>L3 Scheduler</td><td>Weighted fair queue + per-tenant bulkhead</td><td>Queue hogging, line cutting</td></tr>
-  <tr><td>L4 Kernel</td><td>Docker cgroups (cpus, memory, pids) + penalty-box container</td><td>CPU bombs, memory hogs</td></tr>
-  <tr><td>L5 Data</td><td>Postgres RLS + per-tenant connection pool + query timeout</td><td>DB floods, data leaks</td></tr>
+  <tr><th style="width:8%">Layer</th><th style="width:22%">Name</th><th>What it does</th><th style="width:22%">Where</th></tr>
+  <tr><td>L1</td><td>Request</td><td>Identity, token bucket, retry budget: a flood or retry storm gets 429 with an accurate Retry-After</td><td><code>gateway/admission.py</code>, <code>retry.py</code></td></tr>
+  <tr><td>L2</td><td>Cost</td><td>A CPU-ms bucket debited with the CPU each request really used (measured by the worker)</td><td><code>gateway/buckets.py</code></td></tr>
+  <tr><td>L3</td><td>Scheduler</td><td>Weighted DRR in 3 lanes behind an adaptive per-worker window: cheap requests never wait behind a whale</td><td><code>gateway/scheduler.py</code>, <code>limiter.py</code></td></tr>
+  <tr><td>L4</td><td>Kernel</td><td>cgroup CPU / memory / pids limits per worker container; spare and quarantine pools</td><td><code>docker-compose.yml</code></td></tr>
+  <tr><td>L5</td><td>Data</td><td>One SQLite file per tenant; namespaced cache with a guaranteed share; per-tenant memory budget</td><td><code>worker/app/store.py</code>, <code>cache.py</code></td></tr>
+  <tr><td colspan="2"><b>+ Adaptive loop</b></td><td colspan="2">The brain: rescue, name, throttle, recover. It works even when the harm is invisible to L1 and L2.</td></tr>
 </table>
 
-<h3>Tech Stack</h3>
+<div>
+<h3>Components &amp; Tech Stack</h3>
 <table>
-  <tr><th style="width:28%">Concern</th><th style="width:34%">Choice</th><th>Why</th></tr>
-  <tr><td>Gateway / Scheduler / Admin API</td><td>Python 3.12 + FastAPI + asyncio</td><td>Fast to build, async, auto Swagger docs</td></tr>
-  <tr><td>Quota and rate state</td><td>Redis 7 + Lua scripts</td><td>Atomic token buckets, Streams for queues, pub/sub for policies</td></tr>
-  <tr><td>Database</td><td>PostgreSQL 16 (Row-Level Security)</td><td>Shows data isolation, not just compute isolation</td></tr>
-  <tr><td>Compute isolation</td><td>Docker Compose + cgroup limits</td><td>Real kernel-level isolation</td></tr>
-  <tr><td>Resource measurement</td><td>psutil, getrusage, Docker stats API</td><td>Per-job CPU-ms and RSS, per-container usage</td></tr>
-  <tr><td>Metrics</td><td>Prometheus + Grafana</td><td>Per-tenant latency histograms (p50/p95/p99)</td></tr>
-  <tr><td>Dashboard</td><td>React (Vite) + Recharts + Tailwind, WebSocket</td><td>Live "attack control room" UI</td></tr>
-  <tr><td>Attack generation</td><td>Locust (or k6)</td><td>Scriptable normal and abusive traffic</td></tr>
-  <tr><td>Auth</td><td>API keys (hashed) + JWT for admin</td><td>Simple and enough for a demo</td></tr>
+  <tr><th style="width:17%">Component</th><th style="width:9%">Port</th><th style="width:37%">Built with</th><th>Notes</th></tr>
+  <tr><td>Gateway</td><td>8000</td><td>Python 3.12, FastAPI, httpx (pooled), uvicorn</td><td>All state in memory (one gateway); Prometheus <code>/metrics</code></td></tr>
+  <tr><td>Workers ×9 + 2</td><td>8100</td><td>Python, FastAPI (sync handlers), SQLite, psutil</td><td><code>time.thread_time()</code> per request = exact handler CPU</td></tr>
+  <tr><td>Brain</td><td>8200</td><td>Python asyncio, websockets, httpx, Pydantic</td><td>Pure-logic modules (score, ladder, health, rescue, decoder) tested without I/O</td></tr>
+  <tr><td>Traffic lab</td><td>8300</td><td>Python asyncio + httpx keep-alive pools</td><td>Writes <code>lab/results/*.json</code>: the only source of scorecard numbers</td></tr>
+  <tr><td>UI</td><td>5173</td><td>React 18, Vite, TypeScript, Tailwind, Recharts</td><td>WS from the brain at 2 Hz; mock mode for offline development</td></tr>
+  <tr><td>Handoff bridge</td><td>8400</td><td>Python, FastAPI, websockets</td><td>Web PS3 convergence: incidents ↔ cases</td></tr>
+  <tr><td>Contracts + config</td><td></td><td>Pydantic models in <code>common/</code>, <code>tenantguard.yaml</code></td><td>One shared schema; every tunable in YAML</td></tr>
+  <tr><td>Infra</td><td></td><td>Docker Compose, cgroup v2, two laptops over Tailscale</td><td>No external network at runtime</td></tr>
 </table>
+</div>
 
-<h3>Adaptive Throttling Levels</h3>
+<div class="keep">
+<h3>Adaptive Throttling Ladder (Stage 2)</h3>
 <table>
-  <tr><th style="width:20%">Level</th><th style="width:30%">Trigger</th><th>Action</th></tr>
-  <tr><td>L0 Normal</td><td>score &lt; 1.5</td><td>Full rate, can borrow idle capacity</td></tr>
-  <tr><td>L1 Warn</td><td>score &ge; 1.5 for 5 s</td><td>Event logged, dashboard alert</td></tr>
-  <tr><td>L2 Throttle</td><td>score &ge; 2</td><td>AIMD: rate &times; 0.5 each tick</td></tr>
-  <tr><td>L3 Deprioritize</td><td>still high</td><td>Scheduler weight reduced to 0.25</td></tr>
-  <tr><td>L4 Quarantine</td><td>score &ge; 4 or memory-limit hits</td><td>Jobs routed to the penalty-box container</td></tr>
-  <tr><td>Recovery</td><td>score &lt; 1 for 15 s</td><td>+10% per tick, step down one level</td></tr>
+  <tr><th style="width:16%">Level</th><th style="width:32%">Enters when</th><th>Action (always with a TTL)</th></tr>
+  <tr><td>normal</td><td>-</td><td>Full plan</td></tr>
+  <tr><td>warn</td><td>noisy score ≥ 1.5 and neighbours hurt, held 2 s</td><td>Incident opened, nothing throttled</td></tr>
+  <tr><td>throttle</td><td>score ≥ 2.0, held 2 s</td><td>Quota × 0.5 per step (AIMD), via LimitsCmd</td></tr>
+  <tr><td>deprioritize</td><td>still noisy, held 4 s</td><td>Scheduler weight × 0.25</td></tr>
+  <tr><td>quarantine</td><td>score ≥ 4.0, held 6 s</td><td>Quota × 0.1 and weight × 0.1; a block needs human approval (handoff case)</td></tr>
+  <tr><td>recover</td><td>score &lt; 1.0, held 10 s</td><td>+0.1 factor per step back to the full plan</td></tr>
 </table>
-<pre class="big">
-noisy_score[t] = max_r( share[t,r] / fair_share[t] ) × (1 + victim_impact)  (+ spike bonus if z > 3)
-  → a tenant is flagged ONLY if it over-uses AND other tenants are actually suffering
-</pre>
+<p class="note">Thresholds and hold times come from <code>tenantguard.yaml</code> (<code>brain.noisy</code>). Rescue comes first: the ladder acts only if harm persists. A legit burst that hurts nobody is never throttled.</p>
+</div>
+
+<div class="keep">
+<h3>Stage 3: Rescue, Name, Prove</h3>
+<table>
+  <tr><th style="width:16%">Step</th><th>How</th><th style="width:14%">Status</th></tr>
+  <tr><td>Health</td><td>Each server's p95 compared with its peers (median over its tenants, so a whale's own slow requests don't count)</td><td>done</td></tr>
+  <tr><td>Rescue</td><td>Route weights move victims off slow servers onto their healthy ones, keeping every server under 70% CPU</td><td>done</td></tr>
+  <tr><td>Name</td><td>AG(2,3) barcodes: any two tenants share at most one server, so the set of slow servers decodes to the culprit (with a confidence) or to a host fault with no tenant blamed</td><td>done</td></tr>
+  <tr><td>Prove</td><td>Move the suspect to the spare: the original servers recover and the slowdown follows it (R = 1 − post/pre slowdown)</td><td>in progress</td></tr>
+  <tr><td>Verdict</td><td>costly pattern · over plan · honest growth · host fault · mitigated / no blame</td><td>in progress</td></tr>
+</table>
+</div>
+
+<div class="keep">
+<h3>Safety</h3>
+<table>
+  <tr><th style="width:24%">Rule</th><th>How</th></tr>
+  <tr><td>Auto-undo</td><td>Every control override has a finite TTL (≤ <code>gateway.ttl_max_s</code>) and reverts by itself; the brain renews it while needed</td></tr>
+  <tr><td>Fail-static</td><td>If brain heartbeats stop for 2 s, the gateway keeps its last config while TTLs still expire. A dead brain never leaves a tenant punished</td></tr>
+  <tr><td>Humans and ladder agree</td><td>Operator release / extend go to the brain (<code>OperatorCmd</code>), so the ladder obeys them instead of fighting them</td></tr>
+  <tr><td>Hardened edges</td><td>Control token on <code>/admin/*</code>, <code>/control/*</code>; path guard (no traversal to worker admin); bounded TTLs and quotas; capped request bodies</td></tr>
+</table>
+</div>
+
+<div class="keep">
+<h3>Measured: why a rate limiter is not enough</h3>
+<table>
+  <tr><th>Endpoint</th><th>Handler CPU (what request metering sees)</th><th>Background CPU</th><th>Black-box indexer CPU</th></tr>
+  <tr><td><code>GET /api/light</code></td><td>0.396 ms</td><td>0</td><td>0</td></tr>
+  <tr><td><code>POST /api/write</code></td><td>0.185 ms</td><td>1.429 ms</td><td>0</td></tr>
+  <tr><td><b><code>POST /api/ingest</code></b></td><td><b>0.066 ms</b></td><td>0</td><td><b>20.25 ms</b></td></tr>
+</table>
+<p class="note">Source: <code>worker/calibration.json</code>. Docker host, one worker limited to 0.5 CPU, sequential client, mean per request. The OFF / Industry / TenantGuard scorecard (victim p99 per attack) is to be measured; it will come only from <code>lab/results/*.json</code>.</p>
+</div>
 
 <div class="page-break"></div>
-
 <h2 class="simple">Version 2: Simple Project Flow (Team View)</h2>
 
 <h3 class="simple">The Big Picture in One Line</h3>
 <pre class="big">
-Tenant ──► Security Guard ──► Fair Queue ──► Worker ──► Database
-                                  ▲                        │
-                                  │       Watchman  ◄──────┘
-                                  │          │
-                                  └── Manager adjusts limits
-                                             │
-                                         Dashboard
+  Tenants ──► GATEWAY (who are you? within your plan? fair turn?) ──► WORKERS (do the work, meter it)
+                 ▲                                                        │
+                 │ throttle / reroute / block, always with a timer        │ how slow, how much CPU, whose
+                 └───────────────────────── BRAIN ◄───────────────────────┘
+                                              │
+                                              └──► DASHBOARD + on-call case ("who did it, what we did, why")
 </pre>
 
 <h3 class="simple">A Request's Journey, Step by Step</h3>
 <pre class="big">
- ┌─────────────────────────────────────────────────────────────┐
- │  STEP 1 - TENANT SENDS A REQUEST                            │
- │  "Hi, I'm Tenant A (key: abc123). Please do this work."     │
- └──────────────────────────┬──────────────────────────────────┘
-                            ▼
- ┌─────────────────────────────────────────────────────────────┐
- │  STEP 2 - GATEWAY  (Security Guard)                         │
- │  • Who are you?            → checks API key                 │
- │  • Do you have quota left? → checks your limits in Redis    │
- │        YES → go ahead                                       │
- │        NO  → "429: Slow down!"                              │
- └──────────────────────────┬──────────────────────────────────┘
-                            ▼
- ┌─────────────────────────────────────────────────────────────┐
- │  STEP 3 - SCHEDULER  (Fair Queue)                           │
- │  Every tenant has their own line:                           │
- │     A: ■ ■           B: ■           C: ■ ■ ■                │
- │     X: ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■  (attacker spamming)         │
- │  Serve one from each line in turn → X can't cut the line    │
- └──────────────────────────┬──────────────────────────────────┘
-                            ▼
- ┌─────────────────────────────────────────────────────────────┐
- │  STEP 4 - WORKER  (does the actual job)                     │
- │  Runs inside a Docker container with a hard limit:          │
- │     "max 1 CPU, max 512 MB RAM"                             │
- │  While working, it measures: CPU used, memory used, time    │
- │  Bad tenants go to the small "Penalty Box" container        │
- └──────────────────────────┬──────────────────────────────────┘
-                            ▼
- ┌─────────────────────────────────────────────────────────────┐
- │  STEP 5 - DATABASE                                          │
- │  Each tenant sees ONLY their own data                       │
- │  Each tenant gets limited connections + query time          │
- └──────────────────────────┬──────────────────────────────────┘
-                            ▼
-                   Response back to tenant
+  1. Tenant K sends  POST /api/ingest  with its API key
+   │
+  2. Gateway: "You are K (Pro plan)." Unknown key? → 401
+   │
+  3. Within your plan?  rate ✓  CPU budget ✓  in-flight ✓  not a retry storm ✓   (else 429 + "retry in 2 s")
+   │
+  4. Wait your fair turn: cheap requests take the express lane; nobody waits more than 1 s (else 503)
+   │
+  5. Go to one of K's 3 servers (its "barcode"), avoiding slow or drained ones
+   │
+  6. Worker does the work in K's own database and charges the CPU to K
+   │   ...but the black-box indexer it triggers burns 300× more CPU that nobody bills
+   │
+  7. Gateway records the latency for (K, server) and reports it to the brain every 250 ms
 </pre>
 
-<div class="page-break"></div>
-
-<h3 class="simple">The Automatic Protection Loop (runs every 2 seconds)</h3>
+<h3 class="simple">The Automatic Protection Loop (4 times a second)</h3>
 <pre class="big">
-        ┌───────────────────────────┐
-        │ 1. MEASURE                │
-        │ How much CPU / RAM / DB   │
-        │ is each tenant using?     │
-        │ How fast are responses?   │
-        └─────────────┬─────────────┘
-                      ▼
-        ┌───────────────────────────┐
-        │ 2. DETECT                 │
-        │ Is someone using way more │
-        │ than their fair share     │
-        │ AND others getting slow?  │
-        └─────────────┬─────────────┘
-              no ◄────┴────► yes
-              │              ▼
-              │   ┌───────────────────────────┐
-              │   │ 3. REACT (step by step)   │
-              │   │   a. Warn                 │
-              │   │   b. Slow them down       │
-              │   │   c. Lower priority       │
-              │   │   d. Penalty box          │
-              │   └─────────────┬─────────────┘
-              │                 ▼
-              │   ┌───────────────────────────┐
-              │   │ 4. RECOVER                │
-              │   │ Behaving again? Slowly    │
-              │   │ give back their speed     │
-              │   └─────────────┬─────────────┘
-              └────────►  repeat ◄┘
+   ┌────────────────────────────┐
+   │ 1. WATCH                   │  Which servers are slower than their peers? Who uses more than a fair share?
+   └─────────────┬──────────────┘
+                 ▼
+   ┌────────────────────────────┐
+   │ 2. RESCUE  (about 1 s)     │  Move the innocent tenants to their healthy servers
+   └─────────────┬──────────────┘
+                 ▼
+   ┌────────────────────────────┐
+   │ 3. NAME                    │  The slow servers form a pattern; only one tenant's barcode fits it
+   └─────────────┬──────────────┘
+                 ▼
+   ┌────────────────────────────┐
+   │ 4. ACT  (with a timer)     │  warn → throttle → lower priority → quarantine; a block needs a human OK
+   └─────────────┬──────────────┘
+                 ▼
+   ┌────────────────────────────┐
+   │ 5. RECOVER                 │  Behaving again? Give back its plan step by step; timers undo everything
+   └─────────────┬──────────────┘
+                 └──────► repeat, and explain every step on the dashboard and in the on-call case
 </pre>
 
-<h3 class="simple">Who Builds Which Box</h3>
+<div class="keep">
+<h3 class="simple">Which Box Does What</h3>
 <table class="simple-t">
-  <tr><th style="width:12%">Member</th><th style="width:30%">Part</th><th>Builds</th></tr>
-  <tr><td><b>P1</b></td><td>Steps 1 + 2</td><td>Gateway, API keys, quotas, token buckets, admin API</td></tr>
-  <tr><td><b>P2</b></td><td>Steps 3 + 4 + 5</td><td>Fair queue, Docker workers, penalty box, Postgres isolation</td></tr>
-  <tr><td><b>P3</b></td><td>Protection Loop</td><td>Metrics collector, detector, adaptive controller</td></tr>
-  <tr><td><b>P4</b></td><td>Dashboard + Attacks</td><td>React dashboard, Locust attack scripts, demo results</td></tr>
+  <tr><th style="width:18%">Box</th><th>In one sentence</th></tr>
+  <tr><td><b>Gateway</b></td><td>The front door: knows every tenant, enforces its plan, keeps the queue fair, and obeys the brain's timed orders.</td></tr>
+  <tr><td><b>Workers</b></td><td>The shared app: does the work, keeps each tenant's data apart, and measures exactly what each tenant costs.</td></tr>
+  <tr><td><b>Brain</b></td><td>The detective: spots slow servers, rescues victims, names the culprit, and turns the throttle up or down.</td></tr>
+  <tr><td><b>Dashboard</b></td><td>The control room: every tenant, every server, every incident and the reason for every action, live.</td></tr>
+  <tr><td><b>Lab</b></td><td>The crowd: 12 realistic tenants plus attacks, and the measured scorecard.</td></tr>
+  <tr><td><b>Handoff bridge</b></td><td>Turns each incident into a case for the on-call engineer and carries their decision back.</td></tr>
 </table>
+</div>
 
-<h3 class="simple">The Demo in Pictures</h3>
+<div class="keep">
+<h3 class="simple">The Demo in Pictures (4 minutes, <code>tools/demo.py</code>)</h3>
 <table class="simple-t">
-  <tr><th>Tenant</th><th>Act 1: Normal</th><th>Act 2: Attack, Protection OFF</th><th>Act 3: Attack, Protection ON</th></tr>
-  <tr><td>A</td><td>40 ms</td><td style="color:#b91c1c"><b>900 ms</b></td><td style="color:#047857"><b>45 ms</b></td></tr>
-  <tr><td>B</td><td>42 ms</td><td style="color:#b91c1c"><b>850 ms</b></td><td style="color:#047857"><b>48 ms</b></td></tr>
-  <tr><td>C</td><td>38 ms</td><td style="color:#b91c1c"><b>920 ms</b></td><td style="color:#047857"><b>41 ms</b></td></tr>
-  <tr><td>X (attacker)</td><td>-</td><td>hogging everything</td><td>in penalty box (slow, but alive)</td></tr>
+  <tr><th style="width:24%">Act</th><th>What the judges see</th></tr>
+  <tr><td>Calm</td><td>12 green tiles, fairness near 1</td></tr>
+  <tr><td>OFF + flood</td><td>Everyone sharing K's servers turns red: the noisy-neighbour problem</td></tr>
+  <tr><td>Industry</td><td>The flood is refused (429). Then the black-box bomb: the rate limiter sees nothing and the victims turn red</td></tr>
+  <tr><td>TenantGuard</td><td>Same bomb: victims rescued, K named with a confidence, the case appears for the on-call engineer</td></tr>
+  <tr><td>Faulty server</td><td>One server goes bad by itself: host fault, no tenant blamed</td></tr>
+  <tr><td>Honest spike</td><td>An Enterprise tenant's sale day: a genuine burst, not throttled</td></tr>
+  <tr><td>Scorecard</td><td>OFF vs Industry vs TenantGuard victim p99 (to be measured; from <code>lab/results</code>)</td></tr>
 </table>
-<p style="font-size:9pt;color:#64748b;margin-top:2px">Latency figures are target/expected values; replace with measured results after the experiments.</p>
+</div>
 
 <div class="tip"><b>Presentation tip:</b> Put Version 1 on the architecture slide, then walk the judges through it using the
-Version 2 story ("let's follow one request..."). Judges remember stories better than boxes.</div>
+Version 2 story ("let's follow one request from K..."). Judges remember stories better than boxes.</div>
 
 </body>
 </html>

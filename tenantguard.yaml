@@ -21,6 +21,7 @@ services:
   lab: http://127.0.0.1:8300
   handoff: http://127.0.0.1:8400
   billing: http://127.0.0.1:8600
+  narrator: http://127.0.0.1:8700
 
 tiers:
   enterprise:
@@ -104,6 +105,10 @@ handoff:
   block_s: 300                # duration of an approved block (always TTL-bound)
   extend_s: 120
   push_timeout_s: 3
+  retention_s: 3600            # evict closed/resolved cases this long after they close
+  history_wire_max: 50         # history items sent to the partner per case (+ "N earlier events")
+  history_keep: 500            # history items kept in memory per case
+  id_map_max: 2000             # persisted incident->case id map cap (live cases never dropped)
 
 billing:
   poll_s: 5                      # worker /stats + brain /api/incidents poll
@@ -115,3 +120,6 @@ billing:
   sla_default_p95_ms: 100
   sla_credit_table: [{min_violation_s: 2, pct: 2}, {min_violation_s: 10, pct: 4}, {min_violation_s: 60, pct: 10}, {min_violation_s: 300, pct: 25}]   # pct of the period's usage subtotal
   unmetered_min_confidence: 0.6
+
+narrator:
+  max_reports: 200            # reports kept in memory (newest first)

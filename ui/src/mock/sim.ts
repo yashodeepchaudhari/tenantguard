@@ -200,6 +200,16 @@ export class MockPlatform {
       last_heartbeat_age_s: 0.3,
       fail_static: false,
     }
+    // rescue (like the brain): in tenantguard mode route tenants away from slow servers
+    if (this.mode === 'tenantguard') {
+      const slow = new Set(this.serverViews.filter((v) => v.status === 'slow').map((v) => v.server))
+      for (const t of TENANTS) {
+        const st = this.tenants.get(t.id)!
+        if (st.level !== 'normal' || !t.servers.some((sv) => slow.has(sv)) || t.servers.every((sv) => slow.has(sv))) continue
+        out.route_weights[t.id] = Object.fromEntries(t.servers.map((sv) => [sv, slow.has(sv) ? 0 : 1]))
+        out.expires_at[`route_weights:${t.id}`] = now + 120
+      }
+    }
     for (const s of this.tenants.values()) {
       if (s.factor < 1 || s.weightFactor < 1) {
         out.limits[s.id] = { tenant: s.id, factor: s.factor, weight_factor: s.weightFactor, ttl_s: TTL_S, incident_id: s.incident }
