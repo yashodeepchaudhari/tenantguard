@@ -30,6 +30,7 @@ Suggested order for a reviewer: 01 → 02 → 05 → 07 → 03 → 06 → 10, th
 | `05_SEQUENCE_DIAGRAMS.md` | Request path, admission/429, fair dispatch, detection → throttle ladder → recovery, health → rescue → naming, host fault, operator/handoff decision, narrator report, UI live stream |
 | `06_RISKS_AND_MITIGATIONS.md` | Technical, operational, security and demo risks, each with its mitigation and where it lives |
 | `07_UNIQUE_FEATURES.md` | What TenantGuard does that a rate limiter or a typical fair-share gateway does not |
+| `08_ARCHITECTURE_FLOW.md` | One end-to-end flow diagram (technical + simple) and the attack protection loop |
 | `09_CONFIG_REFERENCE.md` | Every `tenantguard.yaml` key, environment variable, port and token |
 | `10_TESTING.md` | Test suites, counts, what they prove, mutation checks |
 | `11_FILES_gateway.md` | `gateway/`: every file and function |
