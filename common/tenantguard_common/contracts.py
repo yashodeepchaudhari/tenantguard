@@ -368,3 +368,71 @@ class RunResult(BaseModel):
     attacker_429: int = 0
     attacker_503: int = 0
     file: str = ""
+
+
+# ---------- 6. Handoff cases (Web PS3 convergence; bridge integrations/handoff on :8400) ----------
+# Internal view served by the bridge (GET /cases, GET /cases/{case_id}). The partner's wire format
+# ("HH:MM:SS" `time`/`deadline`, strict) exists only inside the bridge, which converts at the edge.
+Verdict = Literal["costly_pattern", "over_plan", "honest_growth", "host_fault", "mitigated_no_blame"]
+Severity = Literal["low", "medium", "high"]
+CaseStatus = Literal["waiting_for_decision", "in_progress", "resolved", "closed"]
+CaseDecision = Literal["approve", "reject", "extend", "release", "resolve"]
+ActionState = Literal["pending", "approved", "rejected", "extended", "released", "resolved", "expired"]
+
+
+class CaseContext(BaseModel):
+    verdict: Verdict
+    affected: List[str] = Field(default_factory=list)   # victim tenant ids (barcode neighbours), may be empty
+    evidence_link: str                                  # http://<ui-host>:5173/case/<incident_id>
+    summary: str
+
+
+class CaseAction(BaseModel):
+    action_id: str                # "A1", "A2", ... unique within a case
+    text: str
+    deadline_at: float            # epoch s; after it TenantGuard applies its safe default (TTL auto-undo)
+    deadline_ist: str             # display only, "HH:MM:SS" IST
+    state: ActionState = "pending"
+    decided_by: Optional[str] = None
+    decided_at: Optional[float] = None
+
+
+class CaseHistoryItem(BaseModel):
+    at: float                     # epoch s
+    time_ist: str                 # display only, "HH:MM:SS" IST
+    event: str
+
+
+class CaseView(BaseModel):
+    """Bridge GET /cases (list) and GET /cases/{case_id}."""
+    case_id: str                  # "INC-0001", assigned by the bridge
+    incident_id: str              # brain IncidentEvent.incident_id
+    tenant: Optional[str] = None
+    title: str
+    severity: Severity
+    status: CaseStatus
+    context: CaseContext
+    actions: List[CaseAction] = Field(default_factory=list)
+    history: List[CaseHistoryItem] = Field(default_factory=list)
+    owner: Optional[str] = None
+    owner_since_at: Optional[float] = None
+    owner_since_ist: Optional[str] = None
+    created_at: float
+    updated_at: float
+    delivered_at: Optional[float] = None   # last successful POST to the Web app; None = not yet delivered
+
+
+class OperatorCmd(BaseModel):
+    """Human decision -> brain POST /api/operator (control token required). The brain's ladder obeys it,
+    so humans and the ladder never fight.
+    - release: force the tenant's ladder to normal (clear 1.0/1.0) and suppress re-escalation for until_s.
+    - extend:  hold the tenant at its current level/factors for until_s (renewing TTLs), then resume the ladder.
+    - resume:  cancel any operator hold now.
+    until_s must be finite, 0 < until_s <= gateway.ttl_max_s, else 400.
+    """
+    tenant: str
+    decision: Literal["release", "extend", "resume"]
+    until_s: float = 120.0
+    by: str
+    case_id: Optional[str] = None
+

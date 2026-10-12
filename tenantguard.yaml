@@ -19,6 +19,7 @@ services:
   gateway: http://127.0.0.1:8000
   brain: http://127.0.0.1:8200
   lab: http://127.0.0.1:8300
+  handoff: http://127.0.0.1:8400
 
 tiers:
   enterprise:
@@ -96,3 +97,9 @@ brain:
   host_idle_ratio: 1.5
   ttl_s: {relocate: 120, quarantine: 120, throttle: 60, probation: 300}
   action_budget: {relocations_per_min: 6, quarantine_every_s: 30, max_drained: 1}
+
+handoff:
+  decision_window_s: 120      # deadline given to the on-call for a pending action
+  block_s: 300                # duration of an approved block (always TTL-bound)
+  extend_s: 120
+  push_timeout_s: 3

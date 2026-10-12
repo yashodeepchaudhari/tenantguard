@@ -430,4 +430,9 @@ Proof: run the mock web + bridge against a recorded event stream (use `brain/too
   - The UI and lab on this laptop use `http://100.112.232.8:8000` (gateway) and `:8200` (brain).
   - Only the coordinator drives the host; sessions ask the coordinator for host runs.
 - 2026-10-12 (T7, merged): gateway path guard (raw path forwarded), control-token routers, finite TTL/quota bounds, capped body stream, the X-Request-Id rule, disconnect debit. Gradient window on worker-side *excess* latency; three lanes; retry budget; charge/reference_costs (tenantguard only). **Lab note:** the whale must vary its query, because identical failed searches count as retries.
+- 2026-10-12 (T11, accepted):
+  - The partner wire format lives only in the bridge; `CaseView` etc. in contracts §6 use epoch + `*_ist`.
+  - The bridge assigns `INC-NNNN` case IDs (persisted) next to incident_id.
+  - Human release/extend go to the brain as `OperatorCmd` (`POST /api/operator`, T8 adds it) so humans and the ladder never fight. Quarantine approve → gateway BlockCmd, TTL-bound.
+  - Severity: warn low, throttle/deprioritize medium, quarantine/blocked high. Default verdict over_plan until the brain emits verdicts.
 - 2026-10-12: Cost bucket is debited with the worker-measured CPU (`X-TenantGuard-Cpu-Ms`) rather than an estimate, so it is a real resource quota, not a request count.
