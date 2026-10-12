@@ -50,3 +50,14 @@ def test_calibrate_cli_writes_json_to_stdout(live_worker):
     assert eps["search"]["handler_cpu_ms"]["mean"] > eps["light"]["handler_cpu_ms"]["mean"]
     assert eps["ingest"]["blackbox_cpu_ms"] > 0 and eps["ingest"]["handler_cpu_ms"]["mean"] < 5
     assert eps["write"]["bg_cpu_ms"] > 0
+
+
+def test_calibrate_fails_cleanly_when_worker_is_down():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]          # nothing listens here
+    p = subprocess.run([sys.executable, "tools/calibrate.py", "--url", f"http://127.0.0.1:{port}", "--wait-s", "1",
+                        "--out", "-"], cwd=WORKER_DIR, capture_output=True, text=True, timeout=60)
+    assert p.returncode != 0
+    assert p.stdout == ""                  # nothing to truncate-and-replace a good file with
+    assert "not healthy" in p.stderr
