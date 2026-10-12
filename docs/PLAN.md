@@ -463,7 +463,7 @@ Proof: unit tests + a live run against brain + fake_gateway (ask for a slot). Us
 | T12 Brain prover + verdicts + calibration | task/T12-brain-prover | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | in progress (merges coord/layout-balance) |
 | T4 UI | task/T4-ui | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | **merged** |
 | T9 UI wave 2 | task/T9-ui-casefile | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | **merged** |
-| T13 UI wave 3 (story + Docker-host run) | task/T13-ui-story | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | in progress |
+| T13 UI wave 3 (story + Docker-host run) | task/T13-ui-story | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | **merged** (standby; screenshot retake at rehearsal) |
 | T5 Lab | task/T5-lab | D:\yashodeep\codeAstra-T5 | codeastra-t5-79 | **merged** |
 | T10 Lab wave 2 + crash-test | task/T10-lab-crashtest | D:\yashodeep\codeAstra-T5 | codeastra-t5-79 | in progress |
 | Convergence samples | n/a (main dir, docs/convergence/) | main | codeastra-21 | assigned |
