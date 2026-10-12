@@ -59,10 +59,12 @@ def test_sleep_only_with_warm_min_zero_and_wake_at_once():
 
 
 def test_cpu_settings_by_mode():
-    assert cpu_settings(P, 1.095, 2, CFG, "tenantguard") == (547_500_000, 3840)
+    assert cpu_settings(P, 1.095, 2, CFG, "tenantguard") == (1_000_000_000, 3840)    # each replica <= 1 core
+    assert cpu_settings(P, 0.9, 2, CFG, "tenantguard") == (900_000_000, 3840)        # not split: tenants are sticky
     assert cpu_settings(P, 0.1, 1, CFG, "tenantguard")[0] == 750_000_000     # idle: cap stays at the floor
     assert cpu_settings(P, 3.0, 1, CFG, "tenantguard")[0] == 1_000_000_000   # one replica <= 1 core
     assert cpu_settings(P, 3.0, 1, CFG, "industry")[0] == 750_000_000
+    assert cpu_settings(P, 3.0, 2, CFG, "industry")[0] == 375_000_000                # static floor, split evenly
     assert cpu_settings(P, 3.0, 1, CFG, "off") == (0, 1024)
 
 

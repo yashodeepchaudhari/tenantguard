@@ -1,178 +1,116 @@
-"""End-to-end brain logic on the simulator, with a virtual clock (no I/O)."""
-from tenantguard_common.contracts import QueueStat, StateSnapshot, TelemetryFrame, TenantUsage, WorkerStats
+"""End-to-end brain logic (ladder + control loop + runtime wiring) on the simulator, with a virtual clock."""
+import asyncio
 
-from tenantguard_brain.core import Brain
-from tenantguard_brain.sim import Phase, Simulator, whale_scenario
+from tenantguard_common.contracts import StateSnapshot, TenantUsage, WorkerStats
 
-from .conftest import T0, drive
+from tenantguard_brain.sim import Phase, whale_scenario
+
+from .conftest import T0, Harness
 
 
-def whale_run(cfg, mode="tenantguard", ladder_only=True, **kw):
-    """Ladder (per-tenant 'inc-') events only by default; server incidents ('srv-') are tested separately."""
-    brain = Brain(cfg)
-    sim = Simulator(cfg.tenants, whale_scenario("K", 20, 40, 60), quota_mult={"K": 3}, start=T0, mode=mode)
+def run(h: Harness, until: float, log=None) -> Harness:
+    asyncio.run(h.run_until(until, log))
+    return h
+
+
+def whale(cfg, mode="tenantguard"):
+    h = Harness(cfg, whale_scenario("K", 20, 40, 60), mode=mode)
     log = []
-    kw.setdefault("routes_apply", False)        # the ladder on its own; rescue + ladder: test_stage3_sim
-    events, commands = drive(brain, sim, T0 + sim.total_s, log=log, **kw)
-    if ladder_only:
-        events = [e for e in events if e.incident_id.startswith("inc-")]
-    return brain, sim, events, commands, log
+    run(h, T0 + h.sim.total_s, log)
+    return h, log
 
 
-def test_quiet_fleet_raises_no_incident(cfg):
-    brain = Brain(cfg)
-    sim = Simulator(cfg.tenants, [Phase("calm", 120)], start=T0)
-    events, commands = drive(brain, sim, T0 + 120)
-    assert events == [] and commands == []
-    snap = brain.snapshot(sim.now)
+def test_quiet_pool_raises_no_incident_and_keeps_one_warm_replica_each(cfg):
+    h = run(Harness(cfg, [Phase("calm", 60)]), T0 + 60)
+    assert h.events() == []
+    assert all(s.limits == [] for s in h.snapshots)
+    snap = h.rt.brain.snapshot(h.sim.now, h.rt.control.pool_view())
     assert snap.status_sentence.startswith("All 12 tenants healthy")
+    assert {p: len(r) for p, r in h.sim.ready.items()} == {p: 1 for p in ("health", "commerce", "mobility", "media", "free")}
     assert snap.fairness > 0.5 and 0.1 < snap.utilization < 0.6
 
 
-def test_whale_is_detected_throttled_and_recovers(cfg):
-    brain, sim, events, commands, log = whale_run(cfg)
-    # only K is ever touched: no innocent tenant gets an incident or a command
-    assert {e.tenant for e in events} == {"K"}
-    assert {c.tenant for _, c in commands} == {"K"}
-    # detected during the attack (starts at +20 s), within a few seconds
+def test_whale_is_contained_inside_its_project_and_recovers(cfg):
+    h, log = whale(cfg)
+    events = h.events()
+    assert {e.tenant for e in events} == {"K"}                            # no innocent gets an incident
+    assert {c.tenant for s in h.snapshots for c in s.limits} == {"K"}     # ...or a limit
     detected = [e for e in events if e.stage == "detected"]
     assert len(detected) == 1 and 20 < detected[0].ts - T0 < 26
-    # the ladder walk: warn -> throttle (0.5) -> throttle (0.25)
     levels = [(e.prev_level, e.level) for e in events if e.stage == "level_change"]
     assert levels[:3] == [("normal", "warn"), ("warn", "throttle"), ("throttle", "throttle")]
-    factors = [c.factor for _, c in commands]
-    assert factors[:2] == [0.5, 0.25]
-    # recovery after the attack stops (+60 s): back to full plan and incident closed
-    assert brain.ladders["K"].level == "normal" and brain.ladders["K"].factor == 1.0
-    stages = [e.stage for e in events]
-    assert stages[-3:] == ["resolved", "level_change", "closed"]
-    assert commands[-1][1].factor == 1.0 and commands[-1][1].weight_factor == 1.0
-    assert sim.overrides == {}
-    # contained before the attack ended: K is not escalating forever
-    k_at_end_of_attack = [lv["K"] for t, lv in log if t - T0 <= 60][-1]
-    assert k_at_end_of_attack[0] == "throttle"
+    assert [c.factor for s in h.snapshots for c in s.limits][:1] == [0.5]
+    assert h.rt.brain.ladders["K"].level == "normal" and h.rt.brain.limits() == []
+    assert [e.stage for e in events][-3:] == ["resolved", "level_change", "closed"]
+    assert h.snapshots[-1].limits == []                                   # the clear reached the gateway
 
 
-def test_every_command_carries_both_factors_and_a_ttl(cfg):
-    _, _, _, commands, _ = whale_run(cfg)
-    for _, c in commands:
-        d = c.model_dump()
-        assert "factor" in d and "weight_factor" in d and c.ttl_s > 0
-        assert 0 < c.factor <= 1 and 0 < c.weight_factor <= 1
-    assert all(c.incident_id for _, c in commands)
+def test_other_projects_never_feel_the_whale(cfg):
+    h, log = whale(cfg)
+    brain = h.rt.brain
+    others = [t for t, cfg_ in brain.tenants.items() if cfg_.project != "mobility"]
+    assert all(lv[t][0] == "normal" for _, lv, _ in log for t in others)
+    caps = {(r.project, r.nano_cpus) for s in h.snapshots for rs in s.replicas.values() for r in rs
+            if r.project != "mobility" and r.state == "ready"}
+    assert caps == {("health", 1_000_000_000), ("commerce", 1_000_000_000), ("media", 750_000_000),
+                    ("free", 500_000_000)}                                # their floors never moved
 
 
-def test_every_event_explains_why(cfg):
-    _, _, events, _, _ = whale_run(cfg)
-    for e in events:
-        assert e.tenant == "K" and e.detail
-        if e.stage == "level_change":
-            assert e.level and e.prev_level
-            assert "because" in e.detail
-        if e.action and e.action.startswith("LimitsCmd factor=0"):
-            assert "fair share" in e.detail and "neighbours" in e.detail
+def test_every_limit_carries_both_factors_and_a_ttl_and_every_event_explains_why(cfg):
+    h, _ = whale(cfg)
+    for s in h.snapshots:
+        for c in s.limits:
+            assert 0 < c.factor <= 1 and 0 < c.weight_factor <= 1 and c.ttl_s > 0 and c.incident_id
+    for e in h.events():
+        assert e.detail and len(e.detail) > 30
+        if e.stage == "level_change" and e.level in ("throttle", "deprioritize", "quarantine"):
+            assert "because" in e.detail and "LimitsCmd" in (e.action or "")
 
 
-def test_actions_are_renewed_while_needed(cfg):
-    brain, _, _, commands, _ = whale_run(cfg)
-    # K stays throttled ~35 s with TTL 60 s: at least one renewal of an unchanged factor (every ttl/4)
-    same = [(a, b) for (_, a), (_, b) in zip(commands, commands[1:]) if a.factor == b.factor]
-    assert same
+def test_no_actions_and_a_static_fleet_outside_tenantguard_mode(cfg):
+    for mode in ("industry", "off"):
+        h, _ = whale(cfg, mode=mode)
+        assert all(s.limits == [] for s in h.snapshots)
+        assert [e for e in h.events() if e.stage == "level_change"] == []
+        assert {p: len(r) for p, r in h.sim.ready.items()}["mobility"] == 1   # no scaling, no lending
 
 
-def test_failed_sends_are_retried(cfg):
-    brain = Brain(cfg)
-    sim = Simulator(cfg.tenants, whale_scenario("K", 20, 15, 0), quota_mult={"K": 3}, start=T0)
-    _, commands = drive(brain, sim, T0 + sim.total_s, apply=False, sent_ok=False)
-    commands = [(t, c) for t, c in commands if c.tenant == "K"]
-    times = [t for t, c in commands if c.factor == 0.5]
-    assert len(times) >= 2 and all(b - a >= 1.0 - 1e-6 for a, b in zip(times, times[1:]))
+def test_industry_mode_caps_each_project_at_its_floor(cfg):
+    h, _ = whale(cfg, mode="industry")
+    mob = [r for r in h.snapshots[-1].replicas["mobility"] if r.state == "ready"]
+    assert [r.nano_cpus for r in mob] == [750_000_000]
 
 
-def test_no_actions_outside_tenantguard_mode(cfg):
-    brain, sim, events, commands, _ = whale_run(cfg, mode="industry")
-    assert events == [] and commands == []
-    assert brain.scores                                     # still scoring and observing
-    assert "industry" in brain.snapshot(sim.now).status_sentence
-
-
-def test_leaving_tenantguard_mode_resets_and_clears(cfg):
-    brain = Brain(cfg)
-    sim = Simulator(cfg.tenants, whale_scenario("K", 20, 40, 30), quota_mult={"K": 3}, start=T0)
-    drive(brain, sim, T0 + 30, routes_apply=False)
-    assert brain.ladders["K"].acting
-    sim.mode = "off"
-    events, commands = drive(brain, sim, T0 + 32, routes_apply=False)
-    events = [e for e in events if e.incident_id.startswith("inc-")]
-    assert brain.ladders["K"].level == "normal"
-    assert any(e.stage == "closed" and "mode" in e.detail for e in events)
-    assert commands and commands[0][1].factor == 1.0 and commands[0][1].weight_factor == 1.0
-
-
-def test_ticks_without_completions_are_skipped(cfg):
-    brain = Brain(cfg)
-    now = T0
-    def frame(p95, completed):
-        return TelemetryFrame(ts=now, mode="tenantguard", queues=[
-            QueueStat(tenant="A", depth=0, wait_p95_ms=0, p95_ms=p95, completed=completed, admitted=completed,
-                      rejected_429=0, expired_503=0, inflight=0)])
-    for _ in range(20):
-        now += 0.25
-        brain.ingest_frame(frame(10.0, 5), now)
-    base = brain.baseline.get("A")
-    for _ in range(20):
-        now += 0.25
-        brain.ingest_frame(frame(0.0, 0), now)               # idle ticks: p95 0 must not read as "fast"
-    assert brain.baseline.get("A") == base
-    brain.tick(now)
-    assert brain.snapshot(now).tenants[0].p95_ms == 0.0      # no completions in the window -> no p95
+def test_stale_telemetry_holds_everything_and_says_so(cfg):
+    h = run(Harness(cfg, whale_scenario("K", 20, 40, 60)), T0 + 30)
+    brain, control = h.rt.brain, h.rt.control
+    replicas = dict(control.fleet.replicas)
+    level = brain.ladders["K"].level
+    later = h.sim.now + 10
+    asyncio.run(h.rt.control_once(later))                     # no frames for 10 s
+    assert control.fleet.replicas.keys() == replicas.keys()
+    assert brain.tick(later).events == [] and brain.ladders["K"].level == level
+    assert "telemetry lost" in brain.snapshot(later).status_sentence
+    assert brain.limits()                                     # the active limit keeps being published
 
 
 def test_worker_restart_does_not_produce_negative_cpu(cfg):
-    brain = Brain(cfg)
-    def ws(ts, started, cpu):
-        return WorkerStats(server="w1", ts=ts, started_at=started, cpu_total_ms=cpu, mem_mb=1,
-                           tenants=[TenantUsage(tenant="K", requests=1, handler_cpu_ms=cpu, bg_cpu_ms=0, db_ms=0)])
-    brain.ingest_stats(ws(T0, T0 - 100, 5000), T0)
-    brain.ingest_stats(ws(T0 + 1, T0 - 100, 5300), T0 + 1)
-    brain.ingest_stats(ws(T0 + 2, T0 + 1.5, 20), T0 + 2)     # restarted: counters reset
-    brain.ingest_stats(ws(T0 + 3, T0 + 1.5, 120), T0 + 3)
-    assert [round(s.tenant_cpu_ms["K"]) for s in brain.stat_samples] == [300, 100]
+    h = Harness(cfg, [Phase("calm", 5)])
+    brain = h.rt.brain
+    a = WorkerStats(server="tg-health-1", ts=T0, started_at=T0 - 100, cpu_total_ms=5000, mem_mb=80,
+                    tenants=[TenantUsage(tenant="A", requests=10, handler_cpu_ms=900, bg_cpu_ms=0, db_ms=0)])
+    b = a.model_copy(update={"ts": T0 + 1, "started_at": T0 + 0.5, "cpu_total_ms": 10,
+                             "tenants": [TenantUsage(tenant="A", requests=1, handler_cpu_ms=3, bg_cpu_ms=0, db_ms=0)]})
+    brain.ingest_stats(a, T0)
+    brain.ingest_stats(b, T0 + 1)
+    assert list(brain.stat_samples) == []                     # restart: no diff, never negative
 
 
 def test_snapshot_matches_contract(cfg):
-    brain, sim, _, _, _ = whale_run(cfg)
-    snap = brain.snapshot(sim.now)
-    StateSnapshot.model_validate(snap.model_dump())
-    assert len(snap.tenants) == 12 and {s.server for s in snap.servers} >= set(cfg.fleet_servers)
-    assert abs(sum(t.cpu_share for t in snap.tenants) - 1.0) < 0.01
-    assert all(0 <= t.noisy_norm <= 1 for t in snap.tenants)
-    assert snap.brain_ok
-
-
-def test_stale_telemetry_holds_and_says_so(cfg):
-    brain, sim, _, _, _ = whale_run(cfg)
-    snap = brain.snapshot(sim.now + 30)
-    assert not snap.brain_ok and "lost" in snap.status_sentence
-
-
-def _moderate_attack(cfg, freeze=True):
-    brain = Brain(cfg)
-    if not freeze:
-        brain._baseline_frozen = lambda t: False
-    sim = Simulator(cfg.tenants, whale_scenario("K", 30, 150, 0, 5, 60), quota_mult={"K": 3}, start=T0,
-                    mode="industry")
-    drive(brain, sim, T0 + 30)
-    calm = {t: brain.baseline.get(t) for t in brain.neighbours["K"]}
-    drive(brain, sim, T0 + 180)
-    drift = max(brain.baseline.get(t) / calm[t] - 1 for t in calm)
-    return brain.scores["K"].victim_impact, drift
-
-
-def test_moderate_attack_is_not_absorbed_into_the_baseline(cfg):
-    # K over-uses a little for 150 s without ever being flagged: its neighbours' baselines must not
-    # learn the slowdown as "normal" (review finding: time-based EWMA + freeze while a neighbour over-uses)
-    impact, drift = _moderate_attack(cfg)
-    assert drift < 0.03 and impact > 0.1
-    impact_nf, drift_nf = _moderate_attack(cfg, freeze=False)
-    assert drift_nf > 0.1 and impact_nf < impact / 2       # what happens without the freeze
+    h, _ = whale(cfg)
+    snap = h.rt.brain.snapshot(h.sim.now, h.rt.control.pool_view())
+    again = StateSnapshot.model_validate(snap.model_dump())
+    assert len(again.tenants) == 12 and {t.project for t in again.tenants} == {
+        "health", "commerce", "mobility", "media", "free"}
+    assert again.pool is not None and len(again.pool.projects) == 5
+    assert {s.project for s in again.servers} == {"health", "commerce", "mobility", "media", "free"}

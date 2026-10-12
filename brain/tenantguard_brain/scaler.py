@@ -3,9 +3,14 @@
 - replica memory   = round_up(baseline + cache + per_tenant * tenants)            (fixed at start, never shrunk)
 - own replicas     = max(warm_min, ceil(floor / (per_replica_max * target_util))) (memory reserved for the project)
 - replicas needed  = ceil(min(demand, max(alloc, floor)) / (per_replica_max * target_util)), >= warm_min,
-                     >= busy_min while busy, <= ceil(cap / per_replica_max); up after scale_up_ticks,
+                     >= busy_min while busy and each of them would still get >= busy_cpu (a tenant sticks to one
+                     replica, so splitting a small allocation only shrinks every replica's cap),
+                     <= ceil(cap / per_replica_max); up after scale_up_ticks,
                      down by one after scale_down_ticks, to zero after zero_after_ticks idle (warm_min 0 only)
-- CPU per replica  = NanoCpus min(per_replica_max, max(alloc, floor) / n); CpuShares 10240 per core of floor / n
+- CPU per replica  = NanoCpus min(per_replica_max, max(alloc, floor)): tenants stick to a replica, so an even split
+                     would leave one replica idle while another queues; each replica may use the whole allocation.
+                     CpuShares 10240 per core of floor / n: under contention the kernel holds every project's floor.
+                     (With several replicas the allocation is a per-replica ceiling, not an exact project total.)
 - plan()           = ordered actions: drain -> stop -> lower CPU -> start -> raise CPU, never above usable memory
 """
 from __future__ import annotations
@@ -79,7 +84,7 @@ class Hyst:
 def _raw_need(p: ProjectSpec, demand: float, alloc: float, idle_ticks: int, cfg: ScaleCfg) -> int:
     usable = min(demand, max(alloc, p.floor_cpu))
     need = math.ceil(usable / (cfg.per_replica_max_cpu * cfg.target_util) - 1e-9) if usable > IDLE_CPU else 0
-    if demand > cfg.busy_cpu:
+    if demand > cfg.busy_cpu and usable >= cfg.busy_min_replicas * cfg.busy_cpu:
         need = max(need, cfg.busy_min_replicas)
     asleep = p.warm_min == 0 and idle_ticks >= cfg.zero_after_ticks
     floor = 0 if asleep else max(p.warm_min, 1)       # warm_min 0 keeps one replica until it has slept
@@ -105,15 +110,16 @@ def replicas_needed(p: ProjectSpec, current: int, demand: float, alloc: float, h
 
 
 def cpu_settings(p: ProjectSpec, alloc: float, n: int, cfg: ScaleCfg, mode: str) -> Tuple[int, int]:
-    """(NanoCpus, CpuShares) per replica. off: unlimited, equal shares; industry: static floor; tenantguard:
-    cap = max(alloc, floor) so an idle project is never capped below its floor when it wakes."""
+    """(NanoCpus, CpuShares) per replica. off: unlimited, equal shares; industry: the floor split evenly (a static
+    quota); tenantguard: each replica may use max(alloc, floor), so an idle project is never capped below its floor
+    when it wakes and a sticky tenant is never squeezed by a split."""
     if n <= 0:
         return 0, 0
     shares = min(SHARES_RANGE[1], max(SHARES_RANGE[0], round(SHARES_PER_CORE * p.floor_cpu / n)))
     if mode == "off":
         return 0, 1024
-    cores = p.floor_cpu if mode == "industry" else max(alloc, p.floor_cpu)
-    return int(round(min(cfg.per_replica_max_cpu, cores / n) * 1e9)), shares
+    cores = p.floor_cpu / n if mode == "industry" else max(alloc, p.floor_cpu)
+    return int(round(min(cfg.per_replica_max_cpu, cores) * 1e9)), shares
 
 
 @dataclass
@@ -193,10 +199,11 @@ def _updates(fleet: Fleet, targets: Dict[str, Target], skip: set) -> Tuple[List[
     lower, raise_ = [], []
     for pid, t in targets.items():
         for r in _live(fleet, pid):
-            if r.id in skip or (r.nano_cpus, r.cpu_shares) == (t.nano_cpus, t.cpu_shares):
+            nano = t.nano_cpus
+            if r.id in skip or (r.nano_cpus, r.cpu_shares) == (nano, t.cpu_shares):
                 continue
-            a = Action("update", pid, r.id, t.nano_cpus, t.cpu_shares, r.mem_mb, r.borrowed, list(r.tenants))
-            tighter = t.nano_cpus > 0 and (r.nano_cpus == 0 or t.nano_cpus < r.nano_cpus)
+            a = Action("update", pid, r.id, nano, t.cpu_shares, r.mem_mb, r.borrowed, list(r.tenants))
+            tighter = nano > 0 and (r.nano_cpus == 0 or nano < r.nano_cpus)
             (lower if tighter else raise_).append(a)
     return lower, raise_
 

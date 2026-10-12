@@ -101,6 +101,7 @@ brain:
     quarantine_factor: 0.1
     quarantine_weight: 0.1
   ttl_s: {quarantine: 120, throttle: 60}
+  detect_window_s: 2            # window for victim p95 and usage shares
 
 # v2 control loop: allocation, scaling, replicas. Values marked estimate must be measured on the host.
 control:
@@ -130,6 +131,9 @@ control:
 # v2 detector (inside a project)
 detector:
   unattributed_ratio: 0.25      # estimate: unexplained share of a project's CPU that triggers a split test
+  unattributed_min_ms: 50       # estimate: ...and at least this many CPU ms/s (an idle replica's runtime never does)
+  overhead_ms_per_request: 6.6  # max of (process - handler - bg - black-box) CPU per request in worker/calibration.json
+  blame_ttl_s: 300              # a split-test culprit is charged the unexplained CPU this long
   unattributed_hold_s: 10       # estimate
   split: {settle_s: 2, sample_s: 6}       # from the v1 prover's settle/window values
   contention: {ratio: 1.6, open_s: 4}     # no-blame external contention: all projects slow while CPU is within allocation

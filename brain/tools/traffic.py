@@ -40,13 +40,12 @@ async def main() -> None:
     ap.add_argument("--whale-rps", type=float, default=6.0)
     ap.add_argument("--whale-n", type=int, default=200000)
     ap.add_argument("--whale-conc", type=int, default=6)
-    ap.add_argument("--servers", default="", help="only drive tenants with a server in this comma list")
+    ap.add_argument("--projects", default="", help="only drive tenants of these projects (comma list)")
     args = ap.parse_args()
 
     tenants = load_tenants()
-    if args.servers:
-        up = set(args.servers.split(","))
-        tenants = [t for t in tenants if up & set(t.servers)]
+    if args.projects:
+        tenants = [t for t in tenants if t.project in set(args.projects.split(","))]
     keys = {t.id: t.api_key for t in tenants}
     lat: Dict[str, List[float]] = defaultdict(list)
     codes: Dict[str, Dict[int, int]] = defaultdict(lambda: defaultdict(int))

@@ -13,9 +13,8 @@ score(t) = max(cpu_share / fair_share, queue_share / fair_share) * (1 + victim_i
 A tenant is *flagged* only if it over-uses (ratio > 1) AND its neighbours are hurt
 (victim_impact >= min_victim_impact). A heavy tenant whose neighbours are fine is never flagged.
 
-Neighbours instead of "all other tenants": with shuffle-sharded barcodes (AG(2,3)) each tenant
-shares servers with 6 of the 11 others and is disjoint from 5. Averaging over neighbours keeps an
-innocent heavy tenant on disjoint servers from being blamed for someone else's victims.
+Neighbours (v2) are the other tenants of the same project: only they share its replicas. A tenant in
+another project runs on other replicas with their own CPU floor, so it can never be blamed for them.
 """
 from __future__ import annotations
 

@@ -1,9 +1,9 @@
-"""Run the real gateway + workers (+ optionally the brain) locally on offset ports, without Docker.
+"""Run the real gateway + brain locally on offset ports, without Docker. The brain starts and stops the replicas
+itself as local worker processes (control.backend=process), from --replica-base upward.
 
-    python brain/tools/local_stack.py --gateway-port 8030 --worker-base 8130 --brain-port 8230 --logs <dir>
+    python brain/tools/local_stack.py --gateway-port 8030 --brain-port 8230 --replica-base 8130 --logs <dir>
 
-Workers w0..w8 listen on worker-base + i (no spare / quarantine: this laptop is CPU-starved).
-Ctrl+C (or killing this process) stops everything it started.
+Ctrl+C (or killing this process) stops everything it started; the brain stops its replicas on exit.
 """
 from __future__ import annotations
 
@@ -34,52 +34,38 @@ def wait_http(url: str, timeout: float = 30.0) -> bool:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--gateway-port", type=int, default=8030)
-    ap.add_argument("--worker-base", type=int, default=8130)
-    ap.add_argument("--brain-port", type=int, default=0, help="0 = don't start the brain")
-    ap.add_argument("--workers", default="w0,w1,w2,w3,w4,w5,w6,w7,w8")
+    ap.add_argument("--brain-port", type=int, default=8230)
+    ap.add_argument("--replica-base", type=int, default=8130)
     ap.add_argument("--logs", default=str(ROOT / "brain" / ".stack-logs"))
-    ap.add_argument("--data", default="", help="worker data dir (default <logs>/data)")
     args = ap.parse_args()
 
     logs = Path(args.logs)
     logs.mkdir(parents=True, exist_ok=True)
-    data = Path(args.data or logs / "data")
-    names = args.workers.split(",")
-    urls = {n: f"http://127.0.0.1:{args.worker_base + i}" for i, n in enumerate(names)}
-    worker_env = ",".join(f"{n}={u}" for n, u in urls.items())
     gw = f"http://127.0.0.1:{args.gateway_port}"
+    brain = f"http://127.0.0.1:{args.brain_port}"
     procs = []
 
     def spawn(name, cmd, cwd, env):
         f = open(logs / f"{name}.log", "w", encoding="utf-8")
-        e = {**os.environ, **env}
-        procs.append((name, subprocess.Popen(cmd, cwd=cwd, env=e, stdout=f, stderr=subprocess.STDOUT)))
+        procs.append((name, subprocess.Popen(cmd, cwd=cwd, env={**os.environ, **env}, stdout=f, stderr=subprocess.STDOUT)))
 
-    for i, n in enumerate(names):
-        spawn(n, [sys.executable, "-m", "app", "--port", str(args.worker_base + i)], ROOT / "worker",
-              {"SERVER_NAME": n, "WORKER_DATA_DIR": str(data / n)})
-    for n, u in urls.items():
-        if not wait_http(u + "/healthz", 60):
-            print(f"worker {n} did not come up; see {logs / (n + '.log')}")
+    spawn("brain", [sys.executable, "-m", "tenantguard_brain"], ROOT / "brain",
+          {"TENANTGUARD_BACKEND": "process", "TENANTGUARD_GATEWAY_URL": gw, "TENANTGUARD_BRAIN_PORT": str(args.brain_port),
+           "TENANTGUARD_PROCESS_BASE_PORT": str(args.replica_base), "TENANTGUARD_REGISTRY": str(logs / "registry.json")})
     spawn("gateway", [sys.executable, "-m", "tenantguard_gateway"], ROOT / "gateway",
-          {"TENANTGUARD_WORKER_URLS": worker_env, "TENANTGUARD_GATEWAY_PORT": str(args.gateway_port)})
-    if not wait_http(gw + "/healthz", 60):
-        print(f"gateway did not come up; see {logs / 'gateway.log'}")
-    if args.brain_port:
-        spawn("brain", [sys.executable, "-m", "tenantguard_brain"], ROOT / "brain",
-              {"TENANTGUARD_WORKER_URLS": worker_env, "TENANTGUARD_GATEWAY_URL": gw,
-               "TENANTGUARD_BRAIN_PORT": str(args.brain_port)})
-        wait_http(f"http://127.0.0.1:{args.brain_port}/healthz", 30)
-    print(f"stack up: gateway {gw}, workers {worker_env}" +
-          (f", brain http://127.0.0.1:{args.brain_port}" if args.brain_port else ""), flush=True)
-    print(f"TENANTGUARD_GATEWAY_URL={gw}\nTENANTGUARD_WORKER_URLS={worker_env}", flush=True)
+          {"TENANTGUARD_BRAIN_URL": brain, "TENANTGUARD_GATEWAY_PORT": str(args.gateway_port)})
+    for name, url in (("brain", brain), ("gateway", gw)):
+        if not wait_http(url + "/healthz", 60):
+            print(f"{name} did not come up; see {logs / (name + '.log')}")
+    print(f"stack up: gateway {gw}, brain {brain} (replicas from port {args.replica_base})", flush=True)
+    print(f"TENANTGUARD_GATEWAY_URL={gw}\nTENANTGUARD_BRAIN_URL={brain}", flush=True)
 
     def stop(*_):
         for _, p in reversed(procs):
             p.terminate()
         for _, p in procs:
             try:
-                p.wait(5)
+                p.wait(10)
             except subprocess.TimeoutExpired:
                 p.kill()
         sys.exit(0)

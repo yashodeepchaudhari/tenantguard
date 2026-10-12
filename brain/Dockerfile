@@ -12,7 +12,6 @@ COPY brain/requirements.txt /app/brain/requirements.txt
 RUN pip install --no-cache-dir -r /app/brain/requirements.txt
 
 COPY tenantguard.yaml /app/tenantguard.yaml
-COPY layouts /app/layouts
 COPY brain/tenantguard_brain /app/brain/tenantguard_brain
 COPY brain/tools /app/brain/tools
 
