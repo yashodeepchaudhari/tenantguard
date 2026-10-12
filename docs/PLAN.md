@@ -522,7 +522,7 @@ Build:
 | T13 UI wave 3 (story + Docker-host run) | task/T13-ui-story | D:\yashodeep\codeAstra-T4 | codeastra-t4-0e | **merged** (standby; screenshot retake at rehearsal) |
 | T5 Lab | task/T5-lab | D:\yashodeep\codeAstra-T5 | codeastra-t5-45 | **merged** |
 | T10 Lab wave 2 + crash-test | task/T10-lab-crashtest | D:\yashodeep\codeAstra-T5 | codeastra-t5-45 | **partial, done** (tiers, SLA, run marks); merges with T12. Wave 2 runners: user decision. Scorecard runner moved to T25 |
-| T25 Scorecard runner (OFF/Industry/TenantGuard summary) | task/T25-scorecard | D:\yashodeep\codeAstra-T2 | codeastra-t2-9a | assigned (owns lab/tenantguard_lab/scorecard.py + lab/tests/test_scorecard.py only) |
+| T25 Scorecard runner (OFF/Industry/TenantGuard summary) | task/T25-scorecard | D:\yashodeep\codeAstra-T2 | codeastra-t2-9a | **done** (9738181; merges in the T12 batch: it carries T10 + layout) |
 | Convergence samples | n/a (main dir, docs/convergence/) | main | codeastra-21 | assigned |
 | Review | n/a | main | codeastra-2b | standby |
 
