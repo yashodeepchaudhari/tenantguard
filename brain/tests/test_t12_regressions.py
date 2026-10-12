@@ -58,3 +58,43 @@ def test_failed_requests_are_not_slot_usage(cfg):
     assert not l.flagged and l.score < 1.0
     assert brain.ladders["L"].level == "normal"
     assert not [e for e in brain.book.events(tenant="L") if e.incident_id.startswith("inc-")]
+
+
+# ------------------------------------------------------------------ bg CPU charge
+def bg_stats(server, now, k, bg_per_s):
+    return WorkerStats(server=server, ts=now, started_at=T0 - 10, cpu_total_ms=100.0 * k, mem_mb=1,
+                       tenants=[TenantUsage(tenant="K", requests=k, handler_cpu_ms=10.0 * k,
+                                            bg_cpu_ms=bg_per_s * k, db_ms=0.0)])
+
+
+def test_bg_cpu_is_charged_once_a_second_in_tenantguard_mode(cfg):
+    brain = Brain(cfg)
+    now = T0
+    charges = []
+    for i in range(1, 25):                      # 6 s at 4 Hz
+        now += 0.25
+        brain.ingest_frame(TelemetryFrame(ts=now, mode="tenantguard"), now)
+        if i % 4 == 0:
+            for s in ("w1", "w3"):
+                brain.ingest_stats(bg_stats(s, now, i // 4, 30.0), now)
+        charges += [c for _, path, c in brain.tick(now).control if path == "/control/charge"]
+    assert charges and all(c.tenant == "K" and c.cpu_ms > 0 for c in charges)
+    assert len({c.charge_id for c in charges}) == len(charges)              # unique ids
+    assert all(c.charge_id.startswith("K-") for c in charges)
+    # every bg ms is charged exactly once (the last second's is still pending when the loop ends)
+    assert abs(sum(c.cpu_ms for c in charges) + brain.bg_pending["K"] - 2 * 30.0 * 5) < 1e-6
+    brain.bg_pending.clear()
+    # a failed delivery is folded into the next charge, not lost
+    brain.charge_failed(charges[-1])
+    assert brain.bg_pending["K"] == charges[-1].cpu_ms
+
+
+def test_no_charge_outside_tenantguard_mode(cfg):
+    brain = Brain(cfg)
+    now = T0
+    for i in range(1, 13):
+        now += 0.25
+        brain.ingest_frame(TelemetryFrame(ts=now, mode="industry"), now)
+        if i % 4 == 0:
+            brain.ingest_stats(bg_stats("w1", now, i // 4, 30.0), now)
+        assert not [c for _, p, c in brain.tick(now).control if p == "/control/charge"]

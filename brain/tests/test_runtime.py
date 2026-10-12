@@ -110,3 +110,26 @@ def test_mode_before_first_frame_is_the_yaml_default(cfg):
     assert brain.snapshot(T0).noisy_thresholds == {"warn": cfg.ladder.warn, "throttle": cfg.ladder.throttle,
                                                    "quarantine": cfg.ladder.quarantine,
                                                    "recover_below": cfg.ladder.recover_below}
+
+
+async def test_job_runner_drain_test_for_an_ended_incident_undrains(cfg):
+    from tenantguard_brain.prover import HostCheck
+    sent = []
+
+    def handler(req: httpx.Request):
+        import json as _j
+        sent.append((req.url.path, _j.loads(req.content)))
+        return httpx.Response(200, json={"ok": True})
+
+    rt = Runtime(cfg)
+    rt.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    async def no_sleep(s):
+        return None
+    rt.sleep = no_sleep
+    await rt._run_job(HostCheck(incident_id="srv-gone", server="w4"))
+    await asyncio.gather(*rt.sender.running.values())      # the undrain goes out through the sender
+    await rt.client.aclose()
+    drains = [(b["server"], b["drained"]) for p, b in sent if p == "/control/drain"]
+    assert drains == [("w4", True), ("w4", False)]        # tested, then put back: the incident is over
+    assert "w4" not in rt.brain.s3.budget.drained

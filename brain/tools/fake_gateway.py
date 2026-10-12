@@ -245,16 +245,27 @@ def build_app(args) -> FastAPI:
     @app.post("/control/relocate", response_model=ControlAck)
     async def control_relocate(request: Request):
         cmd: RelocateCmd = await parse(request, RelocateCmd)
+        sim: Simulator = st["sim"]
+        if cmd.target is not None and cmd.target not in sim.workers:
+            raise HTTPException(400, f"unknown target {cmd.target}")
         relocations.append(cmd)
+        sim.apply_relocate(cmd.tenant, cmd.cls, cmd.target, cmd.ttl_s)
         control_log.append({"ts": time.time(), "kind": "relocate", **cmd.model_dump()})
-        return ControlAck(ok=True, detail="stored (not simulated)")
+        log.info("CONTROL relocate %s%s -> %s ttl=%gs", cmd.tenant, f"/{cmd.cls}" if cmd.cls else "", cmd.target,
+                 cmd.ttl_s)
+        return ControlAck(ok=True, detail="applied")
 
     @app.post("/control/drain", response_model=ControlAck)
     async def control_drain(request: Request):
         cmd: DrainCmd = await parse(request, DrainCmd)
+        sim: Simulator = st["sim"]
+        if cmd.server not in sim.workers:
+            raise HTTPException(400, f"unknown server {cmd.server}")
         drains[cmd.server] = cmd
+        sim.apply_drain(cmd.server, cmd.drained, cmd.ttl_s)
         control_log.append({"ts": time.time(), "kind": "drain", **cmd.model_dump()})
-        return ControlAck(ok=True, detail="stored (not simulated)")
+        log.info("CONTROL drain %s drained=%s ttl=%gs", cmd.server, cmd.drained, cmd.ttl_s)
+        return ControlAck(ok=True, detail="applied")
 
     return app
 
@@ -278,7 +289,8 @@ def main() -> None:
     if args.print_worker_urls:
         raw = load_settings()
         base = f"http://127.0.0.1:{args.port}/fake/workers"
-        print(",".join(f"{s}={base}/{s}" for s in sorted({s for t in load_tenants(raw) for s in t.servers})))
+        servers = sorted({s for t in load_tenants(raw) for s in t.servers}) + ["spare", "quarantine"]
+        print(",".join(f"{s}={base}/{s}" for s in servers))
         return
     import uvicorn
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")

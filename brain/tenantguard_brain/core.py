@@ -34,6 +34,7 @@ class StatSample:
     tenant_evictions: Dict[str, int] = field(default_factory=dict)      # evictions caused in dt
     blackbox_ms: float = 0.0                                             # unattributed CPU ms in dt
     class_cpu_ms: Dict[Tuple[str, str], float] = field(default_factory=dict)   # (tenant, class) CPU ms in dt
+    class_count: Dict[Tuple[str, str], int] = field(default_factory=dict)      # (tenant, class) requests in dt
 
 
 @dataclass
@@ -111,6 +112,8 @@ class Brain:
         self.hurt_off = cfg.min_victim_impact / 2.0
         self.s3 = Stage3(self)
         self.holds: Dict[str, OperatorHold] = {}
+        self.cls_base_n: Dict[Tuple[str, str], float] = {}        # calm request rate per (tenant, class)
+        self.cls_base_cpu: Dict[Tuple[str, str], float] = {}      # calm CPU rate per (tenant, class)
         self.bg_pending: Dict[str, float] = defaultdict(float)   # bg CPU ms not yet charged to the gateway
         self.last_charge_at: Optional[float] = None
 
@@ -198,16 +201,20 @@ class Brain:
         for t, ms in bg.items():
             if ms > 0 and t in self.tenants:
                 self.bg_pending[t] += ms
-        before_cls = {(c.tenant, c.cls): c.cpu_ms_total for c in prev.classes}
-        cls_cpu = {}
+        before_cls = {(c.tenant, c.cls): c for c in prev.classes}
+        cls_cpu, cls_n = {}, {}
         for c in st.classes:
-            d = c.cpu_ms_total - before_cls.get((c.tenant, c.cls), 0.0)
+            b = before_cls.get((c.tenant, c.cls))
+            d = c.cpu_ms_total - (b.cpu_ms_total if b else 0.0)
+            n = c.count - (b.count if b else 0)
             if d > 0:
                 cls_cpu[(c.tenant, c.cls)] = d
+            if n > 0:
+                cls_n[(c.tenant, c.cls)] = n
         self.stat_samples.append(StatSample(now, st.server, st.ts - prev.ts, cpu,
                                             st.cpu_total_ms - prev.cpu_total_ms, st.cpu_limit_cores,
                                             bg, ev, max(0.0, st.blackbox_cpu_ms - prev.blackbox_cpu_ms),
-                                            cls_cpu))
+                                            cls_cpu, cls_n))
         self._prune(now)
 
     def _prune(self, now: float) -> None:
@@ -351,6 +358,8 @@ class Brain:
                     res.events.extend(self._on_transition(t, tr, now))
         # stale telemetry: hold every ladder where it is (no evidence either way), keep renewing
 
+        if self.s3.inc is None and self.calm and int(now) != int(now - self.cfg.tick_s):
+            self._learn_classes(now)                     # once a second, in calm only
         ev, routes = self.s3.tick(now, acting=fresh and self.mode == ACTING_MODE)
         res.events.extend(ev)
         res.route_cmds = routes
@@ -411,16 +420,45 @@ class Brain:
                 "blackbox_hint": led.blackbox_all.get(t, 0.0), "evict_hint": led.evict_share.get(t, 0.0),
                 "rejected_share": agg.rejected / asked if asked > 0 else 0.0}
 
-    def top_class(self, t: str, now: float) -> Optional[str]:
-        """The tenant's most expensive request class (CPU over the last few seconds), if workers report classes."""
-        window = max(self.cfg.probe_window_s, 5 * self.cfg.stats_poll_s)
-        acc: Dict[str, float] = defaultdict(float)
+    def class_rates(self, now: float, window: float) -> Dict[Tuple[str, str], Tuple[float, float]]:
+        """(tenant, class) -> (requests/s, CPU ms/s) over the window, summed over servers."""
+        span: Dict[str, float] = defaultdict(float)
+        n: Dict[Tuple[str, str], float] = defaultdict(float)
+        ms: Dict[Tuple[str, str], float] = defaultdict(float)
         for x in self.stat_samples:
             if x.t > now - window:
-                for (tt, cls), ms in x.class_cpu_ms.items():
-                    if tt == t:
-                        acc[cls] += ms
-        return max(acc, key=acc.get) if acc else None
+                span[x.server] += x.dt
+                for k, v in x.class_count.items():
+                    n[k] += v
+                for k, v in x.class_cpu_ms.items():
+                    ms[k] += v
+        per = max(span.values()) if span else 0.0
+        if per <= 0:
+            return {}
+        return {k: (n.get(k, 0.0) / per, ms.get(k, 0.0) / per) for k in set(n) | set(ms)}
+
+    def _learn_classes(self, now: float) -> None:
+        """Calm-period baseline of every class's request and CPU rate (for 'which class is new / grew')."""
+        for (t, cls), (rn, rc) in self.class_rates(now, 5 * self.cfg.stats_poll_s).items():
+            for base, v in ((self.cls_base_n, rn), (self.cls_base_cpu, rc)):
+                prev = base.get((t, cls))
+                base[(t, cls)] = v if prev is None else prev + 0.05 * (v - prev)
+
+    def top_class(self, t: str, now: float) -> Optional[str]:
+        """The tenant's guilty request class: the one that grew most against its calm baseline (request rate or
+        metered CPU; a class never seen in calm grows the most). Black-box CPU is billed to no class, so the
+        request-rate growth is what points at it then."""
+        window = max(self.cfg.probe_window_s, 5 * self.cfg.stats_poll_s)
+        best, best_g = None, -1.0
+        for (tt, cls), (rn, rc) in self.class_rates(now, window).items():
+            if tt != t:
+                continue
+            gn = (rn - self.cls_base_n.get((tt, cls), 0.0)) / max(self.cls_base_n.get((tt, cls), 0.0), 1.0)
+            gc = (rc - self.cls_base_cpu.get((tt, cls), 0.0)) / max(self.cls_base_cpu.get((tt, cls), 0.0), 20.0)
+            g = max(gn, gc)
+            if g > best_g:
+                best, best_g = cls, g
+        return best
 
     def server_utilisation(self, now: float) -> Dict[str, float]:
         return {srv: (ms / (lim * 1000.0) if lim > 0 else 0.0)

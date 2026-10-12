@@ -22,68 +22,140 @@ def test_ag23_any_two_tenants_share_at_most_one_server():
 
 
 # ------------------------------------------------------------------ health
-def feed(h, levels, t0, secs, n=5):
+import random  # noqa: E402
+
+# every tenant has its own workload: a search-heavy tenant is slow everywhere, a light one fast everywhere
+MIX = {t: 1.0 + 3.0 * (i % 4) for i, t in enumerate(sorted(BARCODES))}       # 1x, 4x, 7x, 10x
+
+
+def tick_cells(levels, n=3, rng=None, skip=()):
+    """One tick of cells: every tenant on its servers, p95 = server level x its own workload factor."""
+    out = []
+    for t, servers in BARCODES.items():
+        for s in servers:
+            if s in skip:
+                continue
+            jitter = rng.lognormvariate(0, 0.25) if rng else 1.0
+            out.append((t, s, levels[s] * MIX[t] * jitter, n))
+    return out
+
+
+def feed(h, levels, t0, secs, n=3, rng=None, skip=()):
     t = t0
     flips = []
     for _ in range(int(round(secs / TICK))):
         t += TICK
-        flips += [(t, f) for f in h.observe({s: (v, n) for s, v in levels.items()}, t)]
+        flips += [(t, f) for f in h.observe(tick_cells(levels, n, rng, skip), t)]
     return t, flips
 
 
+def tracker():
+    return HealthTracker(SERVERS, HealthParams(), BARCODES)
+
+
 def test_peer_ratio_and_debounce():
-    p = HealthParams()
-    h = HealthTracker(SERVERS, p)
+    h = tracker()
     calm = {s: 8.0 for s in SERVERS}
     t, flips = feed(h, calm, 0, 5)
     assert flips == [] and h.slow_servers() == []
-    assert h.servers["w4"].peer_ratio == pytest.approx(1.0)
+    assert h.servers["w4"].peer_ratio == pytest.approx(1.0) and h.servers["w4"].source == "traffic"
     bad = dict(calm, w4=40.0)
-    # median of 8 samples: needs > half the window bad, then open_after_ticks more
-    t, flips = feed(h, bad, t, 3)
+    t, flips = feed(h, bad, t, 4)
     assert flips and flips[0][1] == ("w4", True)
     assert h.servers["w4"].peer_ratio == pytest.approx(5.0)
     assert h.slow_servers() == ["w4"]
-    t, flips = feed(h, calm, t, 3)
+    t, flips = feed(h, calm, t, 5)
     assert flips and flips[0][1] == ("w4", False) and h.slow_servers() == []
 
 
+def test_workload_mix_is_not_slowness():
+    """The host-run false positives: servers whose tenants run heavier requests are not slow."""
+    h = tracker()
+    t, flips = feed(h, {s: 8.0 for s in SERVERS}, 0, 60, rng=random.Random(3))
+    assert flips == [] and h.slow_servers() == []
+    assert all(0.6 < x.peer_ratio < 1.6 for x in h.servers.values())
+
+
+def test_sparse_cells_are_no_opinion():
+    """1 request per tick per cell: a single slow request must not flag a server."""
+    h = HealthTracker(SERVERS, HealthParams(min_cell_requests=5), BARCODES)
+    rng = random.Random(5)
+    t = 0.0
+    for _ in range(240):
+        t += TICK
+        cells = [(tt, s, 8.0 * MIX[tt] * (20.0 if rng.random() < 0.05 else 1.0), 1)
+                 for tt, servers in BARCODES.items() for s in servers if rng.random() < 0.3]
+        assert h.observe(cells, t) == []
+    assert h.slow_servers() == []
+
+
 def test_ratio_alone_is_not_enough():
-    h = HealthTracker(SERVERS, HealthParams())
-    tiny = {s: 1.0 for s in SERVERS}
-    tiny["w4"] = 3.0                         # 3x its peers but only +2 ms: below slow_abs_ms
+    h = tracker()
+    tiny = {s: 0.2 for s in SERVERS}
+    tiny["w4"] = 0.6                         # 3x, but only a few ms more even for the heaviest tenant
     feed(h, tiny, 0, 5)
     assert h.slow_servers() == [] and h.servers["w4"].peer_ratio == pytest.approx(3.0)
 
 
 def test_one_bad_tick_is_ignored():
-    h = HealthTracker(SERVERS, HealthParams())
+    h = tracker()
     calm = {s: 8.0 for s in SERVERS}
-    t, _ = feed(h, calm, 0, 3)
+    t, _ = feed(h, calm, 0, 4)
     t, _ = feed(h, dict(calm, w4=200.0), t, TICK)
-    t, flips = feed(h, calm, t, 3)
+    t, flips = feed(h, calm, t, 4)
     assert flips == [] and h.slow_servers() == []
 
 
 def test_fleet_wide_slowdown_accuses_nobody():
-    h = HealthTracker(SERVERS, HealthParams())
+    h = tracker()
     t, _ = feed(h, {s: 8.0 for s in SERVERS}, 0, 3)
-    t, flips = feed(h, {s: 80.0 for s in SERVERS}, t, 5)
+    t, flips = feed(h, {s: 80.0 for s in SERVERS}, t, 8)
     assert flips == [] and h.slow_servers() == []
 
 
-def test_canary_takes_over_when_traffic_moved_away():
-    h = HealthTracker(SERVERS, HealthParams())
+def test_canary_keeps_a_slow_server_open_when_traffic_moved_away():
+    h = tracker()
     calm = {s: 8.0 for s in SERVERS}
-    t = 0.0
-    for _ in range(40):                       # 10 s: traffic everywhere but w4, canaries everywhere
+    t, _ = feed(h, dict(calm, w4=40.0), 0, 5)            # slow in real traffic first
+    assert h.slow_servers() == ["w4"]
+    for _ in range(40):                       # 10 s: tenant traffic everywhere but w4, canaries everywhere
         t += TICK
         if int(t * 4) % 4 == 0:
             for s in SERVERS:
                 h.observe_canary(s, 3.0 + (50.0 if s == "w4" else 0.0), t)
-        h.observe({s: (v, 5) for s, v in calm.items() if s != "w4"}, t)
+        h.observe(tick_cells(calm, skip=("w4",)), t)
     w4 = h.servers["w4"]
     assert w4.source == "canary" and w4.slow and w4.peer_ratio > 10
+
+
+def test_canary_alone_never_opens_an_incident():
+    """The idle-host false positives: probes jitter (and one server's probe may even be 50 ms slower), but
+    without slow tenant traffic nothing opens."""
+    import random as _r
+    rng = _r.Random(1)
+    h = tracker()
+    t = 0.0
+    for _ in range(4 * 600):                  # 10 idle minutes: no tenant traffic at all
+        t += TICK
+        if int(t * 4) % 4 == 0:
+            for s in SERVERS:
+                h.observe_canary(s, 10.0 * rng.lognormvariate(0, 0.4) + (50.0 if s == "w3" else 0.0), t)
+        assert h.observe([], t) == []
+    assert h.slow_servers() == [] and h.servers["w3"].peer_ratio > 3
+
+
+def test_pool_servers_are_never_peers_or_suspects():
+    h = HealthTracker(SERVERS + ["spare"], HealthParams(), BARCODES)
+    t = 0.0
+    for _ in range(40):
+        t += TICK
+        if int(t * 4) % 4 == 0:
+            for s in SERVERS + ["spare"]:
+                h.observe_canary(s, 3.0 + (60.0 if s == "spare" else 0.0), t)
+        h.observe(tick_cells({s: 8.0 for s in SERVERS}), t)
+    assert h.servers["spare"].peer_ratio > 10         # it is slow (the prover reads that ratio) ...
+    assert h.slow_servers() == []                     # ... but it is not a fleet incident
+    assert all(h.servers[s].peer_ratio < 1.6 for s in SERVERS)
 
 
 # ------------------------------------------------------------------ rescue

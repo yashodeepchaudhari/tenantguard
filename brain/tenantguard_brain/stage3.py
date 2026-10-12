@@ -19,7 +19,6 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from statistics import median
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from tenantguard_common.contracts import (DrainCmd, IncidentEvent, RelocateCmd, RouteWeightsCmd, Suspect,
@@ -83,8 +82,8 @@ class Stage3:
         cfg = brain.cfg
         self.cfg = cfg
         servers = sorted(set(cfg.worker_urls) | set(cfg.fleet_servers))
-        self.health = HealthTracker(servers, cfg.health)
         self.barcodes = {t: list(c.servers) for t, c in brain.tenants.items()}
+        self.health = HealthTracker(servers, cfg.health, self.barcodes)
         self.prover: Prover = prover or NullProver()
         self.inc: Optional[Incident] = None
         self.decoding: Optional[Decoding] = None
@@ -110,18 +109,13 @@ class Stage3:
         self.jobs: List[object] = []                  # ProofRequest | HostCheck | ("restore_spare", cores)
         self.control: List[Tuple[str, str, object]] = []   # (sender key, path, command)
         self.drains: Dict[str, float] = {}            # server -> last DrainCmd sent (ours, host_fault)
+        self.pre_evidence: Dict[str, dict] = {}       # culprit -> verdict inputs captured before its test
 
     # ------------------------------------------------------------- inputs
     def on_frame(self, frame: TelemetryFrame, now: float) -> None:
-        # per server: the MEDIAN of its tenants' cell p95, so a server is slow only when most of its
-        # tenants are slow there; one tenant's own heavy requests (a whale, a batch export) don't count
-        acc: Dict[str, Tuple[List[float], int]] = {}
-        for c in frame.cells:
-            if c.count > 0 and c.p95_ms > 0:
-                vals, n = acc.get(c.server, ([], 0))
-                vals.append(c.p95_ms)
-                acc[c.server] = (vals, n + c.count)
-        self.health.observe({s: (median(v), n) for s, (v, n) in acc.items()}, now)
+        # tenant-relative health (health.py); failed requests (5xx) say nothing about a server's speed
+        self.health.observe(((c.tenant, c.server, c.p95_ms, c.count - min(c.errors, c.count))
+                             for c in frame.cells), now)
 
     def on_canary(self, server: str, rtt_ms: float, now: float) -> None:
         self.health.observe_canary(server, rtt_ms, now)
@@ -158,11 +152,25 @@ class Stage3:
                 self.bb_base.update(s, r)
 
     # ------------------------------------------------------------- tick
+    def held_by_culprit(self) -> List[str]:
+        """Servers a named culprit still over-uses. A rescue moves the victims away, so those servers can look
+        fine again while the culprit is still hot; lifting the rescue then would just bring the victims back
+        into harm. Such servers stay 'slow' until the culprit is back within its fair share."""
+        if not self.named_key or self.inc is None:
+            return []
+        out = set()
+        for t in self.named_key[0]:
+            sd = self.b.scores.get(t)
+            if sd is not None and sd.usage_ratio > 1.0:
+                out |= set(self.barcodes[t]) & set(self.reported_slow)
+        return sorted(out)
+
     def tick(self, now: float, acting: bool) -> Tuple[List[IncidentEvent], List[RouteWeightsCmd]]:
-        slow = self.health.slow_servers()
+        slow = sorted(set(self.health.slow_servers()) | set(self.held_by_culprit()))
         self._update_ledger(now, slow)
         stuck = {t: all(s in slow for s in v) for t, v in self.barcodes.items()} if slow else {}
-        self.decoding = decode(self.barcodes, self.health.ratios(), stuck=stuck,
+        fleet_ratios = {k: v for k, v in self.health.ratios().items() if self.health._peer(k)}
+        self.decoding = decode(self.barcodes, fleet_ratios, stuck=stuck,
                                ledger={t: self.ledger.hint(t) for t in self.barcodes},
                                params=self.cfg.decoder) if slow else None
         events: List[IncidentEvent] = []
@@ -178,6 +186,10 @@ class Stage3:
         if self.inc is None:
             return events, cmds
 
+        if not slow and self.proving:
+            # a running test moved the suspect (or drained the host): its servers look fine *because* of the
+            # test. Keep the incident (and the rescue) until the verdict is in.
+            slow = list(self.reported_slow)
         if not slow:
             events += self._close(now, "every server is back within its peers' latency", cmds)
             return events, cmds
@@ -261,6 +273,8 @@ class Stage3:
             self.budget.note_relocation(now)
             self.proving[t] = now
             fp = self.b.footprint(t, now)
+            # judge on what it did on its own servers, before the test moved it (and its black-box work) away
+            self.pre_evidence[t] = self.b.verdict_inputs(t, now)
             self.jobs.append(ProofRequest(incident_id=self.inc.incident_id, tenant=t, servers=self.barcodes[t],
                                           confidence=conf, footprint_cpu_ms=fp["footprint"],
                                           paid_cpu_ms=fp["paid"]))
@@ -304,9 +318,10 @@ class Stage3:
                 self._send_relocate(RelocateCmd(tenant=t, target=None, ttl_s=self.cfg.prover.relocate_ttl_s))
             self.jobs.append(("restore_spare", res.spare_cores_before))
             return []
+        pre = self.pre_evidence.pop(t, None) or self.b.verdict_inputs(t, now)
         ev = Evidence(tenant=t, confidence=self.confidence.get(t, 0.0), confirmed=res.confirmed, R=res.recovery_R,
                       harm_followed=res.harm_followed, repeat=self.memory.is_repeat(t, now),
-                      last_verdict=self.memory.last_verdict.get(t), **self.b.verdict_inputs(t, now))
+                      last_verdict=self.memory.last_verdict.get(t), **pre)
         v, why = classify(ev, self.vp)
         return self._verdict(now, t, v, why + ([res.detail] if res.detail else []), ev,
                              relocated=res.relocated, spare_before=res.spare_cores_before, readings=res.readings)
@@ -333,7 +348,7 @@ class Stage3:
                 self._send_relocate(RelocateCmd(tenant=t, cls=cls, target="quarantine", ttl_s=ttl_q, incident_id=iid))
                 if cls:
                     self._send_relocate(home)
-                    action = (f"request class {cls} (its most expensive) -> quarantine heavy lane for {ttl_q:g} s; "
+                    action = (f"request class {cls} (the one that grew) -> quarantine heavy lane for {ttl_q:g} s; "
                               f"the rest of its traffic goes home")
                 else:
                     action = f"whole tenant -> quarantine heavy lane for {ttl_q:g} s (no per-class data)"
