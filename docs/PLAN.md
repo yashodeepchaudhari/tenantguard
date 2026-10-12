@@ -558,4 +558,9 @@ Build:
   - History and cases pruned.
   - Per-message exception isolation in the bridge.
   - Demo preflight for attacks the lab can't run; robust cleanup; config-based defaults.
+- 2026-10-12 (user): **Separate frozen DEMO stack** for the 8:30 PM mentoring checkpoint, isolated from development.
+  - Compose project `tgdemo` on the Docker host, host ports 9000 (gateway) / 9200 (brain) / 9300 (lab) / 9400 / 9600 / 9700, set via the `*_PORT` env vars now in compose.
+  - Deployed from git tag `demo-vN` into `C:\Users\preeti\tenantguard-demo`.
+  - Dev/test keeps project `codeastra` on 8000/8200/8300. No session ever touches `tgdemo`; only the coordinator deploys it, and only on a new tag.
+  - The brain must find ITS OWN spare: filter by label `com.docker.compose.project`, not only by service.
 - 2026-10-12: Cost bucket is debited with the worker-measured CPU (`X-TenantGuard-Cpu-Ms`) rather than an estimate, so it is a real resource quota, not a request count.
