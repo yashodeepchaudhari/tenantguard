@@ -19,6 +19,7 @@ npm run dev:mock          # fixture replay in the browser, no backend (VITE_MOCK
 | brain `GET /api/incidents`, `?incident_id=` | timeline backfill on load; Case File history (array or `{incidents: [...]}`) |
 | gateway `/admin/mode`, `/admin/tenants`, `PATCH /admin/tenants/{id}/quota`, `/admin/overrides` (`VITE_GATEWAY_URL`) | mode toggle, Tenants page, quota edit, override expiry and fail-static |
 | lab `/lab/status`, `POST /lab/attack`, `DELETE /lab/attack/{id}`, `GET /lab/results` (`VITE_LAB_URL`) | attack launcher, Scorecard (`RunResult` list) |
+| handoff bridge `GET /cases` (`VITE_HANDOFF_URL`, default :8400) | Cases column + Case File handoff panel (`CaseView`: case id, owner, pending actions, deadlines); hidden as "not reachable" when the bridge is down |
 
 Every gateway `/admin/*` call sends `X-TenantGuard-Control-Token: $VITE_CONTROL_TOKEN` (default `dev`; must equal the gateway's `TENANTGUARD_CONTROL_TOKEN`). Noisy-bar thresholds come from `StateSnapshot.noisy_thresholds`; `VITE_NOISY_*` are only a fallback.
 
@@ -26,8 +27,10 @@ Every gateway `/admin/*` call sends `X-TenantGuard-Control-Token: $VITE_CONTROL_
 
 ## Pages
 - **Control Room** (`/`): status sentence; 12 tenant tiles (p95, rps, rejected/s, level, quota factor); p95 per tenant over the last 60 s (log scale); stacked CPU share; noisy-score bars (`noisy_norm` bar, raw score as text, warn/throttle markers); incident timeline; Jain fairness and fleet CPU gauges; OFF / Industry / TenantGuard toggle; attack launcher (attack, tenant or server, intensity 0.1 to 5, duration up to 600 s) with running attacks and Stop.
+  The status row carries the **₹ impact panel** (below). A **Tiles / Flow** toggle (remembered per viewer, or `?view=flow`) swaps the tiles + charts for the **live flow view**: a canvas where dots travel tenant → gateway → server, sampled from snapshot rps and routed by the gateway's live route weights / relocations / drains from `/admin/overrides`; refused requests (429/503) die at the gateway as red crosses, slow servers turn red, rerouted tenants get ↷ and accent route lines whose width is the weight.
   Plus the **3×3 server grid** (w0..w8: peer ratio, CPU %, status colour; drained = hatched). Clicking a tenant tile outlines its 3 barcode servers; with no tile picked, the grid follows the noisiest flagged tenant. Timeline rows open the Case File.
 - **Cases** (`/case`) and **Case File** (`/case/:incident_id`, the convergence `evidence_link` path): steps detected → rescued → named → proving → verdict → resolved → explained with times, suspects with confidence bars, barcode match on the live grid (slow servers vs the suspect's barcode), verdict + last action + override TTL countdown (from `/admin/overrides`), latest `detail`, the `report` dict rendered as sections (template placeholder until `explained`), and the full event log.
+  Server incidents (no tenant) show the brain's **barcode decoder** report: host fault / nobody / per-tenant confidence bars, P(slow) on each grid cell, host suspects outlined. During the **proving** stage (or while the gateway has a relocation for the suspect) the **proof animation** shows red smoke drifting from the suspect's servers to the spare; "Replay proof" replays it.
 - **Scorecard** (`/scorecard`): `RunResult`s grouped by scenario × mode (medians over runs); per scenario a bar chart of victim p99 baseline / attack / after, and a table with slowdown, time to detect / recover and attacker 429s. Mock mode shows fixtures (`src/mock/results.ts`) under a "FIXTURE DATA, not measured" banner.
 - **Tenants** (`/tenants`): configured quota vs effective quota (after the brain's factor), weight factor, blocked, placement, override expiry, revenue, live p95/level; inline quota edit (PATCH sends changed fields only; validated client-side).
 
@@ -47,7 +50,28 @@ npm run lint       # eslint, zero warnings
 npm test           # vitest: status rules, store, quota patch, backend parsing, case folding, scorecard, mock ladder
 node scripts/e2e.mjs [ui] [gateway] [lab] [brain]  # grid highlight, case file vs brain REST, scorecard vs lab, mode, attack/stop, quota edit (+restore)
 python scripts/load.py --rps 1 --whale K           # modest calm traffic + a whale through the gateway (real-stack checks without the lab)
-node scripts/screenshot.mjs [url] [out.png] [ms]   # headless Edge 1920x1080
+node scripts/screenshot.mjs [url] [out.png] [ms] [click]  # headless Edge 1920x1080 (real-time wait)
 ```
 
 The e2e changes mode, launches/stops an attack and edits (then restores) a quota. Point it only at a stack you own; it skips those writes while the lab reports a scenario run in progress.
+
+## ₹ impact (client-side until the brain owns it)
+Counted since the page opened (reset button under "innocents"), integrated per snapshot (dt capped at 2 s):
+- a tenant is **threatened** when it shares a server with a flagged tenant (level ≥ warn), sits on a slow server, or is being routed around one (route weights / relocation);
+- **SLO breach avoided** = seconds a threatened tenant stayed within SLO (`p95 < VITE_P95_WARN_MS`) in TenantGuard mode; **suffered** = seconds any tenant was over SLO (any mode);
+- **revenue protected** = Σ avoided seconds × that tenant's `monthly_revenue_rs` ÷ 30 days; **customers shielded** = tenants with avoided time;
+- **innocents penalised** = tenants acted on (level ≥ throttle or factor < 1) while their own noisy score was below warn. It must stay 0.
+
+Proposed contract field so the brain (which has the calm baselines and the real victim set) owns these numbers:
+
+```python
+class ImpactView(BaseModel):
+    since: float                        # epoch s when counting started (brain start or reset)
+    revenue_protected_rs: float         # Σ victims' monthly_revenue_rs × SLO-violation seconds avoided / 2_592_000
+    customers_shielded: List[str]       # threatened tenants that stayed within SLO
+    slo_violation_avoided_s: float
+    slo_violation_suffered_s: float
+    innocents_penalised: List[str]      # acted on while their own score < warn; must stay empty
+
+# StateSnapshot: impact: Optional[ImpactView] = None   (the UI keeps its own meter as a fallback)
+```
