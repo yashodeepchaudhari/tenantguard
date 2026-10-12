@@ -315,13 +315,13 @@ Build:
 | Task | Branch | Worktree | Session | Status |
 |---|---|---|---|---|
 | T1 Gateway | task/T1-gateway | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
-| T7 Gateway wave 2 | task/T7-gateway-adaptive | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | assigned |
+| T7 Gateway wave 2 | task/T7-gateway-adaptive | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | in progress |
 | T2 Workers | task/T2-workers | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged** (9cebaaf) |
 | T6 Workers wave 2 | task/T6-worker-blackbox | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | assigned |
 | T3 Brain | task/T3-brain | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | **merged** |
 | T8 Brain integration + health/rescue/decoder | task/T8-brain-detect | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | in progress |
 | T4 UI | task/T4-ui | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | **merged** |
-| T9 UI wave 2 | task/T9-ui-casefile | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | assigned |
+| T9 UI wave 2 | task/T9-ui-casefile | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | in progress |
 | T5 Lab | task/T5-lab | D:\yashodeep\codeAstra-T5 | codeastra-t5-79 | in progress |
 | Convergence samples | n/a (main dir, docs/convergence/) | main | codeastra-21 | assigned |
 | Review | n/a | main | codeastra-2b | standby |
@@ -368,4 +368,8 @@ Build:
 - 2026-10-12 (T3, accepted): the noisy score uses **barcode-scoped shares**: tenant CPU / capacity of its own servers vs weight / Σ active weights per server. victim_impact is averaged over barcode neighbours. Global shares flagged calm free-tier tenants at ~1.55×. New keys are under `brain.noisy`.
 - 2026-10-12 (T1, accepted): TTLs keep expiring during fail-static (auto-undo beats stale punishment). Overrides apply only in `tenantguard` mode. Bounded wait applies in all modes. New keys: `gateway.batch_routes`, `gateway.upstream_timeout_s`.
 - 2026-10-12: This laptop hits ~97% CPU with 11 workers + sessions, so latency tails here are machine noise. Real numbers come from the Docker host (friend's laptop).
+- 2026-10-12 (T7, accepted):
+  - `ChargeCmd` contract added; `QueueStat.retries` added; `gateway.retry_budget` key added.
+  - A retry = a repeated Idempotency-Key, or a repeat of a full fingerprint (method + path + full query + body hash) whose previous attempt FAILED within window_s. Class-level matching would punish normal repeat traffic.
+  - Lanes are express > interactive > batch.
 - 2026-10-12: Cost bucket is debited with the worker-measured CPU (`X-TenantGuard-Cpu-Ms`) rather than an estimate, so it is a real resource quota, not a request count.

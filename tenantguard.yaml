@@ -40,6 +40,7 @@ gateway:
   fail_static_after_s: 2
   batch_routes: ["/api/export"]
   upstream_timeout_s: 30
+  retry_budget: {ratio: 0.1, window_s: 10, min_allowed: 3}   # retries allowed <= max(min_allowed, ratio * first attempts in window); else 429 retry_budget
   limiter: {min_window: 2, max_window: 64, initial_window: 8}
 
 worker:
