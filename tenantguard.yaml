@@ -85,12 +85,31 @@ brain:
     deprioritize_weight: 0.25
     quarantine_factor: 0.1
     quarantine_weight: 0.1
+    victim_window_s: 5.0        # victim latency is a sustained statistic over this window
+    victim_quantile: 0.3        # quantile of per-tick p95 (robust to short CPU-quota stalls)
+    victim_min_ticks: 4
+    victim_abs_ms: 8.0          # a victim must be at least this much above its baseline
+    over_use: 1.6               # flag only above this multiple of the fair share
+    min_hurt_neighbours: 4      # ... and only when at least this many neighbours are hurt
   # Stage 3: TenantGuard (calibrated at H3-H4)
   health:
     probe_window_ticks: 8
     slow_peer_ratio: 1.6
     slow_abs_ms: 8
-    open_after_ticks: 4
+    open_after_ticks: 4         # legacy; persistence is now open_hold_s
+    window_s: 5.0
+    level_quantile: 0.3         # cell level = this quantile of per-tick p95 over window_s
+    open_hold_s: 4.0            # a server opens only after this long with >= hold_ratio slow ticks
+    heal_hold_s: 2.0
+    hold_ratio: 0.8
+    min_slow_ms: 25.0           # never "slow" below this absolute level ...
+    sla_fraction: 0.5           # ... nor below this fraction of the strictest tenant SLA on the server
+    min_cell_requests: 5
+    min_tenants: 2
+    canary_s: 1.0
+    min_canaries: 3
+    canary_window_s: 6.0
+    canary_abs_ms: 8.0          # canaries can keep a slow server open, never open one
   rescue_capacity_guard: 0.7
   confidence_to_prove: 0.8
   spare_sizing: 1.25
@@ -100,7 +119,11 @@ brain:
   paid_share_costly: 0.35
   host_idle_ratio: 1.5
   ttl_s: {relocate: 120, quarantine: 120, throttle: 60, probation: 300}
-  action_budget: {relocations_per_min: 6, quarantine_every_s: 30, max_drained: 1}
+  action_budget: {relocations_per_min: 6, quarantine_every_s: 30, max_drained: 1, drain_peer_busy: 0.75}
+  prover: auto                  # auto | docker | null (env TENANTGUARD_PROVER wins)
+  charge_s: 1.0                 # background-CPU charge period
+  decoder: {k: 8, w_min: 4, w_mean: 2, w_stuck: 1, w_ledger: 2, w_host: 4, w_none: 3, temperature: 1.0, min_confidence: 0.5, max_culprits: 2, host_p: 0.5}
+  verdicts: {over_plan_rejected_share: 0.2, harm_follow_share: 0.3, harm_follow_ratio: 1.6, evidence_hint: 0.3, repeat_count: 3, repeat_window_s: 600}
 
 handoff:
   decision_window_s: 120      # deadline given to the on-call for a pending action
