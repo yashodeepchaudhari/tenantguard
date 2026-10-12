@@ -456,6 +456,35 @@ Common rules for every writer:
 | T4 session (`codeastra-t4-6b`, branch `task/T22c-docs`) | `05_SEQUENCE_DIAGRAMS.md` (request path, admission/429, DRR dispatch, detection→throttle ladder→recovery, health→rescue→decoder naming, host fault, operator/handoff decision, narrator report, UI live stream), `11_FILES_ui.md`, `11_FILES_lab.md` |
 | `codeastra-2b` (main dir, no branch; coordinator commits) | `11_FILES_brain.md` |
 
+### T24: Playwright end-to-end verification (T4 session, same worktree)
+**You are TASK T24:** when this is finished, one command proves the whole running system works from a user's point of view: dashboard, gateway, brain, lab, admin, handoff and narrator. Every failure is either fixed (UI) or reported with an exact repro (backend).
+
+You own `ui/**` (Playwright lives in `ui/e2e/` + `ui/playwright.config.ts`). New dev dependency approved: `@playwright/test`. Use the **system Edge** (`channel: "msedge"`), so no browser download is needed. Headless, 1 worker (this laptop has very little free RAM).
+
+Build:
+1. **Config:** targets come from env (`E2E_UI_URL`, `E2E_GATEWAY_URL`, `E2E_BRAIN_URL`, `E2E_LAB_URL`, `E2E_HANDOFF_URL`, `E2E_NARRATOR_URL`, `E2E_CONTROL_TOKEN`). The default is the mock server, so it runs anywhere.
+2. **API smoke** (Playwright `request`):
+   - gateway healthz; 401 without key; 401 on admin without token; a valid tenant request returns 200 + `X-TenantGuard-Cpu-Ms`
+   - brain `/api/state` validates its shape
+   - lab status
+   - optional services skip cleanly when unreachable
+3. **UI flows:**
+   - Control Room renders 12 tiles + the 3×3 grid
+   - status sentence
+   - mode toggle round-trip (verify via `GET /admin/mode`, restore at the end)
+   - attack launch → visible in running attacks → stop
+   - Tenants page quota PATCH + restore
+   - incident timeline → Case File route
+   - scorecard page
+   - flow view toggle
+   - cases column (bridge reachable or not)
+   - no console errors
+4. **Live scenario test** (tagged `@live`, host only): calm → whale on K → expect a K incident/level change within 60 s → stop → expect recovery within 90 s.
+5. Run the mock suite now. Run the host suite **only when the coordinator grants a host slot** (the host is busy with T12 acceptance first).
+6. Fix any UI bug you find. For backend bugs, send BLOCKED/finding messages with an exact repro; don't edit other dirs.
+
+Done = the mock suite green + the host suite results (pass/fail per test) + the list of fixed and reported issues.
+
 ## Task table
 
 | Task | Branch | Worktree | Session | Status |
@@ -465,6 +494,7 @@ Common rules for every writer:
 | T11 Handoff bridge (Web PS3 convergence) | task/T11-handoff-bridge | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
 | T14 Demo driver (`tools/demo.py`) | task/T14-demo-runbook | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
 | T16 Submission docs | task/T16-submission-docs | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** (re-check after T10/T12) |
+| T24 Playwright e2e verification | task/T24-playwright | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | assigned |
 | T22 Prototype docs pack (`prototype-docs/`, 20 files, 6.7k lines) | T22a/b/c + 2b | 4 writers | T1, T2, T4, 2b | **merged** |
 | T23 Handoff tools token + telemetry counter bug + docstring | task/T23-handoff-token-tools | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | assigned |
 | T21 Narrator template-only (user decision) | task/T21-narrator-template-only | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** (with the coordinator scrub branch) |
