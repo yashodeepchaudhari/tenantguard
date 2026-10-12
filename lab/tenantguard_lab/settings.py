@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-from tenantguard_common.config import load_settings, load_tenants, worker_urls
+from tenantguard_common.config import load_settings, load_tenants
 from tenantguard_common.contracts import TenantConfig
 
 LAB_DIR = Path(__file__).resolve().parents[1]
@@ -43,8 +43,6 @@ class LabConfig:
     lab_url: str
     ui_origins: List[str]
     results_dir: Path
-    workers: Dict[str, str]
-    worker_cpus: float
     personas: Dict[str, Persona]
     endpoints: Dict[str, Endpoint]
     attacks: Dict[str, Dict[str, Any]]
@@ -98,8 +96,6 @@ def load_config(personas_path: Optional[Path] = None) -> LabConfig:
         lab_url=os.environ.get("TENANTGUARD_LAB_URL", services.get("lab", "http://127.0.0.1:8300")).rstrip("/"),
         ui_origins=[o.strip() for o in origins.split(",") if o.strip()],
         results_dir=Path(os.environ.get("TENANTGUARD_LAB_RESULTS", LAB_DIR / "results")),
-        workers=worker_urls(settings),
-        worker_cpus=float(settings.get("worker", {}).get("cpus", 0.5)),
         personas=personas,
         endpoints=endpoints,
         attacks=raw["attacks"],

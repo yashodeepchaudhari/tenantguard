@@ -106,39 +106,37 @@ async def _local_run(cfg: LabConfig, req: RunReq) -> int:
 
 
 async def _calibrate(cfg: LabConfig, seconds: float) -> int:
-    """Run calm traffic, diff every fleet worker's cumulative cpu_total_ms, report utilisation."""
-    fleet = {k: v for k, v in cfg.workers.items() if k not in ("spare", "quarantine")}
+    """Run calm traffic and read the pool's measured CPU from the brain (GET /api/pool) once a second."""
     async with httpx.AsyncClient(timeout=3.0) as http:
-        async def snap() -> Dict[str, float]:
-            out = {}
-            for name, url in fleet.items():
-                try:
-                    out[name] = float((await http.get(f"{url.rstrip('/')}/stats")).json()["cpu_total_ms"])
-                except (httpx.HTTPError, ValueError, KeyError):
-                    pass
-            return out
+        async def pool() -> Optional[dict]:
+            try:
+                return (await http.get(f"{cfg.brain_url}/api/pool")).json()
+            except (httpx.HTTPError, ValueError):
+                return None
 
         lab = Lab(cfg)
         lab.start_calm()
+        samples = []
         try:
             await asyncio.sleep(3)          # warm up pools and caches
-            a, t0 = await snap(), time.monotonic()
-            await asyncio.sleep(seconds)
-            b, t1 = await snap(), time.monotonic()
+            end = time.monotonic() + seconds
+            while time.monotonic() < end:
+                p = await pool()
+                if p:
+                    samples.append((sum(x["used_cpu"] for x in p["projects"]) * 1000.0, p["usable_cpu"] * 1000.0))
+                await asyncio.sleep(1.0)
             print(_table(lab.metrics(seconds)))
         finally:
             await lab.aclose()
-    seen = [w for w in fleet if w in a and w in b]
     est = estimated_fleet_cpu_ms_per_s(cfg)
-    cap = len(fleet) * cfg.worker_cpus * 1000.0
-    print(f"estimate from est_cpu_ms: {est:.0f} CPU-ms/s = {est / cap:.1%} of {cap:.0f}")
-    if not seen:
-        print("no worker /stats reachable; cannot measure. Workers:", fleet)
+    if not samples:
+        print(f"estimate from est_cpu_ms: {est:.0f} CPU-ms/s; brain {cfg.brain_url}/api/pool not reachable")
         return 1
-    used = sum(b[w] - a[w] for w in seen) / (t1 - t0)
-    cap_seen = len(seen) * cfg.worker_cpus * 1000.0
-    util = used / cap_seen
-    print(f"measured on {len(seen)}/{len(fleet)} workers: {used:.0f} CPU-ms/s = {util:.1%} of {cap_seen:.0f}")
+    used = sum(u for u, _ in samples) / len(samples)
+    cap = samples[-1][1]
+    util = used / cap if cap > 0 else 0.0
+    print(f"estimate from est_cpu_ms: {est:.0f} CPU-ms/s = {est / cap:.1%} of the usable pool {cap:.0f}")
+    print(f"measured (pool, {len(samples)} samples): {used:.0f} CPU-ms/s = {util:.1%} of {cap:.0f}")
     if util > 0:
         print(f"suggested rate_scale for {cfg.target_fleet_util:.0%}: "
               f"{cfg.rate_scale * cfg.target_fleet_util / util:.2f} (current {cfg.rate_scale})")

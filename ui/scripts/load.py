@@ -1,7 +1,7 @@
 """Modest traffic for checking the UI against the real stack before the lab exists.
 
 Calm Poisson traffic for all 12 tenants plus an optional whale (heavy /api/search) on one
-tenant. Keys are the demo keys from layouts/ag23.json (tk_<ID>_demo).
+tenant. Keys are the demo keys from tenantguard.yaml `tenants` (tk_<ID>_demo).
 
     python ui/scripts/load.py --gateway http://127.0.0.1:8000 --rps 2 --whale K --whale-at 20 --whale-for 60
 """

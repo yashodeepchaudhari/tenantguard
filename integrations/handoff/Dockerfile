@@ -13,7 +13,6 @@ COPY integrations/handoff/requirements.txt /app/integrations/handoff/requirement
 RUN pip install --no-cache-dir -r /app/integrations/handoff/requirements.txt
 
 COPY tenantguard.yaml /app/tenantguard.yaml
-COPY layouts /app/layouts
 COPY integrations/handoff/tenantguard_handoff /app/integrations/handoff/tenantguard_handoff
 COPY integrations/handoff/tools /app/integrations/handoff/tools
 RUN mkdir -p /data

@@ -6,7 +6,8 @@
     python tools/demo.py --only tenantguard        # run a single step (after calm)
 
 Targets come from env TENANTGUARD_GATEWAY_URL, TENANTGUARD_BRAIN_URL, TENANTGUARD_LAB_URL, else tenantguard.yaml
-`services`; workers from TENANTGUARD_WORKER_URLS / `workers`. TENANTGUARD_CONTROL_TOKEN (default "dev"),
+`services`; workers for the fault fallback from TENANTGUARD_WORKER_URLS ("w4=http://.."; v2 replicas are
+created on demand, so there is no fixed list). TENANTGUARD_CONTROL_TOKEN (default "dev"),
 TENANTGUARD_ADMIN_TOKEN (worker fault fallback, default "dev").
 Only HTTP APIs are used: gateway POST /admin/mode, lab /lab/calm/start, /lab/attack, /lab/attacks, /lab/metrics,
 /lab/results, brain /api/state, /api/incidents, and (fallback only) worker /admin/fault.
@@ -25,7 +26,7 @@ from typing import Callable, Dict, List, Optional
 
 import httpx
 
-from tenantguard_common.config import load_settings, worker_urls
+from tenantguard_common.config import load_settings
 from tenantguard_common.contracts import H_CONTROL_TOKEN
 
 PROBE = "__probe__"                 # an id no lab knows: the lab answers 501 (not shipped) or 4xx, never starts it
@@ -385,7 +386,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 env("TENANTGUARD_LAB_URL", svc.get("lab", "http://127.0.0.1:8300")),
                 env("TENANTGUARD_CONTROL_TOKEN", "dev"), tick_s=a.tick, dry_run=a.dry_run,
                 wait_enter=(lambda msg: input(msg)) if a.step else None,
-                workers=worker_urls(settings), admin_token=env("TENANTGUARD_ADMIN_TOKEN", "dev"))
+                workers=dict(kv.split("=", 1) for kv in env("TENANTGUARD_WORKER_URLS", "").split(",") if "=" in kv),
+                admin_token=env("TENANTGUARD_ADMIN_TOKEN", "dev"))
     try:
         demo.run(steps)
     except KeyboardInterrupt:

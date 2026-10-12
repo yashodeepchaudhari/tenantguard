@@ -78,12 +78,11 @@ class CaseBook:
         return f"{t.name} ({t.id})" if t else (tenant or "unknown tenant")
 
     def neighbours(self, tenant: Optional[str]) -> List[str]:
-        """Tenants sharing at least one server with `tenant` (its barcode neighbours: the potential victims)."""
+        """The other tenants of `tenant`'s project: they share its replicas, so they are the potential victims."""
         me = self.tenants.get(tenant or "")
         if not me:
             return []
-        mine = set(me.servers)
-        return sorted(t.id for t in self.tenants.values() if t.id != me.id and mine & set(t.servers))
+        return sorted(t.id for t in self.tenants.values() if t.id != me.id and t.project == me.project)
 
     def _history(self, c: _Case, now: float, text: str) -> None:
         h = c.view.history

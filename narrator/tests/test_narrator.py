@@ -64,7 +64,7 @@ def test_evidence_pack_contents():
     # only the detected servers: the rescue text also names healthy targets (w0, w2, w4, w5), which must not count
     assert {s["server"]: s["peer_ratio"] for s in p["slow_servers"]} == {"w1": 16.93, "w3": 17.31, "w8": 17.08}
     assert p["actions"] == [{"time": hhmmss(T0 + 0.5), "action": "RouteWeightsCmd 9 tenants ttl=5s", "ttl_s": 5.0}]
-    assert p["affected"] == ["A", "B", "C", "D", "E", "F", "G", "H", "I"]
+    assert p["affected"] == ["E", "G"]
 
 
 def test_template_report_says_the_right_things():

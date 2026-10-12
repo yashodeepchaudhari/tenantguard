@@ -67,6 +67,13 @@ class TenantAgg:
         return self.p95_weighted / self.completed if self.completed > 0 else None
 
 
+def _replica_status(state: str, ratio: float, slow_ratio: float) -> str:
+    """UI status of a replica: not taking traffic (starting / draining) = drained; slower than its project peers = slow."""
+    if state != "ready":
+        return "drained"
+    return "slow" if ratio >= slow_ratio else "healthy"
+
+
 def _diff(now: Mapping[str, float], before: Mapping[str, float]) -> Dict[str, float]:
     return {k: max(0.0, v - before.get(k, 0.0)) for k, v in now.items()}
 
@@ -511,8 +518,8 @@ class Brain:
                 out.append(ServerView(server=r.id, project=pv.id, p95_ms=round(mine[r.id] or 0.0, 2),
                                       peer_ratio=round(peer_ratio(r.id, mine), 3),
                                       cpu_pct=round(min(100.0, ms / (cores * 10.0)), 1),
-                                      status="drained" if r.state == "draining" else
-                                      ("slow" if r.state == "starting" else "healthy")))
+                                      status=_replica_status(r.state, peer_ratio(r.id, mine),
+                                                             self.cfg.detect.contention_ratio)))
         util = min(1.0, used / pool.pool.cpu_total) if pool and pool.pool.cpu_total > 0 else 0.0
         return out, util
 

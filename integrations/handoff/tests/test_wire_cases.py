@@ -70,8 +70,8 @@ def test_detected_creates_case_with_neighbours_and_evidence_link():
     v = b.get(cid)
     assert cid == "INC-0001" and v.incident_id == "inc-1-K-1" and v.tenant == "K"
     assert v.context.evidence_link == "http://10.0.0.5:5173/case/inc-1-K-1"
-    # K = {w1, w3, w8}; neighbours share a server: A,E,H (w1) B,D,I (w3) C,F,G (w8)
-    assert v.context.affected == ["A", "B", "C", "D", "E", "F", "G", "H", "I"]
+    # v2: K's neighbours are the other tenants of its project (mobility: E, G, K)
+    assert v.context.affected == ["E", "G"]
     assert v.severity == "low" and v.status == "in_progress" and v.context.verdict == "over_plan"
     assert "KaamKaro" in v.title or "(K)" in v.title
     assert v.history[0].event.startswith("Detected")
@@ -224,7 +224,7 @@ def test_server_incident_names_culprit_and_offers_a_ttl_bound_block():
     named.suspects = [Suspect(tenant="K", confidence=1.0)]
     b.on_event(named, T0 + 3)
     assert v.tenant == "K" and v.severity == "high" and "named as the cause" in v.title
-    assert v.context.affected == ["A", "B", "C", "D", "E", "F", "G", "H", "I"]
+    assert v.context.affected == ["E", "G"]
     (a,) = v.actions
     assert "Approve blocking it for 300 s" in a.text and a.deadline_at == T0 + 3 + 120
     assert v.status == "waiting_for_decision"
