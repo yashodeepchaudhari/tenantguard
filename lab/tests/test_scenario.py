@@ -119,6 +119,8 @@ async def test_lab_run_end_to_end_writes_runresult(tmp_path):
 
     def handler(req: httpx.Request) -> httpx.Response:
         if req.url.path == "/admin/mode":
+            if req.headers.get("X-TenantGuard-Control-Token") != "dev":
+                return httpx.Response(401)
             state["mode"] = json.loads(req.content)["mode"]
             return httpx.Response(200, json={"mode": state["mode"]})
         if req.url.host == "brain.invalid":

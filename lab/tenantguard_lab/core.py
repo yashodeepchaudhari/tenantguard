@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from tenantguard_common.contracts import AttackReq, AttackStatus, LabStatus, RunReq, RunResult
+from tenantguard_common.contracts import H_CONTROL_TOKEN, AttackReq, AttackStatus, LabStatus, RunReq, RunResult
 
 from .attacks import RUNNERS, WAVE2, AttackCtx
 from .engine import Engine
@@ -216,7 +216,7 @@ class Lab(ScenarioDriver):
         url = f"{self.cfg.gateway_url}/admin/mode"
         try:
             r = await self._admin.post(url, json={"mode": mode},
-                                       headers={"X-Admin-Token": os.environ.get("TENANTGUARD_ADMIN_TOKEN", "dev")})
+                                       headers={H_CONTROL_TOKEN: os.environ.get("TENANTGUARD_CONTROL_TOKEN", "dev")})
         except httpx.HTTPError as e:
             raise LabError(502, f"could not set gateway mode at {url}: {e!r}") from e
         if r.status_code >= 300:
@@ -295,7 +295,8 @@ class Lab(ScenarioDriver):
         the attacker (or no tenant). None if the brain is unreachable or saw nothing."""
         url = f"{self.cfg.brain_url}/api/incidents"
         try:
-            r = await self._admin.get(url, timeout=2.0)
+            params = {"limit": 5000, **({"tenant": attacker} if attacker else {})}
+            r = await self._admin.get(url, params=params, timeout=2.0)
             r.raise_for_status()
             body = r.json()
         except (httpx.HTTPError, ValueError):
