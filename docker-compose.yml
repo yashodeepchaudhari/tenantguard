@@ -38,6 +38,8 @@ services:
     environment:
       TENANTGUARD_ROOT: /app
       TENANTGUARD_WORKER_URLS: *worker-urls
+      TENANTGUARD_CONTROL_TOKEN: ${TENANTGUARD_CONTROL_TOKEN:-dev}
+      TENANTGUARD_CORS_ORIGINS: ${TENANTGUARD_UI_ORIGINS:-http://127.0.0.1:5173}
     depends_on: [w0, w1, w2, w3, w4, w5, w6, w7, w8, spare, quarantine]
 
   brain:
@@ -47,6 +49,8 @@ services:
       TENANTGUARD_ROOT: /app
       TENANTGUARD_WORKER_URLS: *worker-urls
       TENANTGUARD_GATEWAY_URL: http://gateway:8000
+      TENANTGUARD_CONTROL_TOKEN: ${TENANTGUARD_CONTROL_TOKEN:-dev}
+      TENANTGUARD_CORS_ORIGINS: ${TENANTGUARD_UI_ORIGINS:-http://127.0.0.1:5173}
       COMPOSE_PROJECT: codeastra
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
@@ -59,6 +63,9 @@ services:
     environment:
       TENANTGUARD_ROOT: /app
       TENANTGUARD_GATEWAY_URL: http://gateway:8000
+      TENANTGUARD_BRAIN_URL: http://brain:8200
       TENANTGUARD_WORKER_URLS: *worker-urls
+      TENANTGUARD_CONTROL_TOKEN: ${TENANTGUARD_CONTROL_TOKEN:-dev}
+      TENANTGUARD_UI_ORIGINS: ${TENANTGUARD_UI_ORIGINS:-http://127.0.0.1:5173}
     depends_on: [gateway]
     profiles: ["lab"]

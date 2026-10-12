@@ -315,6 +315,24 @@ Build:
 5. Keep the Control Room on one 1080p screen; add a nav.
 6. Tests + e2e for the new pages; screenshots in `ui/screenshots/`.
 
+### T10: Lab wave 2 + crash-test (T5 session, same worktree)
+**You are TASK T10:** when this is finished, every attack in the demo can be launched, and one command produces the full OFF / Industry / TenantGuard scorecard as RunResult files. That includes the hidden-cost attacks that defeat a plain rate limiter.
+
+You own `lab/**`.
+
+Build:
+1. **Wave 2 attacks** (replace the 501s):
+   - `background_bomb`: POST /api/write bursts → heavy tagged bg jobs
+   - `blackbox_bomb`: POST /api/ingest {docs}; T6 is adding it on the worker, so until it merges, run against a stub and skip the live proof
+   - `cache_flood`: many distinct /api/read keys to evict others
+   - `faulty_server`: worker POST /admin/fault with `FaultReq` from contracts, header X-Admin-Token = env TENANTGUARD_ADMIN_TOKEN; the target is a worker URL from config
+   - `honest_spike`: 8× the persona's normal mix, staying within plan quota
+2. **crash-test runner:** `python -m tenantguard_lab crashtest --scenarios whale,blackbox_bomb,... --modes off,industry,tenantguard --runs N --random-culprit`. It runs RunReq sequentially and writes one RunResult each, plus a summary JSON (`lab/results/summary-<ts>.json`: mean/median per scenario × mode, culprit-correct rate from brain incidents, innocents penalised = incidents/LimitsCmds on non-attackers). If the summary needs fields, propose a `CrashSummary` contract to me.
+3. **Docker-host readiness:** the lab runs on THIS laptop, pointing at the friend's laptop. Make all target URLs come from env (`TENANTGUARD_GATEWAY_URL`, `TENANTGUARD_BRAIN_URL`, `TENANTGUARD_WORKER_URLS`). Add `lab/README.md` "run against the Docker host" with exact commands.
+4. Tests (no stack needed).
+
+Proof: unit tests + a tiny live run of 1 scenario × 3 modes (ask for the stack slot first). The full crash-test runs later on the Docker host.
+
 ## Task table
 
 | Task | Branch | Worktree | Session | Status |
@@ -327,7 +345,8 @@ Build:
 | T8 Brain integration + health/rescue/decoder | task/T8-brain-detect | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | in progress |
 | T4 UI | task/T4-ui | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | **merged** |
 | T9 UI wave 2 | task/T9-ui-casefile | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | in progress |
-| T5 Lab | task/T5-lab | D:\yashodeep\codeAstra-T5 | codeastra-t5-79 | in progress |
+| T5 Lab | task/T5-lab | D:\yashodeep\codeAstra-T5 | codeastra-t5-79 | **merged** |
+| T10 Lab wave 2 + crash-test | task/T10-lab-crashtest | D:\yashodeep\codeAstra-T5 | codeastra-t5-79 | assigned |
 | Convergence samples | n/a (main dir, docs/convergence/) | main | codeastra-21 | assigned |
 | Review | n/a | main | codeastra-2b | standby |
 
