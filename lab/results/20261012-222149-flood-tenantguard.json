@@ -1,0 +1,74 @@
+{
+  "run_id": "run-ab0d8264",
+  "scenario": "flood",
+  "mode": "tenantguard",
+  "attacker": "K",
+  "started_at": 1791843709.254587,
+  "victim_p99_ms": {
+    "baseline": 142.221,
+    "attack": 157.053,
+    "after": 119.862
+  },
+  "victim_p99_by_tenant": {
+    "A": {
+      "baseline": 105.538,
+      "attack": 131.794,
+      "after": 104.203
+    },
+    "B": {
+      "baseline": 110.31,
+      "attack": 166.284,
+      "after": 105.805
+    },
+    "C": {
+      "baseline": 116.865,
+      "attack": 91.777,
+      "after": 67.2
+    },
+    "D": {
+      "baseline": 145.241,
+      "attack": 174.06,
+      "after": 131.161
+    },
+    "E": {
+      "baseline": 138.253,
+      "attack": 130.748,
+      "after": 135.52
+    },
+    "F": {
+      "baseline": 141.149,
+      "attack": 118.373,
+      "after": 58.459
+    },
+    "G": {
+      "baseline": 90.741,
+      "attack": 167.03,
+      "after": 116.178
+    },
+    "H": {
+      "baseline": 88.615,
+      "attack": 173.419,
+      "after": 119.783
+    },
+    "I": {
+      "baseline": 226.856,
+      "attack": 159.877,
+      "after": 138.02
+    },
+    "J": {
+      "baseline": 112.893,
+      "attack": 132.267,
+      "after": 121.597
+    },
+    "L": {
+      "baseline": 219.414,
+      "attack": 144.186,
+      "after": 90.414
+    }
+  },
+  "time_to_detect_s": null,
+  "time_to_recover_s": 11.0,
+  "attacker_429": 3195,
+  "attacker_503": 0,
+  "file": "lab/results/20261012-222149-flood-tenantguard.json"
+}

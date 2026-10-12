@@ -1,0 +1,74 @@
+{
+  "run_id": "run-28b5276b",
+  "scenario": "whale",
+  "mode": "industry",
+  "attacker": "K",
+  "started_at": 1791842766.4901378,
+  "victim_p99_ms": {
+    "baseline": 196.174,
+    "attack": 204.198,
+    "after": 166.732
+  },
+  "victim_p99_by_tenant": {
+    "A": {
+      "baseline": 124.556,
+      "attack": 201.85,
+      "after": 120.99
+    },
+    "B": {
+      "baseline": 123.372,
+      "attack": 241.353,
+      "after": 143.479
+    },
+    "C": {
+      "baseline": 219.462,
+      "attack": 120.71,
+      "after": 140.243
+    },
+    "D": {
+      "baseline": 151.8,
+      "attack": 239.829,
+      "after": 81.113
+    },
+    "E": {
+      "baseline": 236.985,
+      "attack": 179.761,
+      "after": 88.344
+    },
+    "F": {
+      "baseline": 147.563,
+      "attack": 215.768,
+      "after": 216.488
+    },
+    "G": {
+      "baseline": 100.045,
+      "attack": 183.572,
+      "after": 239.928
+    },
+    "H": {
+      "baseline": 179.912,
+      "attack": 149.557,
+      "after": 78.592
+    },
+    "I": {
+      "baseline": 118.08,
+      "attack": 256.262,
+      "after": 355.147
+    },
+    "J": {
+      "baseline": 243.544,
+      "attack": 120.911,
+      "after": 164.74
+    },
+    "L": {
+      "baseline": 215.285,
+      "attack": 211.323,
+      "after": 134.163
+    }
+  },
+  "time_to_detect_s": null,
+  "time_to_recover_s": 2.0,
+  "attacker_429": 385,
+  "attacker_503": 0,
+  "file": "lab/results/20261012-220606-whale-industry.json"
+}

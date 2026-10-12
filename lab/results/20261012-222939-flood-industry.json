@@ -1,0 +1,74 @@
+{
+  "run_id": "run-6a1453ed",
+  "scenario": "flood",
+  "mode": "industry",
+  "attacker": "K",
+  "started_at": 1791844179.6233966,
+  "victim_p99_ms": {
+    "baseline": 203.494,
+    "attack": 154.374,
+    "after": 149.893
+  },
+  "victim_p99_by_tenant": {
+    "A": {
+      "baseline": 132.641,
+      "attack": 175.188,
+      "after": 144.947
+    },
+    "B": {
+      "baseline": 267.963,
+      "attack": 102.991,
+      "after": 153.907
+    },
+    "C": {
+      "baseline": 138.542,
+      "attack": 175.357,
+      "after": 60.198
+    },
+    "D": {
+      "baseline": 197.682,
+      "attack": 127.796,
+      "after": 141.379
+    },
+    "E": {
+      "baseline": 124.237,
+      "attack": 127.748,
+      "after": 161.84
+    },
+    "F": {
+      "baseline": 256.467,
+      "attack": 88.402,
+      "after": 146.18
+    },
+    "G": {
+      "baseline": 117.741,
+      "attack": 250.231,
+      "after": 118.756
+    },
+    "H": {
+      "baseline": 130.895,
+      "attack": 91.691,
+      "after": 93.119
+    },
+    "I": {
+      "baseline": 191.959,
+      "attack": 176.082,
+      "after": 91.869
+    },
+    "J": {
+      "baseline": 155.941,
+      "attack": 173.737,
+      "after": 152.164
+    },
+    "L": {
+      "baseline": 193.816,
+      "attack": 154.581,
+      "after": 115.726
+    }
+  },
+  "time_to_detect_s": null,
+  "time_to_recover_s": 18.0,
+  "attacker_429": 3359,
+  "attacker_503": 0,
+  "file": "lab/results/20261012-222939-flood-industry.json"
+}
