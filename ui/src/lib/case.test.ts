@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { IncidentEvent } from '../types.ts'
-import { barcodeMatch, caseIndex, reportSections, stepTime, summarizeCase } from './case.ts'
+import { barcodeMatch, caseIndex, decoderView, reportSections, stepTime, summarizeCase } from './case.ts'
 
 const ev = (o: Partial<IncidentEvent>): IncidentEvent => ({
   type: 'incident',
@@ -46,6 +46,28 @@ describe('case file', () => {
     expect(stepTime(c, 'verdict')).toBeNull()
   })
 
+  it('reads the barcode decoder report of a server incident (real brain shape)', () => {
+    const report = {
+      p_slow: { w3: 0.532, w6: 0.3967, w0: 0.0011 },
+      confidence: { K: 0.0543, D: 0.0669, host_fault: 0.2956, none: 0.146 },
+      host_suspects: ['w3'],
+      culprits: [],
+    }
+    const d = decoderView(report)!
+    expect(d.ranking.map((r) => r.label)).toEqual(['host fault', 'nobody', 'D', 'K'])
+    expect(d.ranking[0].kind).toBe('host')
+    expect(d.pSlow.w3).toBe(0.532)
+    expect(d.hostSuspects).toEqual(['w3'])
+    expect(decoderView({ summary: 'x' })).toBeNull()
+    const c = summarizeCase('srv-1', [
+      ev({ incident_id: 'srv-1', stage: 'detected', ts: 1 }),
+      ev({ incident_id: 'srv-1', stage: 'named', ts: 2, report }),
+      ev({ incident_id: 'srv-1', stage: 'closed', ts: 3, report: { note: 'later report without decoder' } }),
+    ])
+    expect(c.tenant).toBeNull()
+    expect(c.decoder?.hostSuspects).toEqual(['w3']) // kept from the earlier report
+  })
+
   it('an open case is not closed', () => {
     expect(summarizeCase('other', events).closed).toBe(false)
   })
@@ -71,5 +93,6 @@ describe('case file', () => {
     expect(s[0]).toEqual({ title: 'Facts', kind: 'table', rows: [['Verdict', 'costly_pattern'], ['Confidence', '0.91']] })
     expect(s.map((x) => x.kind)).toEqual(['table', 'text', 'list', 'table'])
     expect(s[3]).toMatchObject({ title: 'Numbers', rows: [['Victim p95 before ms', '240'], ['Victim p95 after ms', '31']] })
+    expect(reportSections({ p_slow: { w3: 0.97, K: 0.1 } })[0]).toMatchObject({ title: 'P slow', rows: [['w3', '0.97'], ['K', '0.10']] })
   })
 })

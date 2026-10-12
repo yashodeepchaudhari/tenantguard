@@ -10,6 +10,7 @@ import type {
   Mode,
   ModeBody,
   OverridesView,
+  CaseView,
   QuotaPatch,
   RunResult,
   TenantAdminView,
@@ -27,6 +28,8 @@ export interface Backend {
   incident(id: string): Promise<IncidentEvent[]>
   /** Measured scenario runs (lab GET /lab/results). */
   results(): Promise<RunResult[]>
+  /** Handoff bridge GET /cases (CaseView list); rejects when the bridge is unreachable. */
+  handoffCases(): Promise<CaseView[]>
   getMode(): Promise<Mode>
   setMode(mode: Mode): Promise<Mode>
   tenants(): Promise<TenantAdminView[]>
@@ -105,6 +108,15 @@ export function resultList(body: unknown): RunResult[] {
   return list.filter((r) => r && typeof r.run_id === 'string' && typeof r.scenario === 'string' && r.victim_p99_ms) as RunResult[]
 }
 
+/** Accepts a bare list or {cases: [...]}; drops entries without case_id / incident_id. */
+export function caseViewList(body: unknown): CaseView[] {
+  const list = Array.isArray(body) ? body : (body as { cases?: unknown })?.cases
+  if (!Array.isArray(list)) return []
+  return list
+    .filter((c) => c && typeof c.case_id === 'string' && typeof c.incident_id === 'string')
+    .map((c) => ({ ...c, actions: Array.isArray(c.actions) ? c.actions : [], history: Array.isArray(c.history) ? c.history : [] })) as CaseView[]
+}
+
 export function parseBrainMessage(raw: string): BrainMessage | null {
   try {
     const m = JSON.parse(raw)
@@ -167,6 +179,10 @@ export const realBackend: Backend = {
 
   async results() {
     return resultList(await http<unknown>(config.labUrl, '/lab/results'))
+  },
+
+  async handoffCases() {
+    return caseViewList(await http<unknown>(config.handoffUrl, '/cases', admin()))
   },
 
   async getMode() {

@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { LevelBadge } from '../components/LevelBadge.tsx'
+import { ProofAnimation } from '../components/ProofAnimation.tsx'
 import { ServerGrid } from '../components/ServerGrid.tsx'
 import { barcodeMatch, CASE_STEPS, reportSections, stepTime, summarizeCase, type CaseSummary, type ReportSection } from '../lib/case.ts'
 import { clock } from '../lib/format.ts'
 import { useBackend, useLive, useNow } from '../lib/liveContext.ts'
 import { STATUS_HEX } from '../lib/status.ts'
 import { useBarcodes } from '../lib/useBarcodes.ts'
-import type { IncidentEvent, OverridesView, Stage } from '../types.ts'
+import { pendingActions, useHandoff } from '../lib/useHandoff.ts'
+import type { CaseView, IncidentEvent, OverridesView, Stage } from '../types.ts'
 
 const STEP_LABEL: Partial<Record<Stage, string>> = {
   detected: 'Detected',
@@ -49,15 +51,19 @@ function Stepper({ c }: { c: CaseSummary }) {
 }
 
 function Suspects({ c }: { c: CaseSummary }) {
-  if (!c.suspects.length) return <div className="text-base text-ink-500">No suspects named yet.</div>
+  const rows = c.suspects.length
+    ? c.suspects.map((s) => ({ label: s.tenant, value: s.confidence, kind: 'tenant' as const }))
+    : (c.decoder?.ranking ?? []).slice(0, 6)
+  if (!rows.length) return <div className="text-base text-ink-500">No suspects named yet.</div>
   return (
     <ul className="space-y-2" data-testid="suspects">
-      {c.suspects.map((s, i) => {
-        const pct = Math.round(Math.max(0, Math.min(1, s.confidence)) * 100)
-        const colour = i === 0 ? STATUS_HEX.bad : '#64748b'
+      {!c.suspects.length && <li className="text-sm text-ink-300">From the barcode decoder (no tenant blamed by the brain):</li>}
+      {rows.map((s, i) => {
+        const pct = Math.round(Math.max(0, Math.min(1, s.value)) * 100)
+        const colour = i === 0 ? (s.kind === 'tenant' ? STATUS_HEX.bad : STATUS_HEX.warn) : '#64748b'
         return (
-          <li key={s.tenant} className="flex items-center gap-3">
-            <span className="w-6 text-2xl font-black">{s.tenant}</span>
+          <li key={s.label} className="flex items-center gap-3">
+            <span className={`${s.kind === 'tenant' ? 'w-6 text-2xl' : 'w-24 text-base'} font-black`}>{s.label}</span>
             <div className="h-4 flex-1 rounded bg-ink-800">
               <div className="h-full rounded" style={{ width: `${pct}%`, background: colour }} />
             </div>
@@ -117,6 +123,50 @@ function Placeholder({ c, name }: { c: CaseSummary; name: string }) {
         {c.verdict ? ` Verdict: ${c.verdict}.` : ''}
         {c.action ? ` Last action: ${c.action}.` : ''}
       </p>
+    </div>
+  )
+}
+
+function HandoffPanel({ incidentId }: { incidentId: string }) {
+  const { cases, error } = useHandoff()
+  const now = useNow()
+  if (cases === null) {
+    return (
+      <div className="text-sm text-ink-500" data-testid="handoff-offline" title={error ?? ''}>
+        Handoff bridge not reachable: no Web PS3 case to show.
+      </div>
+    )
+  }
+  const c: CaseView | undefined = cases.find((x) => x.incident_id === incidentId)
+  if (!c) return <div className="text-sm text-ink-300">No handoff case for this incident (the bridge opens one when TenantGuard acts).</div>
+  const pending = pendingActions(c)
+  return (
+    <div className="space-y-2" data-testid="handoff-case">
+      <div className="flex flex-wrap items-baseline gap-3">
+        <span className="font-mono text-xl font-bold text-accent">{c.case_id}</span>
+        <span className="rounded border border-ink-700 px-1.5 text-sm uppercase">{c.status.replace(/_/g, ' ')}</span>
+        <span className="text-sm text-ink-300">severity {c.severity}</span>
+        <span className="text-sm text-ink-300">{c.delivered_at ? 'delivered to the Web app' : 'not yet delivered'}</span>
+      </div>
+      <div className="text-lg">
+        Owner: <b>{c.owner ?? 'unassigned'}</b>
+        {c.owner_since_ist && <span className="text-sm text-ink-300"> since {c.owner_since_ist} IST</span>}
+      </div>
+      <ul className="space-y-1">
+        {c.actions.map((a) => (
+          <li key={a.action_id} className="rounded bg-ink-800/60 px-2 py-1 text-base">
+            <b>{a.action_id}</b> {a.text}{' '}
+            <span className={`text-sm font-bold uppercase ${a.state === 'pending' ? 'text-warn' : 'text-ink-300'}`}>{a.state}</span>
+            {a.state === 'pending' && (
+              <span className="text-sm text-ink-300">
+                {' '}
+                · decide by {a.deadline_ist} IST ({Math.max(0, Math.round(a.deadline_at - now))} s), else the safe default applies
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+      {pending.length === 0 && <div className="text-sm text-ink-300">No pending decision.</div>}
     </div>
   )
 }
@@ -192,8 +242,17 @@ export function CaseFile() {
   }
 
   const tenantView = snapshot?.tenants.find((t) => t.tenant === c.tenant)
-  const name = tenantView ? `${tenantView.name} (${c.tenant})` : (c.tenant ?? 'unknown tenant')
-  const barcode = c.tenant ? (barcodes[c.tenant] ?? []) : []
+  const hostSuspects = c.decoder?.hostSuspects ?? []
+  const name = tenantView
+    ? `${tenantView.name} (${c.tenant})`
+    : (c.tenant ?? (hostSuspects.length ? `host ${hostSuspects.join(' ')}` : 'no tenant blamed'))
+  const culpritServers = (c.decoder?.culprits ?? []).flatMap((t) => barcodes[t] ?? [])
+  const barcode = c.tenant ? (barcodes[c.tenant] ?? []) : [...new Set([...culpritServers, ...hostSuspects])]
+  const pSlow = c.decoder?.pSlow ?? {}
+  const annotate = Object.fromEntries(Object.entries(pSlow).filter(([, v]) => v >= 0.05).map(([k, v]) => [k, `P(slow) ${Math.round(v * 100)} %`]))
+  const proving = stepTime(c, 'proving') !== null
+  const provingNow = proving && !stepTime(c, 'verdict') && !c.closed
+  const relocation = ov?.relocations?.find((r) => r.tenant === c.tenant && r.target)
   const slow = (snapshot?.servers ?? []).filter((s) => s.status === 'slow').map((s) => s.server)
   const match = barcodeMatch(barcode, slow)
   const ttl = ttlFor(ov, c.tenant)
@@ -215,7 +274,7 @@ export function CaseFile() {
           {c.closed ? 'resolved' : 'open'}
         </span>
         <span className="text-lg">
-          Suspect <b className="text-2xl">{name}</b>
+          {c.tenant ? 'Suspect' : 'Server incident ·'} <b className="text-2xl">{name}</b>
         </span>
         {c.level && <LevelBadge level={c.level} />}
         <span className="ml-auto text-base text-ink-300">
@@ -257,14 +316,20 @@ export function CaseFile() {
               {c.detail || '–'}
             </p>
           </div>
+          {c.tenant && barcode.length > 0 && (proving || relocation) && (
+            <div className="min-h-[230px] flex-1">
+              <ProofAnimation tenant={c.tenant} servers={barcode} target={relocation?.target ?? 'spare'} live={provingNow || !!relocation} />
+            </div>
+          )}
         </section>
 
         <section className="panel col-span-12 flex min-h-[420px] flex-col md:col-span-6 xl:col-span-4">
           <ServerGrid
             servers={snapshot?.servers ?? []}
             highlight={barcode}
-            highlightLabel={c.tenant ? `${c.tenant}'s barcode ${barcode.join(' ')}` : undefined}
+            highlightLabel={c.tenant ? `${c.tenant}'s barcode ${barcode.join(' ')}` : hostSuspects.length ? `host suspect ${hostSuspects.join(' ')}` : undefined}
             title="Barcode match · live grid"
+            annotate={annotate}
           />
           <div className="mt-2 text-lg" data-testid="barcode-match">
             {slow.length === 0 ? (
@@ -285,6 +350,10 @@ export function CaseFile() {
         <section className="panel col-span-12 md:col-span-6 xl:col-span-4">
           <div className="panel-title">Report</div>
           {c.report ? <Report sections={reportSections(c.report)} /> : <Placeholder c={c} name={name} />}
+          <div className="mt-4 border-t border-ink-700 pt-3">
+            <div className="panel-title">Handoff · Web PS3 case</div>
+            <HandoffPanel incidentId={c.id} />
+          </div>
         </section>
       </div>
 

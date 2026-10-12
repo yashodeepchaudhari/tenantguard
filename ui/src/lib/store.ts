@@ -1,7 +1,13 @@
 // Live state assembled from the brain stream: latest snapshot, a rolling 60 s history for
 // charts, and the incident log. Framework-free so it can be unit tested.
-import type { BrainMessage, IncidentEvent, Mode, StateSnapshot } from '../types.ts'
+import { TENANTS } from '../mock/fixture.ts'
+import type { BrainMessage, IncidentEvent, Mode, OverridesView, StateSnapshot, TenantAdminView } from '../types.ts'
 import type { ConnState } from './backend.ts'
+import { emptyImpact, updateImpact, type ImpactState } from './impact.ts'
+
+/** Layout fallback (ag23) until gateway /admin/tenants answers. */
+const LAYOUT_BARCODES: Record<string, string[]> = Object.fromEntries(TENANTS.map((t) => [t.id, t.servers]))
+const LAYOUT_REVENUE: Record<string, number> = Object.fromEntries(TENANTS.map((t) => [t.id, t.monthly_revenue_rs]))
 
 export interface HistoryPoint {
   ts: number
@@ -20,7 +26,23 @@ export interface LiveState {
   incidents: IncidentEvent[]
   /** Optimistic mode while a POST /admin/mode is in flight. */
   pendingMode: Mode | null
+  /** gateway /admin/tenants (polled); null until it answers */
+  admin: TenantAdminView[] | null
+  /** gateway /admin/overrides (polled); null while unreachable */
+  overrides: OverridesView | null
+  /** tenant -> barcode servers (admin, else layout) */
+  barcodes: Record<string, string[]>
+  /** tenant -> monthly_revenue_rs (admin, else layout) */
+  revenue: Record<string, number>
+  impact: ImpactState
 }
+
+export interface StoreOptions {
+  historyS?: number
+  sloMs?: number
+  warnFallback?: number
+}
+
 
 const MAX_INCIDENTS = 300
 
@@ -34,10 +56,44 @@ export class LiveStore {
   private order = new WeakMap<IncidentEvent, number>()
   private seq = 0
   private historyS: number
+  private sloMs: number
+  private warnFallback: number
 
-  constructor(historyS = 60) {
-    this.historyS = historyS
-    this.state = { conn: 'connecting', snapshot: null, receivedAt: null, history: [], incidents: [], pendingMode: null }
+  constructor(opts: StoreOptions | number = {}) {
+    const o = typeof opts === 'number' ? { historyS: opts } : opts
+    this.historyS = o.historyS ?? 60
+    this.sloMs = o.sloMs ?? 150
+    this.warnFallback = o.warnFallback ?? 1.5
+    this.state = {
+      conn: 'connecting',
+      snapshot: null,
+      receivedAt: null,
+      history: [],
+      incidents: [],
+      pendingMode: null,
+      admin: null,
+      overrides: null,
+      barcodes: LAYOUT_BARCODES,
+      revenue: LAYOUT_REVENUE,
+      impact: emptyImpact(),
+    }
+  }
+
+  setAdmin(admin: TenantAdminView[]) {
+    if (!admin.length) return
+    this.set({
+      admin,
+      barcodes: Object.fromEntries(admin.map((t) => [t.id, t.servers])),
+      revenue: Object.fromEntries(admin.map((t) => [t.id, t.monthly_revenue_rs ?? 0])),
+    })
+  }
+
+  setOverrides(overrides: OverridesView | null) {
+    this.set({ overrides })
+  }
+
+  resetImpact() {
+    this.set({ impact: emptyImpact() })
   }
 
   getState = (): LiveState => this.state
@@ -78,7 +134,14 @@ export class LiveStore {
     const history = base.filter((p) => p.ts >= cutoff)
     history.push(point)
     const pendingMode = this.state.pendingMode && this.state.pendingMode === s.mode ? null : this.state.pendingMode
-    this.set({ snapshot: s, receivedAt, history, pendingMode })
+    const impact = updateImpact(this.state.impact, s, {
+      barcodes: this.state.barcodes,
+      revenue: this.state.revenue,
+      warn: s.noisy_thresholds?.warn ?? this.warnFallback,
+      sloMs: this.sloMs,
+      suspected: new Set(this.state.incidents.map((e) => e.tenant).filter((t): t is string => !!t)),
+    })
+    this.set({ snapshot: s, receivedAt, history, pendingMode, impact })
   }
 
   addIncidents(events: IncidentEvent[]) {

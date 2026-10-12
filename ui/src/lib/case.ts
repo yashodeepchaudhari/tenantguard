@@ -20,8 +20,45 @@ export interface CaseSummary {
   action: string | null
   detail: string
   report: Record<string, unknown> | null
+  /** latest barcode-decoder output found in any report of the incident */
+  decoder: DecoderView | null
   level: Level | null
   events: IncidentEvent[]
+}
+
+export interface DecoderView {
+  pSlow: Record<string, number> // server -> P(slow)
+  ranking: { label: string; kind: 'tenant' | 'host' | 'none'; value: number }[] // sorted desc
+  hostSuspects: string[]
+  culprits: string[]
+}
+
+const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+
+/** Read the brain's barcode decoder report ({p_slow, confidence, host_suspects, culprits}); null if absent. */
+export function decoderView(report: Record<string, unknown> | null | undefined): DecoderView | null {
+  if (!report) return null
+  const conf = report.confidence
+  const ps = report.p_slow
+  const isMap = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+  if (!isMap(conf) && !isMap(ps)) return null
+  const ranking = isMap(conf)
+    ? Object.entries(conf)
+        .filter((e): e is [string, number] => num(e[1]))
+        .map(([k, v]) => ({
+          label: k === 'host_fault' ? 'host fault' : k === 'none' ? 'nobody' : k,
+          kind: (k === 'host_fault' ? 'host' : k === 'none' ? 'none' : 'tenant') as 'tenant' | 'host' | 'none',
+          value: v,
+        }))
+        .sort((a, b) => b.value - a.value)
+    : []
+  const strs = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
+  return {
+    pSlow: isMap(ps) ? Object.fromEntries(Object.entries(ps).filter((e): e is [string, number] => num(e[1]))) : {},
+    ranking,
+    hostSuspects: strs(report.host_suspects),
+    culprits: strs(report.culprits),
+  }
 }
 
 export function summarizeCase(id: string, events: IncidentEvent[]): CaseSummary {
@@ -33,6 +70,7 @@ export function summarizeCase(id: string, events: IncidentEvent[]): CaseSummary 
   let action: string | null = null
   let detail = ''
   let report: Record<string, unknown> | null = null
+  let decoder: DecoderView | null = null
   let level: Level | null = null
   let tenant: string | null = null
   for (const e of evs) {
@@ -44,7 +82,10 @@ export function summarizeCase(id: string, events: IncidentEvent[]): CaseSummary 
     if (e.verdict) verdict = e.verdict
     if (e.action) action = e.action
     if (e.detail) detail = e.detail
-    if (e.report && typeof e.report === 'object') report = e.report
+    if (e.report && typeof e.report === 'object') {
+      report = e.report
+      decoder = decoderView(e.report) ?? decoder
+    }
     if (e.level) level = e.level
     if (e.tenant) tenant = e.tenant
   }
@@ -61,6 +102,7 @@ export function summarizeCase(id: string, events: IncidentEvent[]): CaseSummary 
     action,
     detail,
     report,
+    decoder,
     level,
     events: evs,
   }
@@ -94,7 +136,8 @@ export type ReportSection =
   | { title: string; kind: 'list'; items: string[] }
   | { title: string; kind: 'table'; rows: [string, string][] }
 
-const label = (k: string) => k.replace(/_/g, ' ').replace(/^\w/, (c) => c.toUpperCase())
+// ids (w3, K, spare) stay as they are; snake_case keys become words
+const label = (k: string) => (/^[a-z]\d+$|^[A-Z]$/.test(k) ? k : k.replace(/_/g, ' ').replace(/^\w/, (c) => c.toUpperCase()))
 
 function scalar(v: unknown): string {
   if (v === null || v === undefined) return '–'

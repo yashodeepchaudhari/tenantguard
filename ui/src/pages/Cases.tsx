@@ -3,7 +3,8 @@ import { Link } from 'react-router-dom'
 import { LevelBadge } from '../components/LevelBadge.tsx'
 import { caseIndex } from '../lib/case.ts'
 import { clock } from '../lib/format.ts'
-import { useBackend, useLive } from '../lib/liveContext.ts'
+import { useBackend, useLive, useNow } from '../lib/liveContext.ts'
+import { pendingActions, useHandoff } from '../lib/useHandoff.ts'
 import type { IncidentEvent } from '../types.ts'
 
 export function Cases() {
@@ -20,10 +21,18 @@ export function Cases() {
   }, [backend])
 
   const cases = caseIndex([...history, ...incidents])
+  const handoff = useHandoff()
+  const now = useNow()
+  const byIncident = new Map((handoff.cases ?? []).map((c) => [c.incident_id, c]))
 
   return (
     <div className="flex flex-col gap-3">
-      <h1 className="text-3xl font-bold">Case files</h1>
+      <div className="flex flex-wrap items-baseline gap-4">
+        <h1 className="text-3xl font-bold">Case files</h1>
+        <span className={`text-base ${handoff.cases ? 'text-ink-300' : 'text-ink-500'}`} data-testid="handoff-status">
+          {handoff.cases ? `Handoff bridge: ${handoff.cases.length} Web PS3 case${handoff.cases.length === 1 ? '' : 's'}` : 'Handoff bridge not reachable'}
+        </span>
+      </div>
       {cases.length === 0 ? (
         <div className="panel text-lg text-ink-300">No incidents yet. A case opens when a tenant reaches warn.</div>
       ) : (
@@ -37,6 +46,7 @@ export function Cases() {
                 <th className="px-2 py-2">Status</th>
                 <th className="px-2 py-2">Level</th>
                 <th className="px-2 py-2">Verdict</th>
+                {handoff.cases && <th className="px-2 py-2">Handoff case · owner · pending</th>}
                 <th className="px-2 py-2">Latest</th>
               </tr>
             </thead>
@@ -53,6 +63,23 @@ export function Cases() {
                   <td className={`px-2 py-2 font-bold uppercase ${c.closed ? 'text-ok' : 'text-bad'}`}>{c.closed ? 'resolved' : 'open'}</td>
                   <td className="px-2 py-2">{c.level ? <LevelBadge level={c.level} /> : '–'}</td>
                   <td className="px-2 py-2">{c.verdict ?? '–'}</td>
+                  {handoff.cases && (
+                    <td className="px-2 py-2" data-testid={`handoff-${c.id}`}>
+                      {(() => {
+                        const h = byIncident.get(c.id)
+                        if (!h) return <span className="text-ink-500">–</span>
+                        const p = pendingActions(h)
+                        return (
+                          <div>
+                            <span className="font-mono font-bold text-accent">{h.case_id}</span> · {h.owner ?? <span className="text-ink-500">no owner</span>}
+                            <div className={`text-sm ${p.length ? 'text-warn' : 'text-ink-300'}`}>
+                              {p.length ? `${p.length} pending · next in ${Math.max(0, Math.round(p[0].deadline_at - now))} s` : h.status.replace(/_/g, ' ')}
+                            </div>
+                          </div>
+                        )
+                      })()}
+                    </td>
+                  )}
                   <td className="max-w-xl truncate px-2 py-2 text-ink-300" title={c.detail}>
                     {c.detail || '–'}
                   </td>
