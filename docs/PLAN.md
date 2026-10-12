@@ -428,6 +428,22 @@ Build:
 
 Proof: unit tests + a run against the Docker host (I'll add the compose service and run it there; send me the exact commands).
 
+### T18: Incident narrator (T1 session, same worktree)
+**You are TASK T18:** when this is finished, every TenantGuard incident gets a plain-English incident report: an instant deterministic version, upgraded within seconds by an AI-written one that is checked fact-by-fact against the evidence. The AI never makes a decision.
+
+You own a NEW dir `narrator/` (package `tenantguard_narrator`, FastAPI on :8700, Dockerfile, tests). Read-only consumer of the brain.
+
+Build:
+1. Subscribe to brain WS `/ws/events` (+ `/api/incidents` backfill). On `named`, `verdict` and `closed`, build an **evidence pack** (JSON): stages + timestamps, suspects + confidence, slow servers + peer ratios, actions + TTLs, affected tenants, verdict.
+2. **Template report:** a deterministic `IncidentReport {headline, timeline[], cause, evidence_points[], action_taken, operator_recommendation}` plus `CustomerMessage {message}` built from the *anonymised* pack (no other tenant named). Available instantly.
+3. **AI report:** the official `anthropic` Python SDK with structured output into the same Pydantic models. A stable system prompt first, with prompt caching. Run it asynchronously, never on the decision path. Read the SDK's current docs for the exact call shape and model id (planned: `claude-opus-5-5`, effort low). The key comes from env `ANTHROPIC_API_KEY`; with no key, or offline, use the template only.
+4. **Grounding check:** every tenant id, server id and number in the AI output must appear in the evidence pack. Otherwise, or on refusal/API error, keep the template. Record `source: template|ai` and a `grounded` flag.
+5. API: `GET /reports/{incident_id}`, `GET /reports`, and WS `/ws/reports` pushing the template and then the AI version. Propose a contract (`ReportView`) to the coordinator.
+6. Tests: template correctness, anonymisation, the grounding check (rejects an unknown tenant or number; accepts a valid one), with a stubbed SDK client; no-key mode.
+7. The AI-attribution rule applies to commits and docs only. Product code that calls the API is a feature and is fine.
+
+Proof: unit tests + a live run against brain + fake_gateway (ask for a slot). Use the real API only if a key is available; otherwise template mode.
+
 ## Task table
 
 | Task | Branch | Worktree | Session | Status |
@@ -436,7 +452,8 @@ Proof: unit tests + a run against the Docker host (I'll add the compose service 
 | T7 Gateway wave 2 | task/T7-gateway-adaptive | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
 | T11 Handoff bridge (Web PS3 convergence) | task/T11-handoff-bridge | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
 | T14 Demo driver (`tools/demo.py`) | task/T14-demo-runbook | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
-| T16 Submission docs | task/T16-submission-docs | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | assigned |
+| T16 Submission docs | task/T16-submission-docs | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** (re-check after T10/T12) |
+| T18 Incident narrator service | task/T18-narrator | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | assigned |
 | T2 Workers | task/T2-workers | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged** (9cebaaf) |
 | T6 Workers wave 2 | task/T6-worker-blackbox | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged** |
 | T15 Worker calibration in-container | task/T15-worker-calib | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged**; host calibration committed (fa011b3) |
