@@ -485,7 +485,17 @@ Build:
 
 Done = the mock suite green + the host suite results (pass/fail per test) + the list of fixed and reported issues.
 
-## Task table
+### T25: Scorecard runner (T2 session)
+**You are TASK T25:** when this is finished, one command runs the existing lab scenarios in all three modes (off / industry / tenantguard) and writes a summary table of MEASURED results that the dashboard Scorecard and the slides use.
+
+You own ONLY `lab/tenantguard_lab/scorecard.py` and `lab/tests/test_scorecard.py` (plus one CLI hook line in `lab/tenantguard_lab/__main__.py`). Base the branch on `task/T10-lab-crashtest` (it has the run phase marks): `git checkout -b task/T25-scorecard task/T10-lab-crashtest`.
+
+Build:
+1. Use ONLY the lab's existing HTTP API: `POST /lab/run` (RunReq) for scenarios already registered (flood, whale, hog, memory, retry_storm) and `GET /lab/run/{id}` / `GET /lab/results`. Write no new traffic or attack code. Unregistered scenarios are skipped with a clear message.
+2. `python -m tenantguard_lab scorecard --scenarios whale,flood --modes off,industry,tenantguard --runs N`: run sequentially, then write `lab/results/summary-<ts>.json`. Per scenario × mode: median/mean victim p99 (baseline/attack/after), time_to_detect, time_to_recover, attacker 429s, runs, plus brain incidents aligned to the run marks (culprit named correctly? innocents penalised?). Propose a `CrashSummary` contract to the coordinator.
+3. Tests with a mocked lab/brain transport.
+4. The real run happens on the Docker host via the coordinator. Send the exact command.
+
 
 | Task | Branch | Worktree | Session | Status |
 |---|---|---|---|---|
@@ -511,7 +521,8 @@ Done = the mock suite green + the host suite results (pass/fail per test) + the 
 | T9 UI wave 2 | task/T9-ui-casefile | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | **merged** |
 | T13 UI wave 3 (story + Docker-host run) | task/T13-ui-story | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | **merged** (standby; screenshot retake at rehearsal) |
 | T5 Lab | task/T5-lab | D:\yashodeep\codeAstra-T5 | codeastra-t5-79 | **merged** |
-| T10 Lab wave 2 + crash-test | task/T10-lab-crashtest | D:\yashodeep\codeAstra-T5 | codeastra-t5-79 | in progress |
+| T10 Lab wave 2 + crash-test | task/T10-lab-crashtest | D:\yashodeep\codeAstra-T5 | codeastra-t5-79 | **partial, done** (tiers, SLA, run marks); merges with T12. Wave 2 runners: user decision. Scorecard runner moved to T25 |
+| T25 Scorecard runner (OFF/Industry/TenantGuard summary) | task/T25-scorecard | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | assigned (owns lab/tenantguard_lab/scorecard.py + lab/tests/test_scorecard.py only) |
 | Convergence samples | n/a (main dir, docs/convergence/) | main | codeastra-21 | assigned |
 | Review | n/a | main | codeastra-2b | standby |
 
