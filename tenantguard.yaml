@@ -107,6 +107,8 @@ handoff:
   push_timeout_s: 3
   retention_s: 3600            # evict closed/resolved cases this long after they close
   history_wire_max: 50         # history items sent to the partner per case (+ "N earlier events")
+  history_keep: 500            # history items kept in memory per case
+  id_map_max: 2000             # persisted incident->case id map cap (live cases never dropped)
 
 billing:
   poll_s: 5                      # worker /stats + brain /api/incidents poll
