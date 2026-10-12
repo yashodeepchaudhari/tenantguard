@@ -33,6 +33,7 @@ one of the configured tenants (`load_tenants()`) → 400 `unknown_tenant`. Every
 | `GET /healthz` | liveness + background backlog per tenant + black-box queue/drops/restarts |
 | `GET /stats` | `WorkerStats` (cumulative counters; `cpu_total_ms` = psutil process tree) |
 | `POST/GET/DELETE /admin/fault {latency_ms, cpu_burn_pct, duration_s?}` | faulty-host simulation; header `X-Admin-Token` |
+| `GET /admin/memory`, `POST /admin/memory/trim` | where the memory is (process RSS, cgroup anon/file, allocator heap/free/mmapped, per-tenant holds, cache) and an on-demand `malloc_trim`; header `X-Admin-Token` |
 
 Body limit `worker.body_limit_bytes` (1 MB) → 413, also without Content-Length. An unhandled error → 500 JSON,
 still with the CPU header.
@@ -47,6 +48,14 @@ still with the CPU header.
 - `blackbox.py`: spawned child process fed by a bounded queue (drops counted), restarted with backoff if it
   dies; its CPU (psutil on the child) is reported only as `blackbox_cpu_ms`. It shares the container's CPU
   limit, so heavy ingest slows co-located tenants while every tenant meter stays near zero.
+- `malloc.py`: memory goes back to the OS. With default glibc settings, large buffers freed on request threads stayed in
+  per-thread arenas (glibc raises its mmap threshold after the first large free): measured +111 MB kept after one
+  load burst, which filled the 256 MB container over hours. The worker pins the mmap threshold to 128 KB and caps
+  arenas at 2 (`mallopt` at start; `MALLOC_*` env in the image for child processes), allocates `/api/memory` holds
+  with `mmap`, trims every `worker.memory_trim_s` (30 s), caps distinct classes per tenant
+  (`worker.max_classes_per_tenant`, rest counted as `other`), and bounds each SQLite connection (1 MB page cache,
+  WAL ≤ 4 MB). Same load after the fix: +0.6 MB.
+- `tools/memrepro.py`: stdlib reproduction of the allocator retention (`--mode bytearray|mmap`, `MALLOC_*` env to compare).
 - `tools/noisy_demo.py`: measures the noisy-neighbor effect (`--attack search|ingest`).
 - `tools/calibrate.py` → `calibration.json`: cost of each endpoint at default params (stdlib only, shipped in
   the image). On the Docker host, inside a real 0.5-CPU container:

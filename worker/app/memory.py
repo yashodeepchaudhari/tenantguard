@@ -1,6 +1,7 @@
 """Per-tenant in-worker memory budget: held allocations + the tenant's cache bytes."""
 from __future__ import annotations
 
+import mmap
 import threading
 import time
 from collections import defaultdict
@@ -47,13 +48,17 @@ class MemoryBudget:
             if total + n > worker_budget * MB:
                 raise OverBudget("worker_memory", "worker (all tenants)", total / MB, mb, worker_budget)
             self._held[tenant] += n
+        buf = None
         try:
-            buf = bytearray(n)
-            buf[::PAGE] = b"\x01" * len(range(0, n, PAGE))
+            # An anonymous mmap goes back to the OS on close, whatever the allocator does with heap memory.
+            buf = mmap.mmap(-1, n) if n else None
+            for off in range(0, n, PAGE):           # touch every page so RSS really grows
+                buf[off] = 1
             time.sleep(hold_s)
-            checksum = sum(buf[::PAGE * 64])
-            del buf
+            checksum = sum(buf[off] for off in range(0, n, PAGE * 64)) if buf is not None else 0
         finally:
+            if buf is not None:
+                buf.close()
             with self._lock:
                 self._held[tenant] -= n
         return {"mb": mb, "held_ms": hold_s * 1000, "checksum": checksum}

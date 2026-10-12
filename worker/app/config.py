@@ -22,6 +22,8 @@ _DEFAULTS = {
     "max_request_s": 30,
     "bg_pending": {"per_tenant": 200, "total": 1000},
     "mem_baseline_mb": 80,
+    "memory_trim_s": 30,
+    "max_classes_per_tenant": 256,
 }
 
 
@@ -43,6 +45,8 @@ class WorkerConfig:
     bg_pending_per_tenant: int
     bg_pending_total: int
     mem_baseline_mb: float
+    memory_trim_s: float
+    max_classes_per_tenant: int
     admin_token: str
     cors_origins: List[str]
     cpu_limit_env: Optional[float]
@@ -80,6 +84,8 @@ def load_config(settings: Optional[Dict[str, Any]] = None, **overrides: Any) -> 
         bg_pending_per_tenant=int(bgp["per_tenant"]),
         bg_pending_total=int(bgp["total"]),
         mem_baseline_mb=float(w["mem_baseline_mb"]),
+        memory_trim_s=float(w["memory_trim_s"]),
+        max_classes_per_tenant=int(w["max_classes_per_tenant"]),
         admin_token=os.environ.get("TENANTGUARD_ADMIN_TOKEN", "dev"),
         cors_origins=[o.strip() for o in origins.split(",") if o.strip()],
         cpu_limit_env=float(cpu_env) if cpu_env else None,
