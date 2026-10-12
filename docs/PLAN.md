@@ -289,6 +289,27 @@ Build:
 
 Prove it live: (a) fault-inject w4 → rescue shifts B/E/G/L away within ~1–2 s and names "host suspect w4", no tenant blamed; (b) K hammering /api/search on its 3 servers → named K with confidence.
 
+### T9: UI wave 2 (T4 session, same worktree)
+**You are TASK T9:** when this is finished, judges can watch TenantGuard find a culprit: which server is slow, who caused it, how the system proved it, and the OFF / Industry / TenantGuard scorecard with measured numbers. The UI also runs against the real stack.
+
+You own `ui/**`.
+
+Build:
+1. **Real-stack check first:** master now has the gateway + brain + workers. Run them locally (see their READMEs; this laptop is CPU-starved, so use 9 workers and modest load), point `ui/.env` at them, run your e2e + screenshot against the REAL brain, and fix any mismatch. Report anything the backend gets wrong as BLOCKED with the exact field.
+2. **3×3 server grid** (w0..w8) on the Control Room: peer_ratio, status colour, cpu_pct. Selecting a tenant highlights its 3 barcode servers. Drained servers are hatched.
+3. **Case File page** at route `/case/:incident_id` (convergence evidence_link uses this exact path):
+   - incident timeline (detected → rescued → named → proving → verdict → resolved → explained, with timestamps)
+   - suspects with confidence bars
+   - barcode match drawn on the grid
+   - verdict + action + TTL countdown
+   - `detail` text
+   - `report` (render the dict as sections when present; a template placeholder otherwise)
+
+   Data comes from brain `GET /api/incidents?incident_id=`.
+4. **Scorecard page:** a table + bar charts of `RunResult` files (victim p99 baseline/attack/after, time_to_detect, time_to_recover, attacker 429s) grouped by scenario × mode (off / industry / tenantguard). Data comes from lab `GET /lab/results` (T5 provides a list of RunResult; until then use fixtures in `ui/src/mock/`).
+5. Keep the Control Room on one 1080p screen; add a nav.
+6. Tests + e2e for the new pages; screenshots in `ui/screenshots/`.
+
 ## Task table
 
 | Task | Branch | Worktree | Session | Status |
@@ -298,8 +319,9 @@ Prove it live: (a) fault-inject w4 → rescue shifts B/E/G/L away within ~1–2 
 | T2 Workers | task/T2-workers | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged** (9cebaaf) |
 | T6 Workers wave 2 | task/T6-worker-blackbox | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | assigned |
 | T3 Brain | task/T3-brain | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | **merged** |
-| T8 Brain integration + health/rescue/decoder | task/T8-brain-detect | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | assigned |
-| T4 UI | task/T4-ui | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | in progress |
+| T8 Brain integration + health/rescue/decoder | task/T8-brain-detect | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | in progress |
+| T4 UI | task/T4-ui | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | **merged** |
+| T9 UI wave 2 | task/T9-ui-casefile | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | assigned |
 | T5 Lab | task/T5-lab | D:\yashodeep\codeAstra-T5 | codeastra-t5-79 | in progress |
 | Convergence samples | n/a (main dir, docs/convergence/) | main | codeastra-21 | assigned |
 | Review | n/a | main | codeastra-2b | standby |
