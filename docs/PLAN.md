@@ -333,12 +333,32 @@ Build:
 
 Proof: unit tests + a tiny live run of 1 scenario × 3 modes (ask for the stack slot first). The full crash-test runs later on the Docker host.
 
+### T11: Handoff bridge, Web PS3 convergence (T1 session, same worktree)
+**You are TASK T11:** when this is finished, every TenantGuard incident automatically becomes a case in the Web PS3 "Digital Handoff" app, with an owner, pending actions and deadlines. An on-call engineer's handoff, acknowledge or approve in their app flows back and takes effect in TenantGuard live.
+
+You own a NEW top-level dir `integrations/handoff/` (package `tenantguard_handoff`, FastAPI on :8400, Dockerfile, tests). Do not edit `brain/` (T8 owns it). Request any brain endpoint you need from the coordinator.
+
+Inputs:
+- `enhanced-prompts/convergence-web.md` (the agreed contract)
+- `docs/convergence/` (5 sample cases, case-update examples, `handoff-models.py`)
+
+Build:
+1. **Case models:** propose moving `docs/convergence/handoff-models.py` into `contracts.py` (send the exact text). Follow the review rule: IST "HH:MM:SS" strings only on display fields named `*_ist`; epoch floats elsewhere; the adapter converts.
+2. **Outbound:** subscribe to brain WS `/ws/events` (IncidentEvent + StateSnapshot, reconnecting). Build/update a Case per incident_id: title, severity, status, context (verdict, affected = barcode neighbours, evidence_link `http://<ui-host>:5173/case/<id>`, summary from detail), pending_actions (with deadlines from action TTLs), history. `POST {WEB_URL}/cases` on every change (idempotent by case_id), with retry + backoff. Never block, and drop stale updates.
+3. **Inbound:** `POST /cases/update` accepts CaseUpdateOwner / CaseUpdateDecision. Owner → stored, and shown in a `GET /cases/{id}` view. Decision approve/reject/extend/release/resolve → mapped to gateway control (LimitsCmd/BlockCmd/RelocateCmd/TTL extend) via the control token, honouring safety (no permanent block; TTL ≤ ttl_max_s). Note: the brain owns the throttle ladder, so for now decisions apply only to actions the bridge marked pending. Coordinate with me before anything fights the brain.
+4. **Mock Web app** `integrations/handoff/tools/mock_web.py` (receives cases, prints them, can send updates) for a demo without the partner team.
+5. Config: `WEB_URL`, the brain/gateway URLs and the token all from env; add yaml keys only via the coordinator.
+6. Tests: model round-trip of all sample files, event→case mapping, decision→control mapping, the Web app down never blocks, unknown case_id → 404.
+
+Proof: run the mock web + bridge against a recorded event stream (use `brain/tools/fake_gateway.py` + the brain, after asking for the slot) and show a case created → owner change → approve → control command sent.
+
 ## Task table
 
 | Task | Branch | Worktree | Session | Status |
 |---|---|---|---|---|
 | T1 Gateway | task/T1-gateway | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
-| T7 Gateway wave 2 | task/T7-gateway-adaptive | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | in progress |
+| T7 Gateway wave 2 | task/T7-gateway-adaptive | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
+| T11 Handoff bridge (Web PS3 convergence) | task/T11-handoff-bridge | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | assigned |
 | T2 Workers | task/T2-workers | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged** (9cebaaf) |
 | T6 Workers wave 2 | task/T6-worker-blackbox | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | assigned |
 | T3 Brain | task/T3-brain | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | **merged** |
@@ -409,4 +429,5 @@ Proof: unit tests + a tiny live run of 1 scenario × 3 modes (ask for the stack 
   - Docker context `tg-host`. Stack command: `docker --context tg-host compose -p codeastra up -d --build`, run from the main repo; it builds from the coordinator's files.
   - The UI and lab on this laptop use `http://100.112.232.8:8000` (gateway) and `:8200` (brain).
   - Only the coordinator drives the host; sessions ask the coordinator for host runs.
+- 2026-10-12 (T7, merged): gateway path guard (raw path forwarded), control-token routers, finite TTL/quota bounds, capped body stream, the X-Request-Id rule, disconnect debit. Gradient window on worker-side *excess* latency; three lanes; retry budget; charge/reference_costs (tenantguard only). **Lab note:** the whale must vary its query, because identical failed searches count as retries.
 - 2026-10-12: Cost bucket is debited with the worker-measured CPU (`X-TenantGuard-Cpu-Ms`) rather than an estimate, so it is a real resource quota, not a request count.
