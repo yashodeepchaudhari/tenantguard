@@ -75,3 +75,21 @@ class ImpactView(BaseModel):
 
 # StateSnapshot: impact: Optional[ImpactView] = None   (the UI keeps its own meter as a fallback)
 ```
+
+## End-to-end suite (Playwright, `ui/e2e/`)
+One command proves the running system from a user's point of view: system Edge (`channel: "msedge"`), headless, one worker.
+
+```
+npm run e2e                          # mock stack: starts scripts/mock-ws-server.mjs + Vite on :5174 itself
+E2E_UI_URL=http://127.0.0.1:5174 E2E_GATEWAY_URL=http://<host>:8000 E2E_BRAIN_URL=http://<host>:8200 E2E_LAB_URL=http://<host>:8300 E2E_HANDOFF_URL=http://<host>:8400 E2E_NARRATOR_URL=http://<host>:8700 E2E_CONTROL_TOKEN=dev npm run e2e   # a real stack (start a Vite pointed at it first)
+E2E_LIVE=1 ...                       # also the @live scenario: calm -> whale on K -> incident <= 60 s -> stop -> recovery <= 90 s
+```
+
+| Spec | Covers |
+|---|---|
+| `e2e/api.spec.ts` | gateway healthz, 401 without API key, 401 on admin without token, 200 + `X-TenantGuard-Cpu-Ms`, 12 admin tenants; brain `/api/state` shape, `/api/incidents`; lab, handoff and narrator shapes (skipped cleanly when unreachable) |
+| `e2e/ui.spec.ts` | 12 tiles + 3×3 grid + status sentence; tile → barcode highlight; mode toggle round-trip (verified via `GET /admin/mode`, restored); launcher offers exactly flood, whale, hog, memory, retry_storm; attack launch → running → Stop (verified via `/lab/status`); quota PATCH + client-side validation (restored); timeline → Case File vs `GET /api/incidents?incident_id=`; Scorecard vs `/lab/results`; flow view paints; Cases handoff column |
+| `e2e/live.spec.ts` | `@live`, host only: the real detection loop end to end |
+
+Every UI test fails on an uncaught page error or a console error (`e2e/fixtures.ts`); only failed loads to an optional service that is known to be down are tolerated. Writes are skipped while the lab reports a scenario run in progress, and anything changed is restored.
+
