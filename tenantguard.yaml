@@ -105,6 +105,8 @@ handoff:
   block_s: 300                # duration of an approved block (always TTL-bound)
   extend_s: 120
   push_timeout_s: 3
+  retention_s: 3600            # evict closed/resolved cases this long after they close
+  history_wire_max: 50         # history items sent to the partner per case (+ "N earlier events")
 
 billing:
   poll_s: 5                      # worker /stats + brain /api/incidents poll
