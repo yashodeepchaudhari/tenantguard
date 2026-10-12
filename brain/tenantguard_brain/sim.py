@@ -70,7 +70,35 @@ class Simulator:
         self.overrides: Dict[str, Override] = {}
         servers = sorted({s for t in tenants for s in t.servers})
         self.workers = {s: SimWorker(started_at=start) for s in servers}
-        self.backlog: Dict[str, float] = {t: 0.0 for t in self.tenants}
+        self.route_weights: Dict[str, Dict[str, float]] = {}
+        self.route_expires: Dict[str, float] = {}
+        self.faults: Dict[str, float] = {}             # server -> extra latency ms (faulty host)
+        self.route_log: List = []                      # (now, RouteWeightsCmd) for tests
+
+    def apply_route_weights(self, weights: Dict[str, Dict[str, float]], ttl_s: float) -> None:
+        for t, w in weights.items():
+            tot = sum(w.values())
+            if tot > 0:
+                self.route_weights[t] = {s: v / tot for s, v in w.items()}
+                self.route_expires[t] = self.now + ttl_s
+
+    def set_fault(self, server: str, latency_ms: float) -> None:
+        if latency_ms > 0:
+            self.faults[server] = latency_ms
+        else:
+            self.faults.pop(server, None)
+
+    def share(self, t: str) -> Dict[str, float]:
+        """Traffic share per server: route weights (tenantguard mode, unexpired) or equal."""
+        servers = self.tenants[t].servers
+        w = self.route_weights.get(t)
+        if w and self.mode == "tenantguard" and self.route_expires.get(t, 0) > self.now:
+            return {s: w.get(s, 0.0) for s in servers}
+        return {s: 1.0 / len(servers) for s in servers}
+
+    def canary_ms(self, server: str) -> float:
+        """Round trip of an unattributed probe: base latency + the server's fault."""
+        return BASE_LATENCY_MS * 0.5 * self.rng.lognormvariate(0, 0.05) + self.faults.get(server, 0.0)
 
     # ---------------------------------------------------------------- control
     def apply_limits(self, tenant: str, factor: float, weight_factor: float, ttl_s: float) -> None:
@@ -135,9 +163,10 @@ class Simulator:
         for t, ms in admitted.items():
             servers = self.tenants[t].servers
             wf = self._override(t).weight_factor if self.mode == "tenantguard" else 1.0
+            sh = self.share(t)
             for s in servers:
-                load_real[s] += ms / len(servers)
-                load_seen[s] += ms / len(servers) * wf
+                load_real[s] += ms * sh[s]
+                load_seen[s] += ms * sh[s] * wf
         # a container cannot burn more than its CPU limit: scale every tenant's CPU on a saturated server
         scale = {s: min(1.0, self.cap_ms / load_real[s]) if load_real[s] > 0 else 1.0 for s in self.workers}
 
@@ -148,11 +177,12 @@ class Simulator:
         for t, cfg in self.tenants.items():
             n_total = 0
             worst = 0.0
+            sh = self.share(t)
             for s in cfg.servers:
-                n = int(round(admitted_rps[t] * dt / len(cfg.servers) + self.rng.uniform(-0.5, 0.5)))
+                n = int(round(admitted_rps[t] * dt * sh[s] + self.rng.uniform(-0.5, 0.5))) if sh[s] > 0 else 0
                 n = max(0, n)
                 u = load_seen[s] / self.cap_ms
-                p95 = lat(u) * self.rng.lognormvariate(0, 0.06)
+                p95 = lat(u) * self.rng.lognormvariate(0, 0.06) + self.faults.get(s, 0.0)
                 if phase.attacker == t:
                     p95 += phase.attack_cost_ms * 0.5
                 cells.append(Cell(tenant=t, server=s, count=n, p50_ms=round(p95 * 0.45, 2), p95_ms=round(p95, 2)))
@@ -161,7 +191,7 @@ class Simulator:
                     worst = max(worst, p95)
                 w = self.workers[s]
                 w.requests[t] = w.requests.get(t, 0) + n
-                w.cpu_ms[t] = w.cpu_ms.get(t, 0.0) + admitted[t] / len(cfg.servers) * dt * scale[s]
+                w.cpu_ms[t] = w.cpu_ms.get(t, 0.0) + admitted[t] * sh[s] * dt * scale[s]
             rej = int(round(rejected_rps[t] * dt))
             depth = int(min(50, rejected_rps[t] * 0.2)) + (2 if phase.attacker == t else 0)
             queues.append(QueueStat(tenant=t, depth=depth, wait_p95_ms=round(worst * 0.1, 2),

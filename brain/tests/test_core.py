@@ -7,11 +7,15 @@ from tenantguard_brain.sim import Phase, Simulator, whale_scenario
 from .conftest import T0, drive
 
 
-def whale_run(cfg, mode="tenantguard", **kw):
+def whale_run(cfg, mode="tenantguard", ladder_only=True, **kw):
+    """Ladder (per-tenant 'inc-') events only by default; server incidents ('srv-') are tested separately."""
     brain = Brain(cfg)
     sim = Simulator(cfg.tenants, whale_scenario("K", 20, 40, 60), quota_mult={"K": 3}, start=T0, mode=mode)
     log = []
+    kw.setdefault("routes_apply", False)        # the ladder on its own; rescue + ladder: test_stage3_sim
     events, commands = drive(brain, sim, T0 + sim.total_s, log=log, **kw)
+    if ladder_only:
+        events = [e for e in events if e.incident_id.startswith("inc-")]
     return brain, sim, events, commands, log
 
 
@@ -80,6 +84,7 @@ def test_failed_sends_are_retried(cfg):
     brain = Brain(cfg)
     sim = Simulator(cfg.tenants, whale_scenario("K", 20, 15, 0), quota_mult={"K": 3}, start=T0)
     _, commands = drive(brain, sim, T0 + sim.total_s, apply=False, sent_ok=False)
+    commands = [(t, c) for t, c in commands if c.tenant == "K"]
     times = [t for t, c in commands if c.factor == 0.5]
     assert len(times) >= 2 and all(b - a >= 1.0 - 1e-6 for a, b in zip(times, times[1:]))
 
@@ -94,10 +99,11 @@ def test_no_actions_outside_tenantguard_mode(cfg):
 def test_leaving_tenantguard_mode_resets_and_clears(cfg):
     brain = Brain(cfg)
     sim = Simulator(cfg.tenants, whale_scenario("K", 20, 40, 30), quota_mult={"K": 3}, start=T0)
-    drive(brain, sim, T0 + 30)
+    drive(brain, sim, T0 + 30, routes_apply=False)
     assert brain.ladders["K"].acting
     sim.mode = "off"
-    events, commands = drive(brain, sim, T0 + 32)
+    events, commands = drive(brain, sim, T0 + 32, routes_apply=False)
+    events = [e for e in events if e.incident_id.startswith("inc-")]
     assert brain.ladders["K"].level == "normal"
     assert any(e.stage == "closed" and "mode" in e.detail for e in events)
     assert commands and commands[0][1].factor == 1.0 and commands[0][1].weight_factor == 1.0
@@ -148,3 +154,25 @@ def test_stale_telemetry_holds_and_says_so(cfg):
     brain, sim, _, _, _ = whale_run(cfg)
     snap = brain.snapshot(sim.now + 30)
     assert not snap.brain_ok and "lost" in snap.status_sentence
+
+
+def _moderate_attack(cfg, freeze=True):
+    brain = Brain(cfg)
+    if not freeze:
+        brain._baseline_frozen = lambda t: False
+    sim = Simulator(cfg.tenants, whale_scenario("K", 30, 150, 0, 5, 60), quota_mult={"K": 3}, start=T0,
+                    mode="industry")
+    drive(brain, sim, T0 + 30)
+    calm = {t: brain.baseline.get(t) for t in brain.neighbours["K"]}
+    drive(brain, sim, T0 + 180)
+    drift = max(brain.baseline.get(t) / calm[t] - 1 for t in calm)
+    return brain.scores["K"].victim_impact, drift
+
+
+def test_moderate_attack_is_not_absorbed_into_the_baseline(cfg):
+    # K over-uses a little for 150 s without ever being flagged: its neighbours' baselines must not
+    # learn the slowdown as "normal" (review finding: time-based EWMA + freeze while a neighbour over-uses)
+    impact, drift = _moderate_attack(cfg)
+    assert drift < 0.03 and impact > 0.1
+    impact_nf, drift_nf = _moderate_attack(cfg, freeze=False)
+    assert drift_nf > 0.1 and impact_nf < impact / 2       # what happens without the freeze

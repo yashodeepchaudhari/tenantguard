@@ -38,11 +38,18 @@ class IncidentBook:
             self.by_id[iid] = inc
         return inc
 
+    def open_server(self, now: float) -> Incident:
+        """A fleet-level incident (slow servers), not tied to one tenant: id 'srv-...'."""
+        self._seq += 1
+        inc = Incident(incident_id=f"srv-{int(now)}-{self._seq}", tenant="", opened_at=now)
+        self.by_id[inc.incident_id] = inc
+        return inc
+
     def emit(self, inc: Incident, now: float, stage: str, *, level: Optional[str] = None,
              prev_level: Optional[str] = None, action: Optional[str] = None, detail: str = "",
              confidence: Optional[float] = None, report: Optional[dict] = None) -> IncidentEvent:
         ev = IncidentEvent(
-            incident_id=inc.incident_id, stage=stage, ts=now, tenant=inc.tenant,
+            incident_id=inc.incident_id, stage=stage, ts=now, tenant=inc.tenant or None,
             level=level, prev_level=prev_level, action=action, detail=detail, report=report,
             suspects=[Suspect(tenant=inc.tenant, confidence=round(confidence, 3))] if confidence is not None else [],
         )
@@ -54,7 +61,8 @@ class IncidentBook:
 
     def close(self, inc: Incident, now: float) -> None:
         inc.closed_at = now
-        self.open.pop(inc.tenant, None)
+        if self.open.get(inc.tenant) is inc:
+            self.open.pop(inc.tenant, None)
         self._closed.append(inc.incident_id)
         while len(self._closed) > self._keep_closed:
             self.by_id.pop(self._closed.popleft(), None)

@@ -38,12 +38,32 @@ def test_no_escalation_before_hold():
     assert st.level == "warn" and trs[0][1].kind == "escalate"
 
 
-def test_flapping_signal_resets_the_hold():
+def test_half_duty_flapping_never_escalates():
     st = LadderState()
     t = 0.0
-    for _ in range(10):
-        t, _ = run(st, HURT, t, 1.5)
-        t, _ = run(st, CALM, t, 0.25)
+    for _ in range(20):
+        t, _ = run(st, HURT, t, 0.5)
+        t, _ = run(st, CALM, t, 0.5)
+    assert st.level == "normal"
+
+
+def test_one_dip_does_not_restart_the_hold():
+    st = LadderState()
+    t, _ = run(st, HURT, 0, 1.0)
+    t, _ = run(st, CALM, t, 0.25)            # one noisy tick below the threshold
+    t, trs = run(st, HURT, t, 1.0)
+    assert st.level == "warn"                # still escalated at 2.25 s, as without the dip
+    assert trs[0][0] == pytest.approx(2.25)
+
+
+def test_strict_hold_ratio_restarts_on_a_dip():
+    p = LadderParams(hold_ratio=1.0)
+    st = LadderState()
+    t = 0.0
+    for sig, secs in ((HURT, 1.0), (CALM, 0.25), (HURT, 1.0)):
+        for _ in range(int(secs / TICK)):
+            t += TICK
+            step(st, sig, t, p)
     assert st.level == "normal"
 
 
@@ -76,8 +96,9 @@ def test_ladder_recovers_after_the_attack_stops():
     st = LadderState()
     t, _ = run(st, HUGE, 0, 30)
     assert st.level == "quarantine"
-    t, trs = run(st, CALM, t, P.hold["recover"] - TICK)
-    assert trs == []                     # nothing until recover_below has held for hold_s.recover
+    # nothing until calm fills hold_ratio of the hold_s.recover window (80% of 10 s = 8 s)
+    t, trs = run(st, CALM, t, P.hold_ratio * P.hold["recover"] - TICK)
+    assert trs == []
     t, trs = run(st, CALM, t, 30)
     kinds = [tr.kind for _, tr in trs]
     factors = [tr.factor for _, tr in trs if tr.kind in ("recover", "clear")]

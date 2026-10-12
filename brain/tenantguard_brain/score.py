@@ -139,24 +139,32 @@ def compute_scores(*, weights: Mapping[str, float], servers_of: Mapping[str, Seq
 
 
 class BaselineTracker:
-    """Calm-period EWMA of each tenant's end-to-end p95.
+    """Calm-period, time-based EWMA of each tenant's end-to-end p95.
 
-    The first samples use a running mean (alpha = max(alpha, 1/n)) so the baseline settles fast
-    after start-up. The caller decides what "calm" means and only calls update() then.
+    alpha = 1 - 0.5 ** (dt / half_life_s), so the baseline forgets at the same rate whatever the
+    frame rate. The first `warmup` samples use a running mean (alpha >= 1/n) so it settles fast after
+    start-up. The caller decides what "calm" means (and when a tenant's baseline is frozen) and only
+    calls update() then.
     """
 
-    def __init__(self, alpha: float = 0.05):
-        self.alpha = alpha
+    def __init__(self, half_life_s: float = 60.0, warmup: int = 8):
+        self.half_life_s = half_life_s
+        self.warmup = warmup
         self.value: Dict[str, float] = {}
         self.n: Dict[str, int] = {}
+        self.last_t: Dict[str, float] = {}
 
-    def update(self, tenant: str, p95: float) -> None:
+    def update(self, tenant: str, p95: float, now: float) -> None:
         if p95 <= 0:
             return
         n = self.n.get(tenant, 0) + 1
         self.n[tenant] = n
-        a = max(self.alpha, 1.0 / n)
         prev = self.value.get(tenant)
+        dt = max(0.0, now - self.last_t.get(tenant, now))
+        self.last_t[tenant] = now
+        a = 1.0 - 0.5 ** (dt / self.half_life_s) if self.half_life_s > 0 else 1.0
+        if n <= self.warmup:
+            a = max(a, 1.0 / n)
         self.value[tenant] = p95 if prev is None else prev + a * (p95 - prev)
 
     def get(self, tenant: str) -> Optional[float]:
