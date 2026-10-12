@@ -1,21 +1,20 @@
 # 11 — Files: `brain/` (the control plane)
 
-The brain is the TenantGuard control plane. It runs on port **8200** and does five things:
+The brain is the TenantGuard control plane. It runs on port **8200** and does six things:
 
 - It watches every tenant's usage and latency (gateway telemetry plus worker `/stats`).
-- It watches every server's health (peer comparison plus canary probes).
+- It watches every server's health (tenant-relative peer comparison, with canary probes as a fallback).
 - It decides what to do:
   - **Stage 2:** a noisy-neighbour score and a graduated throttle ladder.
-  - **Stage 3:** server health → rescue by re-routing → barcode decoder that names the culprit.
-- It sends control commands to the gateway.
+  - **Stage 3:** server health → rescue by re-routing → barcode decoder that names the culprit → proof by relocation → one of five verdicts.
+- It sends control commands to the gateway (limits, route weights, relocations, drains, background CPU charges).
+- It measures business impact (`ImpactView`: revenue protected, customers shielded, innocents penalised).
 - It explains every step as an `IncidentEvent`, and streams live state to the dashboard.
 
-This page documents every file in `brain/` on `master`. Each code file has:
+This page documents every file in `brain/` on this branch. Each code file has:
 - a short purpose,
 - a table of **every** function, method and class (private ones included),
 - the key design decisions.
-
-**Status of related work.** The relocation prover's interface is on master (`prover.py`), but only the `NullProver` that never proves. The Docker-backed prover and the verdict stage (task T12, "prover + verdicts + calibration") are **in progress** and not described here as done. Quarantine by relocation (a TODO in `ladder.py`) is also future work. On master, quarantine is a 0.1 limit.
 
 ---
 
@@ -23,7 +22,7 @@ This page documents every file in `brain/` on `master`. Each code file has:
 
 | File | Kind | One line |
 |---|---|---|
-| `brain/README.md` | doc | How to run, env vars, API, loops, detection and ladder summary |
+| `brain/README.md` | doc | How to run, env vars, API, loops, detection, ladder and Stage 3 summary |
 | `brain/Dockerfile` | build | `python:3.12-slim` image, listens on 8200, health check on `/healthz` |
 | `brain/requirements.txt` | build | fastapi, uvicorn, httpx, websockets, pydantic, PyYAML |
 | `brain/pytest.ini` | test config | `pythonpath = .`, `testpaths = tests`, `asyncio_mode = auto` |
@@ -34,19 +33,22 @@ This page documents every file in `brain/` on `master`. Each code file has:
 | `tenantguard_brain/ladder.py` | pure logic | Throttle ladder state machine with holds and hysteresis |
 | `tenantguard_brain/incidents.py` | pure logic | Incident book: ids, events, open/closed bookkeeping |
 | `tenantguard_brain/fairness.py` | pure logic | Jain fairness index, normalised throughput |
-| `tenantguard_brain/health.py` | pure logic | Per-server health from peer comparison (traffic or canary) |
+| `tenantguard_brain/impact.py` | pure logic | `ImpactMeter`: SLO seconds avoided / suffered, revenue protected, innocents penalised |
+| `tenantguard_brain/health.py` | pure logic | Per-server health: tenant-relative peer ratio, SLA floor, persistence |
 | `tenantguard_brain/rescue.py` | pure logic | Route-around plan with a capacity guard |
 | `tenantguard_brain/decoder.py` | pure logic | Barcode decoder: names culprit tenant(s) or a host suspect |
-| `tenantguard_brain/prover.py` | interface | Relocation prover interface + `NullProver` |
-| `tenantguard_brain/stage3.py` | pure logic | Stage 3 loop: health → rescue → decoder → named |
-| `tenantguard_brain/core.py` | pure logic | `Brain`: rolling state → scores → ladder → commands + events + views |
-| `tenantguard_brain/runtime.py` | I/O | WS / HTTP loops around `Brain`, serialised control sends, UI hub |
+| `tenantguard_brain/verdicts.py` | pure logic | Proof evaluation (R), the five verdicts, action budget, repeat-offender memory |
+| `tenantguard_brain/prover.py` | I/O (async) | `DockerProver` (relocation proof, resizes the spare through the Docker socket), `HostProver` (drain test), `NullProver` |
+| `tenantguard_brain/stage3.py` | pure logic | Stage 3 loop: health → rescue → decoder → named → proving → verdict |
+| `tenantguard_brain/core.py` | pure logic | `Brain`: rolling state → scores → ladder → commands + events + views; background CPU charges |
+| `tenantguard_brain/runtime.py` | I/O | WS / HTTP loops around `Brain`, serialised control sends, async proof jobs, UI hub |
 | `tenantguard_brain/main.py` | I/O | FastAPI app: `/ws/events`, `/api/*`, `/healthz`, operator endpoint |
-| `tenantguard_brain/sim.py` | dev/test | Toy fleet simulator producing contract-shaped telemetry |
+| `tenantguard_brain/sim.py` | dev/test | Toy fleet simulator producing contract-shaped telemetry; honours every control command |
 | `tools/fake_gateway.py` | dev tool | Fake gateway + workers on top of `sim.py` |
 | `tools/local_stack.py` | dev tool | Starts real workers + gateway (+ brain) locally without Docker |
 | `tools/traffic.py` | dev tool | Calm traffic + optional whale through the real gateway |
-| `tests/*.py` | tests | 80 test functions (some parametrised) in 9 files |
+| `tools/calibrate_health.py` | dev tool | Watches a running brain for N minutes and reports peer-ratio distributions and any incident |
+| `tests/*.py` | tests | 142 test functions in 15 files, 166 tests collected (some parametrised) |
 
 ### 1.1 How the modules depend on each other
 
@@ -55,18 +57,24 @@ flowchart TD
   main[main.py<br/>FastAPI app] --> runtime[runtime.py<br/>Runtime, Sender, Hub]
   main --> settings[settings.py]
   runtime --> core[core.py<br/>Brain]
+  runtime --> prover[prover.py<br/>DockerProver, HostProver]
   core --> score[score.py]
   core --> ladder[ladder.py]
   core --> incidents[incidents.py]
   core --> fairness[fairness.py]
+  core --> impact[impact.py]
   core --> stage3[stage3.py<br/>Stage3]
   stage3 --> health[health.py]
   stage3 --> rescue[rescue.py]
   stage3 --> decoder[decoder.py]
-  stage3 --> prover[prover.py]
+  stage3 --> verdicts[verdicts.py]
+  stage3 --> prover
+  prover --> verdicts
   settings --> ladder
   settings --> health
   settings --> decoder
+  settings --> verdicts
+  settings --> prover
   sim[sim.py] -.used by.-> fake[tools/fake_gateway.py]
   sim -.used by.-> tests[tests/]
   common[(tenantguard_common<br/>contracts + config)] --> settings
@@ -74,7 +82,7 @@ flowchart TD
   common --> runtime
 ```
 
-Only `runtime.py` and `main.py` do I/O. Everything from `core.py` down is a pure, deterministic state machine. Each module takes values in and returns values out, and time is passed in as `now`. The tests drive the same `Brain` object with a simulated clock (`tests/conftest.py::drive`).
+Only `runtime.py`, `main.py` and `prover.py` do I/O. Everything from `core.py` down is a pure, deterministic state machine: each module takes values in and returns values out, and time is passed in as `now`. The provers talk to the rest of the brain only through a `ProveEnv` (readings, send, sleep), so the tests drive them with scripted readings or the simulator on a virtual clock (`tests/conftest.py::drive_jobs`).
 
 ---
 
@@ -87,27 +95,21 @@ Builds the brain image with the build context set to the repo root:
 - copies `tenantguard.yaml`, `layouts/`, `tenantguard_brain/` and `tools/`;
 - runs `python -m tenantguard_brain`.
 
-The health check fetches `http://127.0.0.1:8200/healthz`. `TENANTGUARD_ROOT=/app` points the shared config loader at the copied yaml and layout.
+The health check fetches `http://127.0.0.1:8200/healthz`. `TENANTGUARD_ROOT=/app` points the shared config loader at the copied yaml and layout. In `docker-compose.yml` the brain gets `COMPOSE_PROJECT` and the mounted `/var/run/docker.sock`, which the `DockerProver` needs.
 
 ### `brain/requirements.txt`
-`fastapi>=0.104`, `uvicorn[standard]>=0.24`, `httpx>=0.25`, `websockets>=11,<13`, `pydantic>=2.5`, `PyYAML>=6`. No numeric or ML libraries: every algorithm in the brain is plain Python.
+`fastapi>=0.104`, `uvicorn[standard]>=0.24`, `httpx>=0.25`, `websockets>=11,<13`, `pydantic>=2.5`, `PyYAML>=6`. No numeric or ML libraries and no Docker SDK: every algorithm is plain Python, and the Docker Engine API is called with `httpx` over the unix socket.
 
 ### `brain/pytest.ini`
-`pythonpath = .` (so `tenantguard_brain` imports from `brain/`), `testpaths = tests`, `asyncio_mode = auto` (async tests in `test_runtime.py` run without decorators).
+`pythonpath = .` (so `tenantguard_brain` imports from `brain/`), `testpaths = tests`, `asyncio_mode = auto` (async tests run without decorators).
 
 ### `brain/README.md`
-The operator-facing summary, written for someone running the service. It covers:
-- run commands and the environment variables;
-- the HTTP/WS API table;
-- the list of loops in `runtime.py`;
-- the detection formula and the ladder rules;
-- Stage 3 (health, rescue, decoder).
+The operator-facing summary: run commands and environment variables, the HTTP/WS API table, the loops in `runtime.py`, the detection formula and ladder rules, and Stage 3 (health, rescue, decoder, proof, verdicts).
 
 ### `brain/tenantguard_brain/__init__.py`
-Contains only the package docstring ("TenantGuard brain: noisy-neighbour detector, throttle ladder and UI event stream"). No functions.
+Contains only the package docstring. No functions.
 
 ### `brain/tenantguard_brain/__main__.py`
-Two lines that make `python -m tenantguard_brain` work.
 
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
@@ -117,26 +119,60 @@ Two lines that make `python -m tenantguard_brain` work.
 
 ## 3. `brain/tenantguard_brain/settings.py`
 
-Turns `tenantguard.yaml` (through `tenantguard_common.config`) and environment variables into one typed `BrainSettings` object. Nothing else in the brain reads yaml or env directly. The `Brain`, `Runtime` and FastAPI app all receive this object, so tests can build it once (`settings.load()`) and reuse it.
+Turns `tenantguard.yaml` (through `tenantguard_common.config`) and environment variables into one typed `BrainSettings` object. Nothing else in the brain reads yaml or env directly, except `prover.py`, which reads the Docker socket and compose project from env. The `Brain`, `Runtime` and FastAPI app all receive this object, so tests build it once (`settings.load()`) and reuse it.
 
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
-| `BrainSettings` | `@dataclass` | Every brain tunable. Fields: tick, stats poll, heartbeat period, gateway URL, worker URLs, tenants (`TenantConfig` list), `LadderParams`, raw `noisy` dict, detection window, view windows (5 s tenants / 2 s servers), history (60 s), baseline half-life, default mode, control token, `ttl_max_s`, `min_victim_impact`, health/decoder params, rescue guard and TTL, canary period, bind host/port, CORS origins | Built by `load`; read by `Brain`, `Stage3`, `Runtime`, `create_app` |
-| `load` | `load(raw: dict \| None = None) -> BrainSettings` | Reads yaml (or the dict passed in), env overrides (`TENANTGUARD_GATEWAY_URL`, `TENANTGUARD_CORS_ORIGINS`, `TENANTGUARD_CONTROL_TOKEN`, `TENANTGUARD_BRAIN_HOST`, `TENANTGUARD_BRAIN_PORT`) and tenants from the layout. Derives the fleet server list from the tenants' barcodes and builds `LadderParams`, `HealthParams` and `DecoderParams` from their yaml sections | `main.create_app`, `main.run`, `tests/conftest.py::cfg` |
+| `BrainSettings` | `@dataclass` | Every brain tunable (see the key table below), plus the typed parameter blocks `ladder` (`LadderParams`), `health` (`HealthParams`), `decoder` (`DecoderParams`), `verdicts` (`VerdictParams`), `action_budget` (`ActionBudget`) and `prover` (`ProverParams`) | Built by `load`; read by `Brain`, `Stage3`, `Runtime`, `create_app` |
+| `load` | `load(raw: dict \| None = None) -> BrainSettings` | Reads yaml (or the dict passed in), env overrides and tenants from the layout. Derives the fleet server list from the tenants' barcodes and builds every parameter block from its yaml section | `main.create_app`, `main.run`, `tests/conftest.py::cfg` |
+
+### 3.1 Yaml keys the brain reads (`tenantguard.yaml` values on this branch)
+
+| Yaml key | Value | Used for |
+|---|---|---|
+| `brain.tick_ms` | 250 | Tick period (`tick_s` 0.25) |
+| `brain.stats_poll_s` | 1.0 | Worker `/stats` poll period |
+| `brain.noisy.warn` / `throttle` / `quarantine` / `recover_below` | 1.5 / 2.0 / 4.0 / 1.0 | Ladder thresholds |
+| `brain.noisy.hold_s` | warn 5, throttle 2, deprioritize 4, quarantine 6, recover 10 | Ladder hold times (s) |
+| `brain.noisy.throttle_factor` / `recover_step` / `recover_tick_s` | 0.5 / 0.1 / 1.0 | AIMD steps |
+| `brain.noisy.throttle_floor` / `deprioritize_weight` / `quarantine_factor` / `quarantine_weight` | 0.25 / 0.25 / 0.1 / 0.1 | Ladder rungs |
+| `brain.noisy.hold_ratio` | 0.8 | Share of ticks in a hold window that must qualify |
+| `brain.noisy.min_victim_impact` | 0.2 | Victim impact needed to flag |
+| `brain.noisy.baseline_half_life_s` | 60 | Calm baseline EWMA |
+| `brain.noisy.victim_window_s` / `victim_quantile` / `victim_min_ticks` / `victim_abs_ms` | 5.0 / 0.3 / 4 / 8.0 | Victim latency is a sustained statistic |
+| `brain.noisy.over_use` | 1.6 | Flag only at this multiple of the fair share (also the "hot on a server" test) |
+| `brain.noisy.min_hurt_neighbours` | 4 | Flag only with at least this many hurt neighbours |
+| `brain.health.*` | see §8 | Server health |
+| `brain.rescue_capacity_guard` | 0.7 | Rescue headroom guard |
+| `brain.confidence_to_prove` | 0.8 | Decoder confidence needed before a relocation proof |
+| `brain.spare_sizing` / `prove_settle_s` / `prove_window_s` | 1.25 / 2 / 6 | `ProverParams` |
+| `brain.recovery_R` / `paid_share_costly` / `host_idle_ratio` | 0.5 / 0.35 / 1.5 | `VerdictParams` |
+| `brain.verdicts.*` | `over_plan_rejected_share` 0.2, `harm_follow_share` 0.3, `harm_follow_ratio` 1.6, `evidence_hint` 0.3, `repeat_count` 3, `repeat_window_s` 600 | `VerdictParams`; `prove_sample_s`, `min_spare_cores`, `max_spare_cores` are also read here (code defaults 0.5 / 0.25 / 4.0) |
+| `brain.action_budget` | `relocations_per_min` 6, `quarantine_every_s` 30, `max_drained` 1, `drain_peer_busy` 0.75 | `ActionBudget` |
+| `brain.ttl_s` | relocate 120, quarantine 120, throttle 60 | Command TTLs; `rescue` falls back to `relocate` (120 s) |
+| `brain.prover` | `auto` | `auto` / `docker` / `null` (env `TENANTGUARD_PROVER` wins) |
+| `brain.charge_s` | 1.0 | Background CPU charge period |
+| `brain.decoder` | `k` 8, `w_min` 4, `w_mean` 2, `w_stuck` 1, `w_ledger` 2, `w_host` 4, `w_none` 3, `temperature` 1.0, `min_confidence` 0.5, `max_culprits` 2, `host_p` 0.5 | `DecoderParams` |
+| `gateway.fail_static_after_s` | 2 | Heartbeat period = this / 4 = 0.5 s |
+| `gateway.default_mode` / `gateway.ttl_max_s` | `tenantguard` / 3600 | Snapshot mode before the first frame; operator `until_s` bound |
+| `gateway.limiter.initial_window` | 8 | Dispatch slots until telemetry reports the window |
+| `worker.cpus` | 0.5 | CPU capacity until a worker reports `cpu_limit_cores` |
+| `services.gateway` / `services.brain` | URLs | Gateway URL; brain port |
+
+`brain.noisy.baseline_alpha` and `brain.ttl_s.probation` are in the yaml but not read by the brain. `brain.health.open_after_ticks` (4) is marked legacy in the yaml for server opening (persistence uses `open_hold_s` now), but `Stage3` still uses it as the naming debounce.
+
+**Environment variables:** `TENANTGUARD_GATEWAY_URL`, `TENANTGUARD_WORKER_URLS` (through `tenantguard_common.config.worker_urls`), `TENANTGUARD_CORS_ORIGINS`, `TENANTGUARD_CONTROL_TOKEN` (default `dev`), `TENANTGUARD_PROVER`, `TENANTGUARD_BRAIN_HOST`, `TENANTGUARD_BRAIN_PORT`. `prover.py` also reads `TENANTGUARD_DOCKER_SOCKET`, `COMPOSE_PROJECT` and `TENANTGUARD_SPARE_CONTAINER`.
 
 **Key decisions**
-- **Heartbeat period** = `gateway.fail_static_after_s / 4` (2 s → 500 ms). That gives four heartbeats inside the gateway's fail-static window, so one lost heartbeat never trips it.
-- **Detection window** = `health.probe_window_ticks × tick` (8 × 250 ms = 2 s). The same window is used for victim p95 and server health.
-- **Defaults that are overwritten from live data:**
-  - `default_cores` (`worker.cpus`) is used only until a worker reports `cpu_limit_cores`.
-  - `default_window` (`gateway.limiter.initial_window`) is used only until telemetry reports the limiter window.
-- **Rescue route-weight TTL** = `brain.ttl_s.rescue`, falling back to `ttl_s.relocate` (120 s).
+- **Heartbeat period** = `gateway.fail_static_after_s / 4` (2 s → 500 ms): four heartbeats inside the gateway's fail-static window, so one lost heartbeat never trips it.
+- **Detection window** = `health.probe_window_ticks × tick` (8 × 250 ms = 2 s), used for the scoring frames.
+- **Defaults overwritten from live data:** `default_cores` until a worker reports `cpu_limit_cores`; `default_window` until telemetry reports the limiter window.
 
 ---
 
 ## 4. `brain/tenantguard_brain/score.py` — the noisy-neighbour score
 
-The Stage 2 detector, with no I/O. It answers two questions for each tenant: "is it taking more than its fair share of *its own servers*?" and "are the tenants that share those servers slower than their calm baseline?". A tenant is **flagged** only when both are true.
+The Stage 2 detector, with no I/O. It answers two questions for each tenant: "is it taking more than its fair share of *its own servers*?" and "are enough of the tenants that share those servers slower than their calm baseline?". A tenant is **flagged** only when both are true.
 
 ### 4.1 The formula
 
@@ -145,37 +181,40 @@ score(t)       = usage_ratio(t) × (1 + victim_impact(t))
 usage_ratio(t) = max(cpu_share(t), queue_share(t)) / fair_share(t)
 
 cpu_share(t)   = t's CPU ms/s (handler + background) on its servers / CPU capacity of those servers
-queue_share(t) = t's mean (queue depth + inflight) / dispatch slots of its servers
+queue_share(t) = t's median (queue depth + inflight) / dispatch slots of its servers
 fair_share(t)  = Σ_s weight(t)/Σ_active weight on s × cap(s)  /  Σ_s cap(s)       (s over t's servers)
-victim_impact  = mean over t's neighbours of max(0, p95 / baseline_p95 − 1), clipped to [0, 3]
-flagged(t)     = usage_ratio(t) > 1  AND  victim_impact(t) ≥ min_victim_impact (0.2)
+slowdown(v)    = 0 if p95 − baseline < victim_abs_ms (8 ms), else max(0, p95 / max(baseline, 8 ms) − 1)
+victim_impact  = mean over t's neighbours of min(3, slowdown), then clipped to [0, 3]
+flagged(t)     = usage_ratio ≥ over_use (1.6)  AND  victim_impact ≥ min_victim_impact (0.2)
+                 AND at least min_hurt_neighbours (4) neighbours with slowdown ≥ hurt_off (0.1)
 noisy_norm(t)  = min(1, score / brain.noisy.quarantine)        (0..1, for the UI bars)
 ```
 
-A *neighbour* is any other tenant that shares at least one server with `t`. In the AG(2,3) layout each tenant shares servers with 6 of the other 11 and is disjoint from 5.
+A *neighbour* is any other tenant that shares at least one server with `t`. In the AG(2,3) layout each tenant shares servers with 6 of the other 11 and is disjoint from 5. The victim latency fed into `slowdown` is computed in `core.py` (`Brain.victim_latency`).
 
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
-| `IMPACT_CLIP` | constant `3.0` | Upper clip for victim impact | `victim_impact` |
-| `shares` | `shares(values: Mapping[str, float]) -> Dict[str, float]` | Each value's fraction of the (non-negative) total; all 0 when the total is 0 | `Brain.snapshot` (TenantView `cpu_share`) |
+| `IMPACT_CLIP` | constant `3.0` | Clip for each victim's slowdown and for the mean | `victim_impact` |
+| `shares` | `shares(values) -> Dict[str, float]` | Each value's fraction of the (non-negative) total; all 0 when the total is 0 | `Brain.snapshot` (TenantView `cpu_share`) |
 | `fair_shares` | `fair_shares(weights, active) -> Dict[str, float]` | `weight / Σ active weights`. An inactive tenant gets the share it *would* have if it became active now, so a first burst is never divided by zero | `compute_scores` (per server) |
-| `slowdown` | `slowdown(p95, baseline, floor_ms=0.0) -> Optional[float]` | `max(0, p95 / max(baseline, floor_ms) − 1)`; `None` if either side is unknown. The floor (`health.slow_abs_ms`, 8 ms) stops sub-millisecond jitter on a ~1 ms endpoint reading as a 3× slowdown | `Brain.tick` |
-| `victim_impact` | `victim_impact(culprit, slowdowns, neighbours=None) -> (float, List[(str, float)])` | Mean slowdown over the culprit's neighbours that have data, clipped to [0, 3], plus the victims sorted worst first | `compute_scores` |
-| `ScoreDetail` | `@dataclass` | Everything the score is built from: `cpu_share`, `queue_share`, `fair_share`, `usage_ratio`, `victim_impact`, `score`, `norm`, `flagged`, `victims` | Built by `compute_scores`; read by `Brain` (ladder signal, evidence text, snapshot, debug) and `Stage3._update_ledger` |
-| `ScoreDetail.dominant` | property `-> str` | `"CPU"` or `"queue"`, whichever share is larger (used in the plain-English evidence) | `Brain._evidence` |
-| `noisy_score` | `noisy_score(cpu_share, queue_share, fair_share, impact) -> (score, ratio)` | The formula above; `(0, 0)` when the fair share is 0 | `compute_scores` |
-| `compute_scores` | `compute_scores(*, weights, servers_of, active, cpu_by_server, cpu_cap, occupancy, slots, slowdowns, neighbours, min_victim_impact, quarantine_threshold) -> Dict[str, ScoreDetail]` | Scores every tenant: capacity-weighted fair share over its own servers, CPU and queue shares against those servers, victim impact over its neighbours, flag rule, `norm` | `Brain.tick` |
-| `BaselineTracker` | class | Calm-period, **time-based** EWMA of each tenant's end-to-end p95 | `Brain.__init__` |
+| `slowdown` | `slowdown(p95, baseline, floor_ms=0.0, abs_ms=0.0) -> Optional[float]` | The slowdown line above; `None` if either side is unknown | `Brain.tick` |
+| `victim_impact` | `victim_impact(culprit, slowdowns, neighbours=None) -> (float, List[(str, float)])` | Mean over neighbours with data, each clipped to [0, 3] first (one victim with a 46x tail must not carry the mean), plus the victims sorted worst first | `compute_scores` |
+| `ScoreDetail` | `@dataclass` | `tenant`, `cpu_share`, `queue_share`, `fair_share`, `usage_ratio`, `victim_impact`, `score`, `norm`, `flagged`, `victims` | Built by `compute_scores`; read by `Brain`, `Stage3` |
+| `ScoreDetail.dominant` | property `-> str` | `"CPU"` or `"queue"`, whichever share is larger | `Brain._evidence` |
+| `noisy_score` | `noisy_score(cpu_share, queue_share, fair_share, impact) -> (score, ratio)` | The formula; `(0, 0)` when the fair share is 0 | `compute_scores` |
+| `compute_scores` | `compute_scores(*, weights, servers_of, active, cpu_by_server, cpu_cap, occupancy, slots, slowdowns, neighbours, min_victim_impact, quarantine_threshold, over_use=1.0, min_hurt=1, hurt_level=0.0) -> Dict[str, ScoreDetail]` | Scores every tenant: capacity-weighted fair share over its own servers, CPU and queue shares against those servers, victim impact over its neighbours, flag rule, `norm` | `Brain.tick` |
+| `BaselineTracker` | class | Calm-period, **time-based** EWMA of each tenant's victim latency | `Brain.__init__` |
 | `BaselineTracker.__init__` | `(half_life_s=60.0, warmup=8)` | Stores the half-life and warm-up length | `Brain.__init__` |
-| `BaselineTracker.update` | `update(tenant, p95, now) -> None` | `alpha = 1 − 0.5^(dt / half_life)`. For the first `warmup` samples, `alpha ≥ 1/n` (a running mean) so it settles quickly. Ignores `p95 ≤ 0` | `Brain.ingest_frame` |
-| `BaselineTracker.get` | `get(tenant) -> Optional[float]` | Current baseline | `Brain.ingest_frame`, `Brain.tick` |
-| `BaselineTracker.ready` | `ready(tenant, min_samples=4) -> bool` | True after enough samples to trust it | `Brain.ingest_frame`, `Brain.tick` |
+| `BaselineTracker.update` | `update(tenant, p95, now) -> None` | `alpha = 1 − 0.5^(dt / half_life)`; for the first `warmup` samples `alpha ≥ 1/n`. Ignores `p95 ≤ 0` | `Brain._learn_baselines` |
+| `BaselineTracker.get` | `get(tenant) -> Optional[float]` | Current baseline | `Brain._learn_baselines`, `Brain.tick` |
+| `BaselineTracker.ready` | `ready(tenant, min_samples=4) -> bool` | True after enough samples (the tick uses 3) | `Brain._learn_baselines`, `Brain.tick` |
 
 **Key decisions**
-- **Barcode-scoped shares.** The fair share is computed only over the tenant's own servers. This was an accepted decision in the plan's decision log: with fleet-wide shares, calm free-tier tenants scored around 1.55× and looked noisy.
-- **Over-use alone is never enough.** A heavy tenant whose neighbours are fine (a legitimate burst on idle capacity) is never flagged. `tests/test_score.py::test_legit_burst_with_no_victim_impact_is_not_flagged` covers this.
+- **Barcode-scoped shares.** The fair share is computed only over the tenant's own servers; with fleet-wide shares, calm free-tier tenants scored around 1.55× and looked noisy.
+- **Over-use alone is never enough, and a margin is required.** A tenant must be at 1.6× its fair share *and* hurt at least 4 neighbours. Two slow neighbours are more likely their own servers than a noisy neighbour (`tests/test_host_noise.py::test_two_slow_neighbours_do_not_flag_an_over_user`). A legitimate burst on idle capacity is never flagged (`tests/test_score.py::test_legit_burst_with_no_victim_impact_is_not_flagged`).
 - **Neighbours, not "everyone else".** Impact is averaged only over tenants that share a server, so an innocent heavy tenant on disjoint servers is not blamed for someone else's victims.
-- **Time-based baseline, frozen during trouble.** The baseline forgets at the same rate whatever the frame rate. `core.py` also stops it learning while a tenant is hurt or a neighbour over-uses (`Brain._baseline_frozen`), so a moderate attack cannot slowly become the new "normal". `tests/test_core.py::test_moderate_attack_is_not_absorbed_into_the_baseline` covers this.
+- **An absolute floor on slowdown.** Less than 8 ms above the baseline is no slowdown at all, so sub-10 ms jitter never reads as harm.
+- The module docstring still says `over_use` 1.25 and 3 hurt neighbours; the values in force come from `tenantguard.yaml` (1.6 and 4).
 
 ---
 
@@ -188,7 +227,7 @@ A graduated, self-recovering state machine per tenant, with no I/O. It escalates
 ```mermaid
 stateDiagram-v2
   [*] --> normal
-  normal --> warn: flagged and score >= 1.5, held 2 s
+  normal --> warn: flagged and score >= 1.5, held 5 s
   warn --> throttle: score >= 2.0, held 2 s / factor 0.5
   throttle --> throttle: still >= 2.0, held 2 s / factor x0.5, floor 0.25
   throttle --> deprioritize: at floor, still >= 2.0, held 4 s / weight_factor 0.25
@@ -198,116 +237,138 @@ stateDiagram-v2
   throttle --> warn: factor back to 1.0 (override cleared)
   warn --> normal: calm for hold_s.warn (after acting) or hold_s.recover (plain warning)
 ```
-Any level returns straight to `normal` (factors 1.0/1.0) through `reset` when the mode leaves `tenantguard` or an operator releases the tenant.
+Any level returns straight to `normal` (factors 1.0/1.0) through `reset` when the mode leaves `tenantguard` or an operator releases the tenant. An `over_plan` verdict puts the tenant at throttle directly (`Brain.force_throttle`).
 
 | Rule | Condition (all from yaml) |
 |---|---|
-| A hold is "met" | The history covers the hold time, **≥ 80 %** (`hold_ratio`) of the ticks in the window qualify, and the current tick qualifies too. One noisy dip does not restart the clock. |
+| A hold is "met" | The history covers the hold time, **≥ 80 %** (`hold_ratio`) of the ticks in the window qualify, and the current tick qualifies too |
 | Escalation conditions | The tenant is `flagged` **and** its score is above the rung's threshold (warn 1.5, throttle 2.0, quarantine 4.0) |
 | Escalation | warn → throttle: factor 0.5 · each further step ×0.5 down to `throttle_floor` 0.25 · then deprioritize: weight_factor 0.25 · then quarantine: factor 0.1, weight_factor 0.1 |
-| Fresh hold | Every escalation restarts all hold clocks, so each further step needs a fresh, full hold |
-| Calm | score < `recover_below` (1.0) **or** neighbours clearly unhurt (impact < `hurt_off` = `min_victim_impact` / 2 = 0.1) |
-| Recovery | After `hold_s.recover` (10 s) of calm, factor and weight_factor each rise by `recover_step` 0.1 once per `recover_tick_s` (1 s). The level is derived from the factors (`level_for`). |
-| Hysteresis | Flagging needs impact ≥ 0.2, calm needs impact < 0.1. Between the two the ladder holds still. |
+| Fresh hold | Every escalation restarts all hold clocks |
+| Calm | score < `recover_below` (1.0) **or** neighbours clearly unhurt (impact < `hurt_off` 0.1 and usage ratio < `over_use`) |
+| Recovery | After `hold_s.recover` (10 s) of calm, factor and weight_factor each rise by 0.1 once per second |
+| Hysteresis | Flagging needs impact ≥ 0.2, calm needs impact < 0.1 |
 | TTL on commands | `ttl_s.throttle` 60 s; `ttl_s.quarantine` 120 s |
 
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
 | `LEVELS`, `RANK`, `EPS` | constants | Level order `normal < warn < throttle < deprioritize < quarantine`; a rank for comparisons; float tolerance | Whole module, `core.py` |
 | `LadderParams` | `@dataclass` | Thresholds, hold times, AIMD factors, floor, deprioritize/quarantine factors, TTLs, `hold_ratio` | Built by `settings.load` |
-| `LadderParams.from_yaml` | `classmethod from_yaml(noisy: dict, ttl: dict \| None = None)` | Reads `brain.noisy` and `brain.ttl_s` with defaults | `settings.load` |
-| `LadderParams.level_for` | `level_for(factor, weight_factor) -> str` | The level implied by the factors in force: both at quarantine values → `quarantine`; weight_factor < 1 → `deprioritize`; factor < 1 → `throttle`; else `warn` | `step`, `Brain.adopt_overrides` |
+| `LadderParams.from_yaml` | `classmethod from_yaml(noisy, ttl=None)` | Reads `brain.noisy` and `brain.ttl_s` with defaults | `settings.load` |
+| `LadderParams.level_for` | `level_for(factor, weight_factor) -> str` | Level implied by the factors in force | `step`, `Brain.adopt_overrides`, `Brain.force_throttle` |
 | `LadderParams.ttl_for` | `ttl_for(level) -> float` | 120 s for quarantine, 60 s otherwise | `Brain._commands`, `Brain._action_text`, `Brain.adopt_overrides` |
 | `Signal` | `@dataclass(score, flagged, unhurt)` | One tick's input for one tenant | Built by `Brain.tick` |
 | `Hold` | `@dataclass` | One condition's recent history `(t, ok)` plus its start time | Fields of `LadderState` |
-| `Hold.add` | `add(now, ok, keep_s)` | Appends a sample and drops samples older than `keep_s` | `step` |
-| `Hold.held` | `held(hold, now, ratio) -> bool` | The hold rule above | `step` (inner `held`) |
+| `Hold.add` | `add(now, ok, keep_s)` | Appends a sample and drops old ones | `step` |
+| `Hold.held` | `held(hold, now, ratio) -> bool` | The hold rule above | `step` |
 | `Hold.restart` | `restart(now)` | A fresh hold from now, keeping this tick's sample | `_apply` |
 | `LadderState` | `@dataclass` | `level`, `factor`, `weight_factor`, `changed_at`, `peak`, four `Hold`s (warn, throttle, quarantine, calm), `last_recover_at` | `Brain.ladders` |
-| `LadderState.acting` | property `-> bool` | True while factor or weight_factor is below 1, meaning an override must be in force | `step`, `reset`, `Brain._commands`, `Brain.adopt_overrides`, `Brain._expire_holds`, `Brain.status_sentence` |
-| `Transition` | `@dataclass` | One change: `kind` (escalate / step / recover / clear / resolve / reset), previous and new level and factors, and `rule` (why, in plain English) | Returned by `step` / `reset`; read by `Brain._on_transition` |
-| `_apply` | `_apply(s, now, kind, level, factor, wf, rule) -> Transition` | Mutates the state, tracks `peak`, restarts holds on escalate/step, and resets `peak` at normal | `step`, `reset` |
-| `step` | `step(s: LadderState, sig: Signal, now, p: LadderParams) -> Optional[Transition]` | Advances one tenant by one tick: records the four conditions, then applies the first rule that fires (escalate, tighten, deprioritize, quarantine, recover or resolve) | `Brain.tick` |
+| `LadderState.acting` | property `-> bool` | True while factor or weight_factor is below 1 | `step`, `reset`, `Brain`, `Stage3.hot_on` |
+| `Transition` | `@dataclass` | `kind` (escalate / step / recover / clear / resolve / reset), previous and new level and factors, `rule` in plain English | Returned by `step` / `reset`; built by `Brain.force_throttle`; read by `Brain._on_transition` |
+| `_apply` | `_apply(s, now, kind, level, factor, wf, rule) -> Transition` | Mutates the state, tracks `peak`, restarts holds on escalate/step | `step`, `reset` |
+| `step` | `step(s, sig, now, p) -> Optional[Transition]` | Advances one tenant by one tick | `Brain.tick` |
 | `step.held` (inner) | `held(hd, key) -> bool` | Shorthand for `hd.held(hold[key], now, hold_ratio)` | `step` |
-| `reset` | `reset(s, now, rule) -> Optional[Transition]` | Forces normal with 1.0/1.0 and fresh holds. Returns `None` if the tenant is already normal | `Brain.tick` (mode is not `tenantguard`), `Brain.operator` (release) |
+| `reset` | `reset(s, now, rule) -> Optional[Transition]` | Forces normal with 1.0/1.0 and fresh holds; `None` if already normal | `Brain.tick` (mode is not `tenantguard`), `Brain.operator` (release) |
 
 **Key decisions**
-- **AIMD** (multiplicative decrease, additive increase), as in TCP congestion control: it reacts fast to harm and is cautious coming back.
-- **Holds by ratio, not a strict streak.** A strict "every tick above threshold" rule stalled escalation when the score hovered around a threshold. With `hold_ratio` 0.8, one dip does not restart the clock (`tests/test_ladder.py::test_one_dip_does_not_restart_the_hold`). Half-duty flapping still never escalates (`test_half_duty_flapping_never_escalates`).
+- **AIMD**, as in TCP congestion control: fast to react to harm, cautious coming back.
+- **Holds by ratio, not a strict streak** (`tests/test_ladder.py::test_one_dip_does_not_restart_the_hold`); half-duty flapping never escalates.
 - **A move is never made on a tick that contradicts it.** `Hold.held` requires the current tick to qualify.
-- **Quarantine needs its own threshold.** Reaching the bottom of the ladder is not enough on its own (`test_quarantine_needs_the_quarantine_threshold`).
-- **On master, quarantine is a limit** (factor 0.1, weight_factor 0.1). Relocating the tenant to the quarantine worker is marked `TODO(Wave 2)`.
+- **Quarantine needs its own threshold** (`test_quarantine_needs_the_quarantine_threshold`).
+- **The ladder's quarantine rung is a limit** (factor 0.1, weight_factor 0.1). Moving work to the quarantine worker is done by the `costly_pattern` verdict (`stage3.py`), not by the ladder. The `TODO(Wave 2)` line in the module docstring refers to the ladder rung only.
 
 ---
 
 ## 6. `brain/tenantguard_brain/incidents.py`
 
-Incident bookkeeping, with no I/O. There is at most one open incident per tenant, plus server incidents that are not tied to a tenant. Every incident event is stored in a bounded log that the API and the UI backfill read.
+Incident bookkeeping, with no I/O. There is at most one open incident per tenant, plus server incidents not tied to a tenant. Every event is stored in a bounded log that the API and the UI backfill read.
 
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
-| `Incident` | `@dataclass` | `incident_id`, `tenant` (`""` for server incidents), `opened_at`, current `level`, `peak`, `closed_at`, its `events` | Created by `IncidentBook` |
-| `IncidentBook` | class | Open incidents per tenant, an index by id, a bounded event log (1000), and the last 200 closed ids | `Brain.__init__` |
+| `Incident` | `@dataclass` | `incident_id`, `tenant` (`""` for server incidents), `opened_at`, `level`, `peak`, `closed_at`, `events` | Created by `IncidentBook` |
+| `IncidentBook` | class | Open incidents per tenant, an index by id, a bounded event log (1000), the last 200 closed ids | `Brain.__init__` |
 | `IncidentBook.__init__` | `(keep_events=1000, keep_closed=200)` | Sets up the stores | `Brain.__init__` |
-| `IncidentBook.open_for` | `open_for(tenant, now) -> Incident` | Returns the tenant's open incident, or opens `inc-<ts>-<tenant>-<seq>` | `Brain._on_transition`, `Brain.adopt_overrides`, `Brain.operator`, `Brain._held_tick` |
+| `IncidentBook.open_for` | `open_for(tenant, now) -> Incident` | The tenant's open incident, or a new `inc-<ts>-<tenant>-<seq>` | `Brain._on_transition`, `adopt_overrides`, `operator`, `_held_tick` |
 | `IncidentBook.open_server` | `open_server(now) -> Incident` | Opens a fleet incident `srv-<ts>-<seq>` | `Stage3.tick` |
-| `IncidentBook.emit` | `emit(inc, now, stage, *, level=None, prev_level=None, action=None, detail="", confidence=None, report=None) -> IncidentEvent` | Builds a contract `IncidentEvent` (tenant, level, prev_level, action, detail, optional single suspect with confidence, report), appends it to the incident and the log | Every event in `core.py` and `stage3.py` |
-| `IncidentBook.close` | `close(inc, now)` | Marks closed, frees the tenant slot, trims old closed incidents from the index | `Brain._on_transition`, `Brain._expire_holds`, `Stage3._close` |
+| `IncidentBook.emit` | `emit(inc, now, stage, *, level=None, prev_level=None, action=None, detail="", confidence=None, report=None) -> IncidentEvent` | Builds a contract `IncidentEvent` and appends it to the incident and the log. `Stage3` then sets `tenant`, `suspects` and `verdict` on the returned event where needed | Every event in `core.py` and `stage3.py` |
+| `IncidentBook.close` | `close(inc, now)` | Marks closed, frees the tenant slot, trims old closed incidents from the index | `Brain`, `Stage3._close` |
 | `IncidentBook.events` | `events(*, incident_id=None, tenant=None, limit=200) -> List[IncidentEvent]` | Filtered tail of the log, oldest first | `GET /api/incidents`, `WS /ws/events` backfill |
 
-**Key decisions**
-- **Readable, unique, sortable ids.** They include the opening second and a sequence number.
-- **Bounded memory.** The log is a `deque(maxlen=1000)`, and closed incidents drop out of the index after 200.
+**Key decisions:** readable, unique, sortable ids; bounded memory (`deque(maxlen=1000)`).
 
 ---
 
-## 7. `brain/tenantguard_brain/fairness.py`
+## 7. `brain/tenantguard_brain/fairness.py` and `impact.py`
 
-Fleet-level metrics, with no I/O.
+### `fairness.py`
+
+| Function | Signature | What it does | Called by |
+|---|---|---|---|
+| `jain` | `jain(values) -> float` | Jain's fairness index `(Σx)² / (n · Σx²)`, in (0, 1]; 1.0 for empty or all-zero input | `Brain.snapshot` |
+| `normalized_throughput` | `normalized_throughput(rps, weights) -> dict` | `completed rps / weight` for each active tenant | `Brain.snapshot` |
+
+Fairness is measured on throughput normalised by tier weight, so a pro tenant (weight 2) doing twice the work of a free tenant (weight 1) scores 1.0.
+
+### `impact.py` — business impact since the brain started
+
+Each tick in tenantguard mode, `Brain._measure_impact` passes the **threatened** tenants: tenants with a server in an open server incident (minus named culprits) and neighbours of tenants the ladder is warning or acting on; never a tenant the ladder acts on, and never one using more than its fair share. For each one, the tick counts as **suffered** if its end-to-end p95 is above its plan's `sla_p95_ms` (layout), otherwise **avoided**.
 
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
-| `jain` | `jain(values) -> float` | Jain's fairness index `(Σx)² / (n · Σx²)`, in (0, 1]; 1.0 for empty or all-zero input | `Brain.snapshot` (`StateSnapshot.fairness`) |
-| `normalized_throughput` | `normalized_throughput(rps, weights) -> dict` | `completed rps / weight` for each active tenant (rps > 0) | `Brain.snapshot` |
-| `peer_ratio` | `peer_ratio(server, p95) -> float` | p95 of a server / median p95 of the others with data (1.0 if unknown) | `tests/test_fairness.py` only. The running brain takes its server peer ratio from `health.py`, which also has the canary fallback and debounce |
+| `MONTH_S` | constant `2_592_000.0` | Seconds in 30 days | `ImpactMeter.tick` |
+| `ImpactMeter` | class | Accumulates avoided / suffered seconds per tenant, revenue protected, innocents | `Brain._measure_impact` (created on the first frame) |
+| `ImpactMeter.__init__` | `(since, sla_ms, revenue_rs)` | Per-tenant SLA p95 and monthly revenue from the layout | `Brain._measure_impact` |
+| `ImpactMeter.tick` | `tick(dt, threatened, p95)` | Suffered if p95 > SLA (100 ms if unknown), else avoided; revenue protected += `monthly_revenue_rs × dt / MONTH_S`. A tenant without completions is skipped | `Brain._measure_impact` |
+| `ImpactMeter.note_action` | `note_action(tenant, score, warn)` | A tightening while the tenant's own score was below `warn` marks it an innocent | `Brain._on_transition` |
+| `ImpactMeter.view` | `view() -> ImpactView` | `customers_shielded` (more avoided than suffered), SLO seconds avoided / suffered, `revenue_protected_rs`, `innocents_penalised` | `Brain.snapshot` (`StateSnapshot.impact`) |
 
-**Key decision:** fairness is measured on throughput normalised by tier weight. A pro tenant (weight 2) doing twice the work of a free tenant (weight 1) is perfectly fair, and the index is 1.0.
+**Key decision:** `innocents_penalised` must stay empty. `Brain._on_transition` calls `note_action` on every ladder tightening (`escalate` or `step`), and the flag rule means the ladder only tightens a tenant whose score is above `warn`. The module docstring says a proven verdict is not an innocent; note that the `over_plan` path (`force_throttle`) also goes through `_on_transition`, so it is checked against the same score.
 
 ---
 
-## 8. `brain/tenantguard_brain/health.py` — server health
+## 8. `brain/tenantguard_brain/health.py` — server health (calibrated)
 
-Decides which servers are slow by comparing each server with its peers, never against a fixed number, so a fleet-wide slowdown accuses nobody. It has no I/O.
+Decides which servers are slow by comparing each tenant with **itself** across its own servers, never against a fixed number, so a fleet-wide slowdown accuses nobody. It has no I/O. The signals are *sustained*: on the Docker host a 0.5-CPU container stalls for 1-3 s now and then at calm (CPU-quota throttling), and that is not a slow server.
 
 ```
-level(s)     = median over the window of the server's latency samples
-               traffic source: per tick, the MEDIAN of its tenants' cell p95 (server side)
-               canary  source: the brain's own GET /canary round trip (used when traffic is too thin)
-peer_ratio   = level(s) / median(level of the other servers, same source)
-slow_now(s)  = peer_ratio >= 1.6  AND  level(s) − peer median >= 8 ms
-slow(s)      = slow_now for open_after_ticks (4) consecutive ticks; healthy again after 4 not-slow ticks
+cell level(t, s) = count-weighted level_quantile (0.3) of the per-tick p95 of tenant t on server s
+                   over window_s (5 s), used only with >= min_cell_requests (5) requests
+ref(t)           = median of t's cell levels over its own servers (needs >= 2 servers with data)
+peer_ratio(s)    = median over tenants t on s of level(t, s) / ref(t)        (traffic source, >= 2 tenants)
+                   canary source: median canary RTT of s / median of the fleet servers' canaries
+floor(s)         = max(slow_abs_ms 8, min_slow_ms 25, sla_fraction 0.5 x strictest sla_p95_ms of s's tenants)
+slow_now(s)      = peer_ratio >= 1.6 AND median excess >= 8 ms (canary: canary_abs_ms 8) AND level >= floor(s)
+open             = slow_now in >= hold_ratio (80 %) of the ticks of the last open_hold_s (4 s)
+heal             = not slow_now in >= 80 % of the ticks of the last heal_hold_s (2 s)
 ```
-The window is `probe_window_ticks` (8) × 250 ms = 2 s. Canaries keep at least 4 s of samples, because they arrive at about 1 Hz.
+
+With the layout's SLAs (40, 50, 80 and 150 ms) the floor is 25 ms on any server that carries a 40 ms or 50 ms tenant. 17 ms against 4 ms is 4x, but no SLA is at risk, so it is not slow. The canary can only **keep** an already-open server open, never open one: an incident needs slow real traffic first. Pool servers (`spare`, `quarantine`) are judged against the fleet but are never anyone's peer and never a suspect.
 
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
-| `HealthParams` | `@dataclass` | `window_ticks`, `tick_s`, `slow_peer_ratio`, `slow_abs_ms`, `open_after_ticks`, `min_requests` (4), `min_canaries` (2) | `settings.load` |
-| `HealthParams.from_yaml` | `classmethod from_yaml(health: dict, tick_s)` | Reads `brain.health` | `settings.load` |
-| `HealthParams.window_s` | property | `window_ticks × tick_s` | `HealthTracker._levels` |
-| `ServerHealth` | `@dataclass` | Per server: `source`, `level_ms`, `peer_ms`, `peer_ratio`, `slow_now`, `slow`, `streak`, `slow_since`, traffic and canary sample deques | `HealthTracker.servers`; read by `Stage3`, `Brain.snapshot`, `Brain.debug` |
-| `HealthTracker` | class | Holds all servers' health | `Stage3.__init__` |
-| `HealthTracker.__init__` | `(servers, params)` | One `ServerHealth` per known server | `Stage3.__init__` |
-| `HealthTracker._h` | `_h(s) -> ServerHealth` | Gets the entry, creating it for a server seen for the first time | `observe_canary`, `observe` |
+| `HealthParams` | `@dataclass` | `window_ticks` 8, `tick_s`, `window_s` 5.0, `slow_peer_ratio` 1.6, `slow_abs_ms` 8, `open_after_ticks` 4, `min_cell_requests` 5, `min_tenants` 2, `min_canaries` 3, `canary_window_s` 6.0, `canary_abs_ms` 8, `open_hold_s` 4, `heal_hold_s` 2, `hold_ratio` 0.8, `level_quantile` 0.3, `min_slow_ms` 25, `sla_fraction` 0.5 | `settings.load` |
+| `HealthParams.from_yaml` | `classmethod from_yaml(health, tick_s)` | Reads `brain.health` (`min_requests` accepted as an older name for `min_cell_requests`) | `settings.load` |
+| `ServerHealth` | `@dataclass` | Per server: `source` (traffic / canary / none), `level_ms`, `peer_ms`, `peer_ratio`, `excess_ms`, `tenants_used`, `slow_now`, `slow`, `streak`, `slow_since`, `canary` and `history` deques | `HealthTracker.servers`; read by `Stage3`, `Brain.readings`, `Brain.snapshot`, `Brain.debug` |
+| `weighted_quantile` | `weighted_quantile(samples, q) -> float` | q-quantile of values weighted by counts | `_cell_levels`, `weighted_median` |
+| `weighted_median` | `weighted_median(samples) -> float` | `weighted_quantile(samples, 0.5)` | Not called on this branch |
+| `HealthTracker` | class | All servers' health plus per-(tenant, server) cell samples | `Stage3.__init__` |
+| `HealthTracker.__init__` | `(servers, params, barcodes=None, sla_ms=None)` | One `ServerHealth` per server; `fleet` = barcode servers; `floor_ms` per server from the strictest SLA | `Stage3.__init__` |
+| `HealthTracker._h` | `_h(s) -> ServerHealth` | Gets the entry, creating it for a new server | `observe_canary`, `observe` |
 | `HealthTracker.observe_canary` | `observe_canary(server, rtt_ms, now)` | Records one canary round trip | `Stage3.on_canary` |
-| `HealthTracker._levels` | `_levels(now) -> (traffic, canary)` | Drops old samples and returns per-server median levels for each source. Traffic needs ≥ 4 requests in the window and canary ≥ 2 samples | `observe` |
-| `HealthTracker.observe` | `observe(per_server: Dict[str, (p95, count)], now) -> List[(server, now_slow)]` | Feeds one tick, picks each server's source (traffic first, then canary), computes the peer ratio and `slow_now`, applies the debounce, and returns servers whose state flipped | `Stage3.on_frame` |
-| `HealthTracker.slow_servers` | `slow_servers() -> List[str]` | Sorted list of servers currently judged slow | `Stage3.tick`, `Stage3.status`, `Stage3._named` |
-| `HealthTracker.ratios` | `ratios() -> Dict[str, float]` | server → peer ratio | `Stage3.tick` (decoder input) |
+| `HealthTracker.observe` | `observe(cells, now) -> List[(server, slow)]` | Feeds one tick of `(tenant, server, p95_ms, count)` cells and returns open-state flips | `Stage3.on_frame` |
+| `HealthTracker._cell_levels` | `_cell_levels(now) -> Dict[(t, s), float]` | Drops old samples; level per cell with enough requests | `_evaluate` |
+| `HealthTracker._canary_levels` | `_canary_levels(now) -> Dict[str, float]` | Median canary per server with ≥ 3 probes in 6 s | `_evaluate` |
+| `HealthTracker._evaluate` | `_evaluate(now) -> List[(server, slow)]` | The block above: source choice, peer ratio, floor, `slow_now`, persistence | `observe` |
+| `HealthTracker._held` | `_held(h, value, hold, now) -> bool` | `value` in ≥ `hold_ratio` of the ticks of the last `hold` seconds, with the history covering them | `_evaluate` |
+| `HealthTracker._peer` | `_peer(s) -> bool` | True for fleet (barcode) servers | `_evaluate`, `slow_servers`, `Stage3.decoder_ratios` |
+| `HealthTracker.slow_servers` | `slow_servers() -> List[str]` | Sorted open fleet servers | `Stage3.tick`, `Stage3.status`, `Stage3._named` |
+| `HealthTracker.ratios` | `ratios() -> Dict[str, float]` | server → peer ratio | Not called on this branch (`Stage3` uses `decoder_ratios`) |
 
 **Key decisions**
-- **The median of tenants' p95 per server.** One tenant's own heavy requests (a whale, a batch export) do not make the server look slow. The server is slow only when most of its tenants are slow there.
-- **Ratio AND absolute gap.** A ratio alone would flag 2 ms against 1 ms (`tests/test_stage3_pure.py::test_ratio_alone_is_not_enough`).
-- **Canary fallback.** After a rescue moves everyone off a server, it has no traffic. The canary still lets it be judged healed or still broken (`test_canary_takes_over_when_traffic_moved_away`).
+- **Tenant-relative.** Comparing a tenant with itself cancels workload differences: a search-heavy tenant is slow everywhere, a light one fast everywhere (`tests/test_stage3_pure.py::test_workload_mix_is_not_slowness`).
+- **Sparse cells are no opinion** (`test_sparse_cells_are_no_opinion`); a ratio alone is not enough (`test_ratio_alone_is_not_enough`); a fast server is never slow whatever the ratio (`tests/test_host_noise.py::test_a_fast_server_is_never_slow_whatever_the_ratio`).
+- **Persistence, not a streak.** A server opens after 4 s of mostly-slow ticks and heals after 2 s of mostly-healthy ones. The noisy-calm simulator runs open nothing (`test_noisy_calm_opens_nothing_and_moves_nothing`).
+- **The canary only sustains** (`test_canary_alone_never_opens_an_incident`, `test_canary_keeps_a_slow_server_open_when_traffic_moved_away`).
 
 ---
 
@@ -326,20 +387,19 @@ tenants whose servers are all slow are "stuck" (nothing to route to; decoder evi
 
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
-| `MIN_WEIGHT` | constant `0.0` | Defined in the module; not referenced by the current code | — |
-| `RescuePlan` | `@dataclass` | `weights` (tenant → server → weight), `moved` (fraction per tenant), `stuck`, `capped` (moved < 1 because of the guard), `projected_util` per server | Returned by `plan_rescue`; held as `Stage3.plan`; shown in `Brain.debug` |
-| `plan_rescue` | `plan_rescue(*, barcodes, slow, load, capacity, server_load=None, guard=0.7, current=None, targets=None) -> RescuePlan` | The algorithm above. `targets` restricts destinations to servers known to be up and healthy, so a rescue never routes to an unknown or down server | `Stage3.tick` |
+| `RescuePlan` | `@dataclass` | `weights` (tenant → server → weight), `moved`, `stuck`, `capped`, `projected_util` | Returned by `plan_rescue`; held as `Stage3.plan`; shown in `Brain.debug` |
+| `plan_rescue` | `plan_rescue(*, barcodes, slow, load, capacity, server_load=None, guard=0.7, current=None, targets=None) -> RescuePlan` | The algorithm above. `targets` restricts destinations to servers known to be up and healthy | `Stage3.tick` |
 
 **Key decisions**
-- **The capacity guard (70 % CPU) bounds every move.** A rescue must not overload a healthy server. When there is no room the tenant is left alone (`test_no_room_at_all_leaves_the_tenant_alone`).
-- **Lightest tenants first.** The guard's headroom then rescues as many tenants as possible.
-- **Only the victims are routed.** `Stage3` excludes a named culprit, because moving it would only spread the harm. Proving a culprit belongs to the prover.
+- **The capacity guard (70 % CPU) bounds every move** (`test_no_room_at_all_leaves_the_tenant_alone`).
+- **Lightest tenants first**, so the headroom rescues as many tenants as possible.
+- **Only the victims are routed.** `Stage3` excludes a named culprit; the prover moves the culprit instead.
 
 ---
 
 ## 10. `brain/tenantguard_brain/decoder.py` — name the culprit from the barcode
 
-Every tenant runs on 3 servers, its **barcode**. In the AG(2,3) layout any two barcodes share at most one server (`tests/test_stage3_pure.py::test_ag23_any_two_tenants_share_at_most_one_server`). The set of slow servers therefore points at the tenant(s) whose barcodes it covers, even when the culprit's work is invisible to every meter (black-box CPU). The module has no I/O.
+Every tenant runs on 3 servers, its **barcode**. In AG(2,3) any two barcodes share at most one server (`tests/test_stage3_pure.py::test_ag23_any_two_tenants_share_at_most_one_server`). The set of slow servers therefore points at the tenant(s) whose barcodes it covers, even when the culprit's work is invisible to every meter (black-box CPU). No I/O.
 
 ```
 p_s          = logistic(k × (peer_ratio_s − 1.6))                     k = 8; probability server s is slow
@@ -351,136 +411,253 @@ host_fault   = 4 × max_s p'_s × (1 − best full-barcode cover of s)
 none         = 3 × (1 − max_s p'_s)
 confidence   = softmax(evidence / temperature 1.0) over all tenants + host_fault + none
 ```
-**Explain-away loop** (up to `max_culprits` = 2):
-1. Accept the top option if it is a tenant and the tenants together hold ≥ `min_confidence` (0.5).
-2. Zero `p'` on the accepted tenant's servers.
-3. Decode again.
-
-Slow servers still unexplained at the end (`p' ≥ 0.5`) are **host suspects**. When two culprits are named, each one's confidence is recomputed with the *other* explained away, so two equally guilty tenants do not split 50/50. All weights are `DecoderParams` defaults; any of them can be overridden under yaml `brain.decoder`.
+**Explain-away loop** (up to `max_culprits` = 2): accept the top option if it is a tenant and the tenants together hold ≥ `min_confidence` (0.5); zero `p'` on its servers; decode again. Slow servers still unexplained (`p' ≥ 0.5`) are **host suspects**. With two culprits, each one's confidence is recomputed with the other explained away. The ratios come from `Stage3.decoder_ratios`, which enters a server below its SLA floor as "like its peers" (ratio ≤ 1).
 
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
-| `HOST`, `NONE` | constants | Option names `"host_fault"`, `"none"` | `_round`, `decode`, `Stage3._named` |
+| `HOST`, `NONE` | constants | Option names `"host_fault"`, `"none"` | `_round`, `decode` |
 | `DecoderParams` | `@dataclass` | `slow_peer_ratio`, `k`, `w_min`, `w_mean`, `w_stuck`, `w_ledger`, `w_host`, `w_none`, `temperature`, `min_confidence`, `max_culprits`, `host_p` | `settings.load` |
-| `DecoderParams.from_yaml` | `classmethod from_yaml(health: dict, decoder: dict \| None = None)` | Reads known keys from `brain.decoder` (type-cast) and takes `slow_peer_ratio` from `brain.health` | `settings.load` |
-| `Named` | `@dataclass` | One culprit: `tenant`, `confidence`, `evidence`, `covers` (its servers that were slow) | Built by `decode` |
-| `Decoding` | `@dataclass` | `culprits`, `host_suspects`, `p` (server → p_s), `rounds` (confidence per option per round) | Returned by `decode`; held as `Stage3.decoding` |
+| `DecoderParams.from_yaml` | `classmethod from_yaml(health, decoder=None)` | Known keys from `brain.decoder` (type-cast), `slow_peer_ratio` from `brain.health` | `settings.load` |
+| `Named` | `@dataclass` | `tenant`, `confidence`, `evidence`, `covers` | Built by `decode` |
+| `Decoding` | `@dataclass` | `culprits`, `host_suspects`, `p`, `rounds` | Returned by `decode`; held as `Stage3.decoding` |
 | `Decoding.top_confidence` | property | First-round confidences | `Stage3._named`, `Brain.debug` |
 | `logistic` | `logistic(x) -> float` | Numerically stable logistic | `p_slow` |
 | `p_slow` | `p_slow(ratios, p) -> Dict[str, float]` | p_s for every server | `decode` |
-| `softmax` | `softmax(scores, temperature) -> Dict[str, float]` | Stable softmax (subtracts the max) | `decode` |
-| `_round` | `_round(barcodes, p0, pr, stuck, ledger, exclude, prm) -> Dict[str, float]` | One round of evidence scores for every not-yet-named tenant plus `host_fault` and `none` | `decode` |
-| `decode` | `decode(barcodes, ratios, *, stuck=None, ledger=None, params=None) -> Decoding` | The full explain-away decode described above | `Stage3.tick` |
+| `softmax` | `softmax(scores, temperature) -> Dict[str, float]` | Stable softmax | `decode` |
+| `_round` | `_round(barcodes, p0, pr, stuck, ledger, exclude, prm) -> Dict[str, float]` | One round of evidence scores | `decode` |
+| `decode` | `decode(barcodes, ratios, *, stuck=None, ledger=None, params=None) -> Decoding` | The full explain-away decode | `Stage3.tick` |
 
 **Key decisions**
-- **"Nobody" and "the host" compete with the tenants.** A single slow server, or two slow servers on one barcode line, blames no tenant (`test_single_slow_server_is_a_host_suspect_and_nobody_is_blamed`, `test_two_slow_servers_on_one_barcode_line_are_not_a_tenant`).
-- **Exact naming is tested exhaustively.** Every single culprit, and all 66 culprit pairs, are named exactly (`test_every_single_culprit_is_named`, `test_all_66_culprit_pairs_are_named_exactly`).
-- **Ledger hints only break ties where servers are actually slow.** They are multiplied by the mean p_s of the tenant's servers (`test_ledger_hint_breaks_a_tie_only_where_servers_are_slow`).
+- **"Nobody" and "the host" compete with the tenants** (`test_single_slow_server_is_a_host_suspect_and_nobody_is_blamed`, `test_two_slow_servers_on_one_barcode_line_are_not_a_tenant`).
+- **Exact naming is tested exhaustively** (`test_every_single_culprit_is_named`, `test_all_66_culprit_pairs_are_named_exactly`).
+- **Ledger hints only break ties where servers are actually slow** (`test_ledger_hint_breaks_a_tie_only_where_servers_are_slow`).
 
 ---
 
-## 11. `brain/tenantguard_brain/prover.py` — proof by relocation (interface)
+## 11. `brain/tenantguard_brain/verdicts.py` — proof evaluation and the five verdicts
 
-Defines how a named suspect will be *proved*:
-1. Move it to the spare server, sized at `spare_sizing` × its footprint.
-2. Wait `prove_settle_s`, then measure for `prove_window_s`.
-3. Compute `R = 1 − post_slowdown / pre_slowdown` on its original servers.
-4. Confirm when `R ≥ recovery_R` **and** the harm followed it to the spare.
+Pure functions and small state objects, with no I/O.
 
-On master only the interface and the `NullProver` exist. The Docker-backed prover is **in progress** (T12).
+### 11.1 Proof evaluation
+
+```
+R              = clamp(1 − mean(post_slowdown) / pre_slowdown, −1, 1)    on the suspect's original servers
+slowdown(s)    = max(0, peer_ratio(s) − 1)
+harm_followed  = spare CPU rose by ≥ harm_follow_share (0.3) × footprint   OR   spare peer ratio ≥ harm_follow_ratio (1.6)
+confirmed      = R ≥ recovery_R (0.5)  AND  harm_followed
+```
+If R is high but the harm did not follow, the explanation adds "the suspect may have paused during the test".
+
+### 11.2 The five verdicts (`classify`, `host_verdict`)
+
+| Verdict | When | Action (taken in `Stage3._verdict` / `on_host`) |
+|---|---|---|
+| `mitigated_no_blame` | Decoder confidence below `confidence_to_prove` (0.8), or the relocation did not confirm, and the tenant is not a repeat offender. Also a host suspect that is only load (idle ratio < 1.5) | No action on the tenant; back home if it was relocated; a host is undrained |
+| `over_plan` | Confirmed (or repeat offender) and admission already refuses ≥ 20 % of its requests | Back home; ladder forced to throttle (factor 0.5), relaxed by AIMD when calm |
+| `costly_pattern` | Confirmed (or repeat) and paid CPU explains < 35 % of its footprint, or a black-box / eviction ledger hint ≥ 0.3 | Its top request class goes to the quarantine heavy lane (TTL 120 s), the rest goes home |
+| `honest_growth` | Confirmed (or repeat) and paid work explains the load | Stays on the spare as a burst lane until the relocation TTL (120 s) ends. No penalty |
+| `host_fault` | A host suspect still ≥ `host_idle_ratio` (1.5x) its peers while drained and idle | Stays drained, the drain renewed while it is slow |
+
+`over_plan` is checked before `costly_pattern`. A repeat offender (named `repeat_count` 3+ times within `repeat_window_s` 600 s, with a previous verdict) gets its last verdict again without a new proof.
 
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
-| `ProofRequest` | `@dataclass` | `incident_id`, `tenant`, `servers` (its barcode), `confidence`, `footprint_cpu_ms`, optional `cls` (prove one request class) | Not created on master yet (in progress) |
-| `ProofResult` | `@dataclass` | `tenant`, `confirmed`, `recovery_R`, `harm_followed`, `detail`, `readings` | Returned by `prove` |
-| `Prover` | `Protocol` | `available: bool`; `async prove(req) -> ProofResult` | Type of `Stage3.prover` |
-| `NullProver` | class, `available = False` | Default when there is no Docker host | `Stage3.__init__` |
-| `NullProver.prove` | `async prove(req) -> ProofResult` | Never confirms; says "prover not available (needs the Docker host)" | Not called on master (in progress) |
-
-**Key decision:** `Stage3._named` checks `prover.available`. Without a prover the "named" event says plainly: "Not yet proven: relocation needs the Docker host". A suspect is never presented as proven.
+| `COSTLY`, `OVER`, `HONEST`, `HOST`, `NO_BLAME` | constants | The five verdict names | `stage3.py` |
+| `VerdictParams` | `@dataclass` | `confidence_to_prove`, `paid_share_costly`, `recovery_R`, `host_idle_ratio`, `over_plan_rejected_share`, `harm_follow_share`, `harm_follow_ratio`, `evidence_hint`, `repeat_count`, `repeat_window_s` | `settings.load` |
+| `VerdictParams.from_yaml` | `classmethod from_yaml(brain)` | Top-level `brain.*` keys plus `brain.verdicts`; `harm_follow_ratio` falls back to `health.slow_peer_ratio` | `settings.load` |
+| `ProofMeasure` | `@dataclass` | `pre_slowdown`, `post_slowdown` samples, `spare_cpu_pre`, `spare_cpu` samples, `spare_ratio` samples, `footprint_ms` | Built by `DockerProver._prove` |
+| `evaluate_proof` | `evaluate_proof(m, p) -> (R, harm_followed, confirmed, why)` | §11.1 | `DockerProver._prove` |
+| `Evidence` | `@dataclass` | `tenant`, `confidence`, `confirmed`, `R`, `harm_followed`, `paid_share`, `blackbox_hint`, `evict_hint`, `rejected_share`, `repeat`, `last_verdict` | Built by `Stage3._judge`, `Stage3.on_proof` |
+| `classify` | `classify(e, p) -> (verdict, reasons)` | §11.2 for tenants, with plain-English reasons | `Stage3._judge`, `Stage3.on_proof` |
+| `host_verdict` | `host_verdict(idle_ratio, p) -> (verdict, why)` | `host_fault` or `mitigated_no_blame` | `Stage3.on_host` |
+| `ActionBudget` | `@dataclass` | `relocations_per_min` 6, `quarantine_every_s` 30, `max_drained` 1, `drain_peer_busy` 0.75, plus its running state | `settings.load`; `Stage3.budget` |
+| `ActionBudget.from_yaml` | `classmethod from_yaml(brain)` | Reads `brain.action_budget` | `settings.load` |
+| `ActionBudget.can_relocate` / `note_relocation` | `(now)` | At most 6 relocation tests per rolling minute | `Stage3._judge` |
+| `ActionBudget.can_quarantine` / `note_quarantine` | `(now)` | At most one quarantine every 30 s | `Stage3._verdict` |
+| `ActionBudget.can_drain` | `can_drain(server, peer_util) -> (ok, why)` | Refuses if already drained, if `max_drained` is reached, or if a peer is at ≥ 75 % CPU | `Stage3._judge` |
+| `OffenderMemory` | `@dataclass` | Times each tenant was named, and its last tenant verdict | `Stage3.memory` |
+| `OffenderMemory.note_named` / `is_repeat` | `(tenant, now)` | Named ≥ `count` times within `window_s` | `Stage3.tick`, `_judge`, `on_proof` |
+| `OffenderMemory.note_verdict` | `note_verdict(tenant, verdict)` | Remembers `costly_pattern`, `over_plan` or `honest_growth` | `Stage3._verdict` |
 
 ---
 
-## 12. `brain/tenantguard_brain/stage3.py` — health → rescue → decoder → named
+## 12. `brain/tenantguard_brain/prover.py` — proof by relocation and drain test
 
-The Stage 3 loop, with no I/O. It owns the **server incident** (`srv-…`), which has these stages:
+The two provers do the slow, asynchronous part of Stage 3. They run as runtime jobs and talk to the brain only through a `ProveEnv`: `readings()` (from `Brain.readings`), `send(path, model)` (the runtime posts to the gateway with the control token), and `sleep(seconds)`.
+
+### 12.1 `DockerProver.prove` step by step
+1. Take the lock (one relocation test at a time: the spare is shared).
+2. Read `pre` readings. If the suspect's servers are no longer slow, stop: "nothing to prove".
+3. **Size the spare** to `clamp(spare_sizing 1.25 × footprint / 1000, 0.25, 4.0)` cores. The footprint is the suspect's paid plus unexplained (black-box) CPU on its servers (`Brain.footprint`). `EngineDocker.set_cpus` sends `POST /containers/{id}/update {"NanoCpus": n}` over the Docker socket. If resizing fails, the test still runs on the spare as it is.
+4. **Relocate**: `RelocateCmd(tenant, cls, target="spare", ttl_s=120)` to `/control/relocate`. If the gateway refuses, the spare is restored and the test ends unconfirmed.
+5. Wait `prove_settle_s` (2 s), then sample every 0.5 s for `prove_window_s` (6 s): 12 samples of the original servers' slowdown, the spare's CPU and the spare's peer ratio.
+6. **Measure R** and decide **confirm or reject** with `evaluate_proof` (§11.1).
+7. Leave the relocation in place: the verdict decides what happens next.
+
+The spare container is found by **both** compose labels, `com.docker.compose.project=<COMPOSE_PROJECT>` and `com.docker.compose.service=spare`, or by the exact name in `TENANTGUARD_SPARE_CONTAINER`. Several stacks can share one Docker host, so the brain never guesses.
+
+### 12.2 `HostProver.check`
+Sends `DrainCmd(server, drained=True, ttl_s=120)`, waits 2 s, samples the server's peer ratio every 0.5 s for 6 s (canary-sourced, since the server is drained) and returns the mean as `idle_ratio`. `undrain` sends `drained=False`.
+
+| Function / class | Signature | What it does | Called by |
+|---|---|---|---|
+| `SPARE` | constant `"spare"` | The spare server and compose service name | Module, `EngineDocker` |
+| `ProofRequest` | `@dataclass` | `incident_id`, `tenant`, `servers` (barcode), `confidence`, `footprint_cpu_ms`, `paid_cpu_ms`, optional `cls` | Built by `Stage3._judge`; run by `Runtime._run_job` |
+| `ProofResult` | `@dataclass` | `tenant`, `confirmed`, `recovery_R`, `harm_followed`, `detail`, `readings`, `incident_id`, `relocated`, `spare_cores_before`, `spare_cores_during` | Returned by `prove`; read by `Stage3.on_proof` |
+| `HostCheck` | `@dataclass` | `incident_id`, `server` | Built by `Stage3._judge` |
+| `HostResult` | `@dataclass` | `server`, `drained`, `idle_ratio`, `detail`, `incident_id` | Returned by `HostProver.check`; read by `Stage3.on_host` |
+| `Readings` | `@dataclass` | Per server: `slowdown` (max(0, peer_ratio − 1)), `peer_ratio`, `cpu_ms`, `source` | Built by `Brain.readings` |
+| `ProveEnv` | `Protocol` | `readings()`, `async send(path, model)`, `async sleep(seconds)` | Implemented by `Runtime`, `tests/conftest.py::SimEnv` |
+| `ProverParams` | `@dataclass` | `spare_sizing` 1.25, `settle_s` 2, `window_s` 6, `sample_s` 0.5, `min_spare_cores` 0.25, `max_spare_cores` 4.0, `relocate_ttl_s` 120 | `settings.load` |
+| `ProverParams.from_yaml` | `classmethod from_yaml(brain)` | `spare_sizing`, `prove_settle_s`, `prove_window_s`, `verdicts.prove_sample_s` / `min_spare_cores` / `max_spare_cores`, `ttl_s.relocate` | `settings.load` |
+| `DockerControl` | `Protocol` | `async get_cpus(container)`, `async set_cpus(container, cores)` | Implemented by `EngineDocker`, `sim.SimDocker`, test fakes |
+| `EngineDocker` | class | Minimal Docker Engine API client over the unix socket (`httpx` with a UDS transport, API v1.41) | `make_prover` |
+| `EngineDocker.__init__` | `(socket_path="/var/run/docker.sock", api="v1.41", service="spare", project=None, explicit=None)` | Project from `COMPOSE_PROJECT`, explicit name from `TENANTGUARD_SPARE_CONTAINER` | `make_prover` |
+| `EngineDocker._resolve` | `async _resolve(container) -> str` | Container id by both compose labels (exactly one match required) or by the explicit name; cached | `_host_config`, `set_cpus` |
+| `EngineDocker.ping` | `async ping() -> bool` | `GET /_ping` | `make_prover` |
+| `EngineDocker._host_config` | `async _host_config(container) -> dict` | `GET /containers/{id}/json` → `HostConfig` | `get_cpus`, `set_cpus` |
+| `EngineDocker.get_cpus` | `async get_cpus(container) -> float` | Cores from `NanoCpus` or `CpuQuota / CpuPeriod`; 0 = unlimited | `DockerProver._prove` |
+| `EngineDocker.set_cpus` | `async set_cpus(container, cores)` | `NanoCpus` update (compose `cpus:`), or `CpuQuota` if that is what the container has | `DockerProver._prove`, `restore_spare` |
+| `EngineDocker.aclose` | `async aclose()` | Closes the client | `make_prover` |
+| `spare_container_name` | `spare_container_name() -> str` | A label for logs | `DockerProver.__init__` |
+| `NullProver` | class, `available = False` | No Docker host: never proves | Default `Stage3.prover`; `make_prover` |
+| `NullProver.prove` | `async prove(req, env) -> ProofResult` | Unconfirmed, "prover not available (needs the Docker host)" | Not reached in normal flow (`Stage3._judge` checks `available`) |
+| `NullProver.restore_spare` | `async restore_spare(cores)` | No-op | `Runtime._run_job` |
+| `Prover` | `Protocol` | `available`, `prove`, `restore_spare` | Type of `Stage3.prover` |
+| `_slowdown` | `_slowdown(r, servers) -> float` | Mean slowdown over the given servers | `DockerProver._prove` |
+| `DockerProver` | class, `available = True` | Relocation proof (§12.1) | `make_prover` |
+| `DockerProver.__init__` | `(docker, params, vparams, container=None)` | Stores the Docker control, params and an `asyncio.Lock` | `make_prover`, tests |
+| `DockerProver.prove` | `async prove(req, env) -> ProofResult` | Takes the lock and runs `_prove` | `Runtime._run_job` |
+| `DockerProver._prove` | `async _prove(req, env) -> ProofResult` | §12.1 steps 2-7 | `prove` |
+| `DockerProver.restore_spare` | `async restore_spare(cores)` | Puts the spare's CPU back (0 = unlimited becomes `max_spare_cores`); errors are ignored, the next proof resizes it anyway | `_prove`, `Runtime._run_job` |
+| `HostProver` | class | Drain test (§12.2), no Docker needed | `Runtime.__init__` |
+| `HostProver.__init__` | `(params, vparams)` | — | `Runtime.__init__` |
+| `HostProver.check` | `async check(req, env) -> HostResult` | §12.2 | `Runtime._run_job` |
+| `HostProver.undrain` | `async undrain(server, env, incident_id=None) -> bool` | `DrainCmd(drained=False)` | Tests |
+| `make_prover` | `async make_prover(mode, params, vparams) -> Prover` | `null` → `NullProver`. `auto` → `NullProver` if the socket file is missing or no project / explicit name is set, else `DockerProver` if `/_ping` answers. `docker` → raises instead of falling back | `Runtime.start` |
+
+**Key decisions**
+- **The Engine API, not the Docker SDK.** Compose's `cpus:` sets `NanoCpus`, and the engine refuses a `CpuQuota` update on such a container (`tests/test_prover.py::test_engine_uses_nano_cpus_for_compose_cpus`).
+- **Never touch another stack's spare** (`test_spare_is_found_by_project_and_service_with_two_stacks_on_one_host`, `test_no_project_means_no_docker_action`, `test_ambiguous_or_missing_spare_is_refused`).
+- **Harm must follow the suspect.** A culprit that pauses during the test recovers its servers but moves no harm to the spare, so it is not confirmed (`test_culprit_pausing_mid_test_is_not_confirmed`).
+
+---
+
+## 13. `brain/tenantguard_brain/stage3.py` — health → rescue → decoder → named → proof → verdict
+
+The Stage 3 loop, with no I/O. It owns the **server incident** (`srv-…`):
 
 ```mermaid
 stateDiagram-v2
-  [*] --> detected: a server turns slow (debounced)
-  detected --> rescued: RouteWeightsCmd moves victims off slow servers (capacity guard 70%)
-  rescued --> named: decoder verdict stable for open_after_ticks (4) ticks
-  named --> resolved: every server healthy again / route weights reset to equal
+  [*] --> detected: a server opens (persistence, SLA floor)
+  detected --> rescued: RouteWeightsCmd moves victims off slow servers (guard 70%)
+  rescued --> named: decoding stable for 4 ticks
+  named --> proving: RelocateCmd to the spare, or DrainCmd for a host suspect
+  proving --> verdict: on_proof or on_host
+  named --> verdict: confidence below 0.8 or repeat offender (no test)
+  verdict --> resolved: every server healthy again, routes reset, our drains undone
   rescued --> resolved: every server healthy again
   resolved --> closed
   closed --> [*]
 ```
 
-Health and decoding **always** run, because they feed `ServerView` and the status sentence. Route changes and incidents happen only in `tenantguard` mode. If the mode changes while an incident is open, the incident is closed and the routes reset.
+Health and decoding **always** run, because they feed `ServerView` and the status sentence. Route changes, tests and actions happen only in `tenantguard` mode with fresh telemetry. Leaving the mode closes the incident and resets the routes. While a test is running, the incident stays open even if the servers look fine (they look fine *because* of the test).
+
+### 13.1 Held hosts (judging hot tenants first)
+During a ramp the decoder can see one or two of a culprit's servers slow before all three, which looks exactly like a faulty host. So before any host suspect is named or drained, `hot_on(server)` lists the tenants still under suspicion there:
+- named culprits not yet judged (or being proved);
+- tenants the ladder is warning or acting on;
+- tenants using ≥ `over_use` (1.6) × their weighted fair share of **that server's** CPU (the entitlement counts every tenant placed on the server, so a culprit left alone after a rescue is still hot).
+
+A host suspect with any hot tenant (now, or earlier in this incident, `ever_held`) becomes a **held host**: it is removed from `host_suspects`, so it is not named as a faulty host and never drained, and a one-time `named` event says "<tenants> judged first, <server> is not treated as a faulty host" (`report.held_hosts`). Also, `held_by_culprit` keeps the servers a named culprit still over-uses in the slow set, so the rescue is not lifted while the culprit is hot.
+
+### 13.2 Verdict actions (`_verdict`, `on_host`)
+
+| Verdict | Control commands queued (`self.control`, sent by the runtime) | Spare |
+|---|---|---|
+| `honest_growth` | None if already relocated (the proof's `RelocateCmd target=spare` stands); else `RelocateCmd target=spare` ttl 120 s | Kept sized |
+| `costly_pattern` | If the quarantine budget allows: `RelocateCmd(cls=top class, target=quarantine, ttl 120 s)` and, when a class is known, `RelocateCmd(target=None)` for the rest of the tenant. Otherwise kept on the spare (`RelocateCmd target=spare` if not yet there) | Restored after a quarantine; kept if it stays on the spare |
+| `over_plan` | `RelocateCmd(target=None)` if relocated; `Brain.force_throttle` → `LimitsCmd(factor 0.5, ttl 60 s)` through the ladder | Restored |
+| `mitigated_no_blame` | `RelocateCmd(target=None)` if relocated | Restored |
+| `host_fault` | Drain kept; `DrainCmd(drained=True)` renewed every TTL/4 (30 s) by `_renew_drains`; `DrainCmd(drained=False)` when the incident closes | — |
+| host was load (`mitigated_no_blame`) | `DrainCmd(drained=False)` | — |
+
+If the incident ended while a test ran, `on_proof` sends the tenant home and restores the spare, and `on_host` undrains the server.
 
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
 | `LEDGER_WINDOW_S` | constant `3.0` | Window for ledger hints | `_update_ledger` |
 | `GROWTH_FLOOR_MS` | constant `20.0` | Growth is measured against `max(baseline, 20 ms/s)` | `Ewma.growth` |
-| `CLEAR_TTL_S` | constant `5.0` | Equal weights sent for 5 s when clearing, then nothing | `_close` |
-| `Ledger` | `@dataclass` | Per-tenant hints, each 0..1: `bg_growth`, `evict_share`, `blackbox_all` (black-box growth on **all** of its servers), `over_share` (usage_ratio − 1) | Built by `_update_ledger` |
-| `Ledger.hint` | `hint(t) -> float` | Maximum of the four hints | `tick` (decoder `ledger=`) |
+| `CLEAR_TTL_S` | constant `5.0` | Equal weights sent for 5 s when clearing | `_close` |
+| `Ledger` | `@dataclass` | Per-tenant hints 0..1: `bg_growth`, `evict_share`, `blackbox_all`, `over_share` | Built by `_update_ledger` |
+| `Ledger.hint` | `hint(t) -> float` | Maximum of the four hints | `tick` |
 | `Ledger.why` | `why(t) -> List[str]` | Plain-English reasons for hints above 0.2 | `_named` |
-| `Ewma` | class `(alpha=0.1)` | Simple per-key EWMA | `Stage3.__init__` (`bg_base`, `bb_base`) |
+| `Ewma` | class `(alpha=0.1)` | Per-key EWMA (`Stage3` uses alpha 0.01) | `Stage3.__init__` |
 | `Ewma.update` | `update(k, x)` | EWMA step | `_update_ledger` |
 | `Ewma.growth` | `growth(k, x) -> float` | `clip((x − base) / max(base, 20), 0, 1)` | `_update_ledger` |
-| `Stage3` | class | The loop's state: health tracker, barcodes, prover, open server incident, decoding, ledger, rescue plan, route weights sent, naming debounce | `Brain.__init__` |
-| `Stage3.__init__` | `(brain, prover=None)` | Builds the `HealthTracker` over the fleet and worker servers; `NullProver` by default | `Brain.__init__` |
-| `Stage3.on_frame` | `on_frame(frame, now)` | Per server, the median of its tenants' cell p95 and the request count, passed to `health.observe` | `Brain.ingest_frame` |
-| `Stage3.on_canary` | `on_canary(server, rtt_ms, now)` | Passes a canary sample to health | `Brain.ingest_canary` |
-| `Stage3._update_ledger` | `_update_ledger(now, slow)` | Computes ledger hints from the last 3 s of worker stat samples. Their EWMA baselines learn only while every server is healthy | `tick` |
-| `Stage3.tick` | `tick(now, acting) -> (events, route_cmds)` | Decodes (if any server is slow). If acting: opens or closes the server incident, emits `detected` when new slow servers appear, plans and sends a rescue (on change, renew at TTL/4, or retry after 1 s), emits `rescued`, and emits `named` once the decoding has been stable for 4 ticks | `Brain.tick` |
-| `Stage3.status` | `status() -> str` | One sentence for the status line: "<servers> slow (<ratio>x peers): <n> tenants routed around; named <culprits>; host suspect <servers>." (empty when no server incident is open) | `Brain.status_sentence` |
-| `Stage3.mark_routes` | `mark_routes(ok, now)` | Records the delivery result of the last `RouteWeightsCmd` | `Runtime._routes_done`, `tests/conftest.py::drive` |
-| `Stage3._equal` | `_equal(t) -> Dict[str, float]` | Equal weights again over the servers last routed with | `tick`, `_close` |
-| `Stage3._emit` | `_emit(now, stage, **kw) -> IncidentEvent` | Emits on the open server incident | `tick`, `_close` |
-| `Stage3._close` | `_close(now, why, cmds) -> List[IncidentEvent]` | Sends equal weights (5 s TTL) if routes were sent, then emits `resolved` and `closed` and resets all state | `tick` |
-| `Stage3._srv` | `_srv(s) -> str` | "<server> <ratio>x its peers (<level> ms vs <peer> ms, by traffic/canary)" | `_slow_text`, `_named` |
-| `Stage3._slow_text` | `_slow_text(slow) -> str` | Text of the `detected` event | `tick` |
-| `Stage3._rescue_text` | `_rescue_text(slow) -> str` | Text of the `rescued` event: who moved where, partial moves, stuck tenants | `tick` |
-| `Stage3._named` | `_named(now, d) -> IncidentEvent` | The `named` event: culprits with confidence and reasons (covered servers, cannot route around, ledger hints), host suspects with "No tenant blamed", and whether proof is possible. `report` carries `p_slow`, the confidences and the culprits; `suspects` lists every culprit | `tick` |
+| `Stage3` | class | Health tracker, barcodes, prover, open server incident, decoding, ledger, rescue plan, routes sent, naming debounce, verdict params, budget, offender memory, per-incident `confidence` / `judged` / `proving` / `noted`, `jobs`, `control`, `drains`, `pre_evidence`, `held_hosts`, `ever_held`, `rescued_at` | `Brain.__init__` |
+| `Stage3.__init__` | `(brain, prover=None)` | `HealthTracker` over fleet + worker servers with barcodes and SLAs; `NullProver` until the runtime sets the real one | `Brain.__init__` |
+| `Stage3.on_frame` | `on_frame(frame, now)` | Cells to `health.observe`, counting only non-error requests | `Brain.ingest_frame` |
+| `Stage3.on_canary` | `on_canary(server, rtt_ms, now)` | Canary to health | `Brain.ingest_canary` |
+| `Stage3._update_ledger` | `_update_ledger(now, slow)` | Ledger hints from the last 3 s of stat samples; baselines learn only in a real calm (nothing slow or slow-now, ladder calm) | `tick` |
+| `Stage3.decoder_ratios` | `decoder_ratios() -> Dict[str, float]` | Fleet peer ratios, with servers below their SLA floor capped at 1.0 | `tick` |
+| `Stage3.hot_on` | `hot_on(server, now) -> List[str]` | §13.1 | `tick` |
+| `Stage3.held_by_culprit` | `held_by_culprit() -> List[str]` | Reported-slow servers a named culprit still over-uses | `tick` |
+| `Stage3.tick` | `tick(now, acting) -> (events, route_cmds)` | Slow set → ledger → decode → held hosts. If acting: open/close the incident, `detected` on growth, rescue (send on change, renew at TTL/4, retry after 1 s), `rescued`, `named` once stable for 4 ticks, held-host notes, `_judge`, `_renew_drains` | `Brain.tick` |
+| `Stage3._judge` | `_judge(now) -> List[IncidentEvent]` | Per culprit: repeat offender → last verdict; confidence < 0.8 → `classify`; no prover → named only; budget used → note once; else queue a `ProofRequest` and emit `proving` (`RelocateCmd target=spare`). Per host suspect: `can_drain` → queue a `HostCheck` and emit `proving` (`DrainCmd`), else note once | `tick` |
+| `Stage3._note` | `_note(now, subj, text) -> List[IncidentEvent]` | A `proving` note said once per subject per incident | `_judge`, `on_host` |
+| `Stage3.on_proof` | `on_proof(res, now) -> List[IncidentEvent]` | Classifies on the pre-test evidence plus the proof result, then `_verdict` | `Brain.on_proof` |
+| `Stage3._verdict` | `_verdict(now, t, v, why, ev, *, relocated, spare_before=None, readings=None)` | §13.2 for tenants; emits `verdict` with `IncidentEvent.verdict`, `tenant`, `suspects` and `report = {verdict, evidence, readings}` | `_judge`, `on_proof` |
+| `Stage3.on_host` | `on_host(res, now) -> List[IncidentEvent]` | `host_verdict`, keeps or undoes the drain, emits `verdict` ("No tenant blamed") | `Brain.on_host` |
+| `Stage3._renew_drains` | `_renew_drains(now)` | Re-sends our `host_fault` drains every TTL/4 | `tick` |
+| `Stage3._send_relocate` | `_send_relocate(cmd)` | Queues under key `relocate:<tenant>:<cls or *>` | `_verdict`, `on_proof` |
+| `Stage3._send_drain` | `_send_drain(server, drained, iid)` | Queues under key `drain:<server>` | `on_host`, `_renew_drains`, `_close` |
+| `Stage3.status` | `status() -> str` | "<servers> slow (<ratio>x peers): <n> tenants routed around; named <culprits>; host suspect <servers>." | `Brain.status_sentence` |
+| `Stage3.mark_routes` | `mark_routes(ok, now)` | Delivery result of the last `RouteWeightsCmd` | `Runtime._routes_done`, `drive` |
+| `Stage3._equal` | `_equal(t) -> Dict[str, float]` | Equal weights over the servers last routed with | `tick`, `_close` |
+| `Stage3._emit` | `_emit(now, stage, **kw) -> IncidentEvent` | Emits on the open server incident | Throughout |
+| `Stage3._close` | `_close(now, why, cmds)` | Equal weights (5 s TTL) if routes were sent, undrains our drains, `resolved` and `closed`, resets per-incident state | `tick` |
+| `Stage3._srv` | `_srv(s) -> str` | "<server> <ratio>x its peers (<level> ms vs <peer> ms, by traffic/canary[, healing])" | Texts |
+| `Stage3._slow_text` | `_slow_text(slow) -> str` | `detected` text | `tick` |
+| `Stage3._rescue_text` | `_rescue_text(slow) -> str` | `rescued` text | `tick` |
+| `Stage3._named` | `_named(now, d) -> IncidentEvent` | `named` text: culprits with confidence and reasons, host suspects ("No tenant blamed"), held hosts, and the next step (proof if confidence ≥ 0.8; with `NullProver` it says relocation needs the Docker host). `report = {p_slow, confidence, host_suspects, culprits}` | `tick` |
+| `s_and` | `s_and(ts) -> str` | "it is" / "they are" | `tick` |
 | `_diff` | `_diff(a, b) -> float` | Largest per-server weight difference (a change above 0.02 triggers a resend) | `tick` |
 
 **Key decisions**
-- **Rescue first, name second, throttle only if harm persists.** Victims are routed around a slow server as soon as health opens it (after the `open_after_ticks` debounce), before any blame. `tests/test_stage3_sim.py::test_rescue_first_then_throttle_only_if_harm_persists` covers this.
-- **The culprit is not routed.** Only victims move; the named tenant stays put for the prover.
-- **Naming is debounced.** It needs the same culprit/host verdict for 4 ticks in a row, so one noisy tick never names anyone.
+- **Rescue first, name second, throttle only if harm persists** (`tests/test_stage3_sim.py::test_rescue_first_then_throttle_only_if_harm_persists`). The ladder also gets a rescue grace (§14.1).
+- **The culprit is not routed.** Only victims move; the prover moves the culprit.
+- **Tenant hypothesis before host hypothesis** (§13.1, `tests/test_host_noise.py::test_a_server_a_hot_tenant_runs_on_is_not_drained_as_a_faulty_host`, `test_a_real_host_fault_with_no_hot_tenant_is_still_drained`).
+- **Bounded actions.** At most 6 relocation tests a minute, one quarantine every 30 s, one drained server, and no drain while peers are busy. Every relocation and drain has a TTL.
 
 ---
 
-## 13. `brain/tenantguard_brain/core.py` — the `Brain`
+## 14. `brain/tenantguard_brain/core.py` — the `Brain`
 
 The brain's central state machine, with no I/O:
 
 1. **Ingest:** telemetry frames, worker stats and canaries in.
 2. **Score:** rolling windows, then scores.
-3. **Act:** ladders, then `LimitsCmd`s, plus Stage 3 route commands.
-4. **Report:** incident events, `StateSnapshot`, and operator decisions.
+3. **Act:** ladders → `LimitsCmd`s; Stage 3 route commands, relocations, drains and proof jobs; background CPU charges.
+4. **Report:** incident events, `StateSnapshot` (with `ImpactView`), and operator decisions.
 
-`runtime.py` feeds it and sends what it returns; the tests drive it with a virtual clock.
+### 14.1 One tick (`Brain.tick`, every 250 ms)
+1. **Windows.** Scoring frames use the last 2 s; tenant views 5 s; CPU `max(2 s, 3 × stats_poll)` = 3 s of diffed worker stats.
+2. **Victim latency** (`victim_latency`): the 0.3 quantile of each tenant's per-tick end-to-end p95 over 5 s, from ticks with completions, with at least 4 such ticks.
+3. **Baselines** learn once a second, only while calm, from that same victim latency (`_learn_baselines`). Frozen tenants and outliers above 2 × max(baseline, 8 ms) are skipped.
+4. **Slowdowns** against the baseline (ready after 3 samples), with the 8 ms floor and the 8 ms absolute margin.
+5. **Occupancy** (`occupancy`): the median queue depth + inflight over 5 s, scaled by the share of its requests that succeeded (fast 502s are not slot usage).
+6. **Scores.** `compute_scores` over the active tenants with `over_use` 1.6, `min_hurt` 4, `hurt_level` 0.1.
+7. **Calm flag.** No open incidents and nobody flagged at ≥ warn.
+8. **Ladders.** Fresh telemetry and `tenantguard` mode: each ladder steps (operator holds skipped). During a **rescue grace** (a server incident covers the tenant's servers and its rescue is younger than victim window + throttle hold = 7 s) the score is capped just below the throttle threshold, so the ladder may warn but not throttle. Other mode: every ladder is reset. Stale telemetry: everything holds.
+9. **Class baselines** (`_learn_classes`) once a second in calm with no server incident.
+10. **Impact** (`_measure_impact`).
+11. **Stage 3.** `Stage3.tick` returns events and route commands; its queued control commands and jobs move into the `TickResult`.
+12. **Commands.** `_commands` decides which `LimitsCmd` to send.
+13. **Charges.** `_charges` adds the background CPU charges.
 
-### 13.1 One tick (`Brain.tick`, every 250 ms)
-1. **Windows.** Detection uses the last 2 s of frames. Tenant views use 5 s. CPU uses `max(2 s, 3 × stats_poll)` = 3 s of diffed worker stats.
-2. **Inputs.**
-   - **Per-tenant victim latency:** count-weighted end-to-end p95 from `QueueStat`. Ticks with `completed == 0` are skipped.
-   - **Slowdown vs the calm baseline:** measured with the 8 ms floor.
-   - **Occupancy:** queue depth + inflight.
-   - **Capacity:** CPU capacity per server, from the workers' `cpu_limit_cores`.
-   - **Dispatch slots:** from the gateway limiter window.
-3. **Scores.** `compute_scores` over the *active* tenants, those with completions, queue or CPU.
-4. **Calm flag.** It is true when there are no open incidents and nobody is flagged at ≥ warn. Baselines learn only then.
-5. **Operator holds that have ended** are expired.
-6. **Ladders.** If telemetry is fresh and mode is `tenantguard`, each ladder steps (tenants under an operator hold are skipped). If telemetry is fresh but the mode is anything else, every ladder is reset and a 1.0/1.0 clear is sent. If telemetry is stale, everything holds, because there is no evidence either way.
-7. **Stage 3.** `Stage3.tick` returns events and route commands.
-8. **Commands.** `_commands` decides which `LimitsCmd` to send.
-
-### 13.2 Command rules (`_commands`)
-Every `LimitsCmd` carries **both** `factor` and `weight_factor` from ladder state, because the gateway *replaces* the previous command.
+### 14.2 Command rules (`_commands`)
+Every `LimitsCmd` carries **both** `factor` and `weight_factor`, because the gateway *replaces* the previous command.
 
 | Situation | Sent |
 |---|---|
@@ -491,68 +668,89 @@ Every `LimitsCmd` carries **both** `factor` and `weight_factor` from ladder stat
 | No longer acting, last sent was not 1.0/1.0 | Explicit clear `factor=1.0, weight_factor=1.0` |
 | Clear failed ≥ 1 s ago | Retry the clear |
 
+### 14.3 Background CPU charge (`_charges`)
+Background-job CPU (`TenantUsage.bg_cpu_ms`) is not in the worker's `X-TenantGuard-Cpu-Ms` header, so the gateway cannot debit it on the request path. `ingest_stats` adds each tenant's new background CPU to `bg_pending`. Once every `charge_s` (1 s), `_charges` empties `bg_pending` and, in `tenantguard` mode only, returns one `ChargeCmd(tenant, cpu_ms, period_s, charge_id="<tenant>-<epoch second>")` per tenant with CPU to charge, under sender key `charge:<tenant>:<second>`, for `POST /control/charge`. Outside `tenantguard` mode the pending CPU is dropped, not charged. A charge that is not delivered goes back into `bg_pending` (`charge_failed`) and rides on the next charge with a new id; the gateway de-duplicates by `charge_id`.
+
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
 | `ACTING_MODE` | constant `"tenantguard"` | The only mode in which the brain acts | `tick`, `status_sentence` |
-| `StatSample` | `@dataclass` | One diffed `/stats` interval: server, seconds covered, CPU per tenant (handler + bg), total CPU, limit cores, bg CPU per tenant, evictions caused per tenant, black-box CPU | Built by `ingest_stats`; read by `_cpu_by_server`, `_server_cpu`, `Stage3._update_ledger` |
-| `Sent` | `@dataclass` | Last command per tenant: factors, time, TTL, `ok` (None = in flight) | `_cmd`, `adopt_overrides`, `mark_sent`, `_commands` |
-| `OperatorHold` | `@dataclass` | Human decision in force: `decision` (release / extend), `until`, `by`, `case_id`, `suppressed` | `operator`, `tick`, `_held_tick`, `_expire_holds` |
-| `TickResult` | `@dataclass` | `commands` (LimitsCmd), `route_cmds` (RouteWeightsCmd), `events` | Returned by `tick` to `Runtime._tick_loop` and `drive` |
-| `TenantAgg` | `@dataclass` | Per-tenant aggregates over a window: completed, p95 × completed, rejected (429 + 503), occupancy, ticks | `_tenant_agg` |
-| `TenantAgg.p95` | property | Count-weighted p95, or `None` without completions | `tick`, `snapshot` |
+| `StatSample` | `@dataclass` | One diffed `/stats` interval: server, `dt`, CPU per tenant (handler + bg), total CPU, limit cores, bg CPU per tenant, evictions caused, black-box CPU, per-(tenant, class) CPU and counts | Built by `ingest_stats` |
+| `Sent` | `@dataclass` | Last `LimitsCmd` per tenant: factors, time, TTL, `ok` (None = in flight) | `_cmd`, `adopt_overrides`, `mark_sent`, `_commands` |
+| `OperatorHold` | `@dataclass` | `decision` (release / extend), `until`, `by`, `case_id`, `suppressed` | `operator`, `tick`, `_held_tick`, `_expire_holds` |
+| `TickResult` | `@dataclass` | `commands` (LimitsCmd), `route_cmds`, `control` ((key, path, command): charges, relocations, drains), `jobs` (proof requests, host checks, spare restores), `events` | Returned by `tick`, `on_proof`, `on_host` |
+| `TenantAgg` | `@dataclass` | Per-tenant aggregates: completed, p95 × completed, rejected, admitted, occupancy, ticks, served, failed | `_tenant_agg` |
+| `TenantAgg.p95` | property | Count-weighted p95, or `None` | `tick`, `snapshot` |
+| `TenantAgg.ok_fraction` | property | Share of answered requests that succeeded | `occupancy` |
 | `Brain` | class | The state machine | `Runtime.__init__`, tests |
-| `Brain.__init__` | `(cfg: BrainSettings)` | Tenants, weights, barcodes, neighbour lists, frame and stat deques, baseline tracker, one `LadderState` per tenant, incident book, `Stage3`, operator holds; `hurt_off = min_victim_impact / 2` | `Runtime.__init__`, tests |
-| `Brain.ingest_frame` | `ingest_frame(frame, now)` | Stores the frame and mode, prunes old state, feeds `Stage3.on_frame`. When calm, updates each tenant's baseline. Skips `completed == 0`, frozen tenants, and outliers above 2 × max(baseline, 8 ms) | `Runtime._telemetry_loop`, `drive` |
-| `Brain.ingest_canary` | `ingest_canary(server, rtt_ms, now)` | Passes the sample to Stage 3 health | `Runtime._canary_one`, `drive` |
-| `Brain.adopt_overrides` | `adopt_overrides(ov: OverridesView, now) -> (events, clears)` | On start-up, takes over limits a previous brain run left on the gateway: sets the ladder to the level implied by the factors, opens an incident, and marks the command as sent. Limits for unknown tenants are returned as clears | `Runtime._adopt_once` |
-| `Brain.cpu_by_server` | `cpu_by_server(now) -> Dict[str, Dict[str, float]]` | server → tenant → CPU ms/s over the CPU window | `Stage3.tick` (rescue load) |
-| `Brain.server_capacity` | `server_capacity(now) -> Dict[str, float]` | server → CPU ms/s limit (cores × 1000) | `Stage3.tick` |
-| `Brain._baseline_frozen` | `_baseline_frozen(t) -> bool` | True if the tenant is itself hurt (slowdown ≥ 0.2) or any neighbour's `usage_ratio > 1` | `ingest_frame` |
-| `Brain.ingest_stats` | `ingest_stats(st: WorkerStats, now)` | Diffs cumulative counters against the previous sample of that worker. No diff is taken on the first sample, a `started_at` change (restart), time going backwards, or CPU going down. Negative per-tenant deltas are clamped to 0 | `Runtime._poll_one`, `drive` |
-| `Brain._prune` | `_prune(now)` | Drops frames and samples older than `history_s` (60 s) | `ingest_frame`, `ingest_stats`, `tick` |
-| `Brain._frames` | `_frames(now, window) -> List[TelemetryFrame]` | Frames inside the window, oldest first | `tick`, `snapshot` |
-| `Brain._span` | `staticmethod _span(frames) -> float` | Seconds covered (Σ tick_ms) | `snapshot` |
-| `Brain._tenant_agg` | `_tenant_agg(frames) -> Dict[str, TenantAgg]` | Aggregates `QueueStat`s; p95 only from ticks with completions | `tick`, `snapshot` |
-| `Brain._cpu_by_server` | `_cpu_by_server(now, window)` | server → tenant → CPU ms/s from stat samples | `tick`, `cpu_by_server`, `_tenant_cpu` |
-| `Brain._tenant_cpu` | `_tenant_cpu(now, window) -> Dict[str, float]` | Tenant CPU ms/s summed over servers | `snapshot` |
-| `Brain._server_cpu` | `_server_cpu(now, window) -> Dict[str, (ms_per_s, cores)]` | Total CPU per server and its limit | `server_capacity`, `tick`, `snapshot` |
-| `Brain._server_p95` | `_server_p95(frames) -> Dict[str, Optional[float]]` | Count-weighted server-side p95 from cells | `snapshot` |
+| `Brain.__init__` | `(cfg)` | Tenants, weights, barcodes, neighbours, deques, baseline tracker, ladders, incident book, `Stage3`, holds, impact meter slot, class baselines, `bg_pending` | `Runtime.__init__`, tests |
+| `Brain.ingest_frame` | `ingest_frame(frame, now)` | Stores the frame and mode, prunes, feeds `Stage3.on_frame` | `Runtime._telemetry_loop`, `drive` |
+| `Brain.victim_latency` | `victim_latency(now) -> Dict[str, float]` | §14.1 step 2 | `tick` |
+| `Brain.occupancy` | `occupancy(now) -> Dict[str, float]` | §14.1 step 5 | `tick` |
+| `Brain._learn_baselines` | `_learn_baselines(now, lat)` | §14.1 step 3 | `tick` |
+| `Brain.ingest_canary` | `ingest_canary(server, rtt_ms, now)` | To Stage 3 health | `Runtime._canary_one`, `drive` |
+| `Brain.adopt_overrides` | `adopt_overrides(ov, now) -> (events, clears)` | On start-up, takes over leftover limits; unknown tenants are cleared. Route weights are left to expire | `Runtime._adopt_once` |
+| `Brain.cpu_by_server` | `cpu_by_server(now)` | server → tenant → CPU ms/s over the CPU window | `Stage3`, `footprint` |
+| `Brain.server_capacity` | `server_capacity(now)` | server → CPU ms/s limit | `Stage3` |
+| `Brain._rescue_grace` | `_rescue_grace(t, now) -> bool` | §14.1 step 8 | `tick` |
+| `Brain._baseline_frozen` | `_baseline_frozen(t) -> bool` | True if the tenant is hurt (slowdown ≥ 0.2) or a neighbour's `usage_ratio > 1` | `_learn_baselines` |
+| `Brain.ingest_stats` | `ingest_stats(st, now)` | Diffs cumulative counters (no diff on the first sample, a restart, time going backwards or CPU going down); adds bg CPU to `bg_pending`; per-class deltas | `Runtime._poll_one`, `drive` |
+| `Brain._prune` | `_prune(now)` | Drops data older than 60 s | Several |
+| `Brain._frames` | `_frames(now, window)` | Frames inside the window | Several |
+| `Brain._span` | `staticmethod _span(frames)` | Seconds covered | `snapshot` |
+| `Brain._tenant_agg` | `_tenant_agg(frames)` | Aggregates `QueueStat`s and cells | `tick`, `occupancy`, `verdict_inputs`, `snapshot` |
+| `Brain._cpu_by_server` | `_cpu_by_server(now, window)` | server → tenant → CPU ms/s | `tick`, `cpu_by_server`, `_tenant_cpu` |
+| `Brain._tenant_cpu` | `_tenant_cpu(now, window)` | Tenant CPU summed over servers | `snapshot` |
+| `Brain._server_cpu` | `_server_cpu(now, window)` | server → (CPU ms/s, limit cores) | Several |
+| `Brain._server_p95` | `_server_p95(frames)` | Count-weighted server p95 | `snapshot` |
 | `Brain.telemetry_fresh` | `telemetry_fresh(now) -> bool` | Last frame within max(2 s, 8 ticks) | `tick`, `snapshot`, `status_sentence` |
-| `Brain.tick` | `tick(now) -> TickResult` | §13.1 | `Runtime._tick_loop`, `drive` |
-| `Brain.operator` | `operator(cmd: OperatorCmd, now) -> List[IncidentEvent]` | Applies a human decision (§13.3) | `POST /api/operator` |
-| `Brain._restart_holds` | `staticmethod _restart_holds(st, now)` | Empties all hold histories, so the ladder needs fresh, full holds after a human hold | `operator` (resume), `_expire_holds` |
-| `Brain._held_tick` | `_held_tick(t, sd, now) -> List[IncidentEvent]` | During a *release* hold, notes once that an escalation was suppressed (with the evidence) | `tick` |
-| `Brain._expire_holds` | `_expire_holds(now) -> List[IncidentEvent]` | Ends expired holds, emits "hold ended", and closes the incident if the tenant is normal | `tick` |
-| `Brain._evidence` | `_evidence(t) -> str` | Plain-English evidence: "<name> (<id>) uses <cpu>% of the CPU and <queue>% of the dispatch slots of its servers against a fair share of <fair>% (<ratio>x, by CPU/queue). <n> of <m> neighbours are slower than their calm baseline (mean impact +<x>%: worst victims). Noisy score <s>." | `_held_tick`, `_on_transition` |
-| `Brain._action_text` | `_action_text(factor, wf, level) -> str` | "LimitsCmd factor=0.50 weight_factor=1.00 ttl=60s", or "… (override cleared)" | `adopt_overrides`, `operator`, `_on_transition` |
-| `Brain._on_transition` | `_on_transition(t, tr, now) -> List[IncidentEvent]` | Opens the incident on the first move (`detected`), emits `level_change` with the rule, the factor change and the evidence, emits `resolved` on clear and `closed` when back to normal | `tick` |
-| `Brain._commands` | `_commands(now) -> List[LimitsCmd]` | §13.2 | `tick` |
-| `Brain._cmd` | `_cmd(t, f, wf, ttl, now) -> LimitsCmd` | Records `Sent` and builds the command with the open incident id | `_commands` |
-| `Brain.mark_sent` | `mark_sent(cmd, ok, now)` | Records the delivery result. Ignores results for superseded commands. A successful clear forgets the tenant | `Runtime._limits_done`, `drive` |
-| `Brain.snapshot` | `snapshot(now) -> StateSnapshot` | Builds the UI view. `TenantView` (5 s window): p95, rps, rejected rps, CPU share, raw and normalised noisy score, level, factor. `ServerView` (2 s): p95, peer ratio, CPU % of its limit, healthy/slow. Also fleet utilisation, Jain fairness, the status sentence, `brain_ok`, and `noisy_thresholds` from yaml | `Runtime._snapshot_loop`, `GET /api/state`, WS backfill |
-| `Brain.status_sentence` | `status_sentence(now, util, fair) -> str` | The one-line headline (waiting / telemetry lost / observing-only mode / server incident / watching / throttled / deprioritised / quarantined / recovered), ending with fairness and fleet CPU | `snapshot` |
-| `Brain.debug` | `debug() -> dict` | Scores, ladders, baselines, sent commands, open incidents, server health, decoding, rescue plan | `GET /api/debug` |
+| `Brain.tick` | `tick(now) -> TickResult` | §14.1 | `Runtime._tick_loop`, `drive` |
+| `Brain.on_proof` | `on_proof(result, now) -> TickResult` | `Stage3.on_proof` plus its queued control and jobs | `Runtime._run_job` |
+| `Brain.on_host` | `on_host(result, now) -> TickResult` | `Stage3.on_host` plus its queued control and jobs | `Runtime._run_job` |
+| `Brain.control_done` | `control_done(cmd, ok, now)` | Relocate / drain delivery result; nothing to update (the TTL bounds a refused action) | `Runtime._control_done` |
+| `Brain.readings` | `readings(now) -> Readings` | Per-server slowdown, peer ratio, CPU ms/s (2 s window) and source | `Runtime.readings`, `SimEnv` |
+| `Brain.footprint` | `footprint(t, now) -> dict` | `paid` (metered handler + bg CPU on its servers), `unexplained` (black-box CPU on its servers), `footprint` | `Stage3._judge`, `verdict_inputs` |
+| `Brain.verdict_inputs` | `verdict_inputs(t, now) -> dict` | `paid_share`, `blackbox_hint`, `evict_hint`, `rejected_share` (5 s) | `Stage3` |
+| `Brain.class_rates` | `class_rates(now, window)` | (tenant, class) → (requests/s, CPU ms/s) | `_learn_classes`, `top_class` |
+| `Brain._learn_classes` | `_learn_classes(now)` | Calm EWMA (0.05) of each class's rates | `tick` |
+| `Brain.top_class` | `top_class(t, now) -> Optional[str]` | The class that grew most against its calm baseline | `Stage3._verdict` (`costly_pattern`) |
+| `Brain.server_utilisation` | `server_utilisation(now)` | CPU share of each server's limit | `Stage3._judge` (drain budget) |
+| `Brain.force_throttle` | `force_throttle(t, now, reason) -> List[IncidentEvent]` | `over_plan`: sets the ladder at factor `throttle_factor` (0.5) unless it is already tighter, restarts holds, emits the transition | `Stage3._verdict` |
+| `Brain._measure_impact` | `_measure_impact(now, agg, acting)` | Creates the `ImpactMeter` on the first frame; ticks it with the threatened tenants (§7) | `tick` |
+| `Brain._charges` | `_charges(now, acting) -> List[(key, path, ChargeCmd)]` | §14.3 | `tick` |
+| `Brain.charge_failed` | `charge_failed(cmd)` | Folds an undelivered charge back into `bg_pending` | `Runtime._control_done` |
+| `Brain.operator` | `operator(cmd, now) -> List[IncidentEvent]` | Applies a human decision (§14.4) | `POST /api/operator` |
+| `Brain._restart_holds` | `staticmethod _restart_holds(st, now)` | Empties all hold histories | `operator`, `_expire_holds`, `force_throttle` |
+| `Brain._held_tick` | `_held_tick(t, sd, now)` | During a release hold, notes once that an escalation was suppressed | `tick` |
+| `Brain._expire_holds` | `_expire_holds(now)` | Ends expired holds; closes the incident if normal | `tick` |
+| `Brain._evidence` | `_evidence(t) -> str` | Plain-English evidence sentence | `_held_tick`, `_on_transition` |
+| `Brain._action_text` | `_action_text(factor, wf, level) -> str` | "LimitsCmd factor=0.50 weight_factor=1.00 ttl=60s" or "… (override cleared)" | Several |
+| `Brain._on_transition` | `_on_transition(t, tr, now)` | `detected` on the first move, `level_change`, `resolved` on clear, `closed` at normal; notes innocents for the impact meter | `tick`, `force_throttle` |
+| `Brain._commands` | `_commands(now) -> List[LimitsCmd]` | §14.2 | `tick` |
+| `Brain._cmd` | `_cmd(t, f, wf, ttl, now) -> LimitsCmd` | Records `Sent`, builds the command | `_commands` |
+| `Brain.mark_sent` | `mark_sent(cmd, ok, now)` | Delivery result; ignores superseded commands | `Runtime._limits_done`, `drive` |
+| `Brain.snapshot` | `snapshot(now) -> StateSnapshot` | `TenantView` (5 s; `placement` is always `normal`), `ServerView` (2 s; `status` healthy or slow), utilisation, Jain fairness, status sentence, `brain_ok`, `impact`, `noisy_thresholds` | `Runtime._snapshot_loop`, `GET /api/state`, WS backfill |
+| `Brain.status_sentence` | `status_sentence(now, util, fair) -> str` | The one-line headline, including "recovering: limits back up to N% of plan" while relaxing | `snapshot` |
+| `Brain.debug` | `debug() -> dict` | Scores, ladders, baselines, sent, open incidents, server health (with `excess_ms`, `tenants_used`), decoding, rescue plan | `GET /api/debug`, `tools/calibrate_health.py` |
 
-### 13.3 Operator decisions (`Brain.operator`, `POST /api/operator`)
-A human decision **owns** the tenant until it ends, so the human and the ladder never fight.
+### 14.4 Operator decisions (`Brain.operator`, `POST /api/operator`)
 
 | `decision` | Effect |
 |---|---|
-| `release` | Ladder reset to normal, so a 1.0/1.0 clear is sent. No automatic escalation until `until_s`. If the tenant would escalate during the hold, that is noted **once** in the incident, with the evidence |
-| `extend` | Keeps the current level and factors, and the TTL keeps being renewed until `until_s`. Then the ladder resumes, needing fresh holds |
+| `release` | Ladder reset to normal, so a 1.0/1.0 clear is sent. No automatic escalation until `until_s`; a would-be escalation is noted **once** with the evidence |
+| `extend` | Keeps the current level and factors; TTLs keep being renewed until `until_s`, then the ladder resumes with fresh holds |
 | `resume` | Cancels any hold now; the ladder needs fresh holds |
 
 **Key decisions**
-- **Pure core.** The whole decision logic is deterministic and replayable with a virtual clock. This is why scenario tests (whale, host fault, legit burst, moderate attack) run in seconds.
-- **Fail-safe on stale input.** Missing telemetry freezes decisions but keeps renewing overrides already in force. Leaving `tenantguard` mode actively clears them.
-- **Restart-safe.** Adopting leftover overrides means a brain restart never leaves an unmanaged throttle on the gateway (`tests/test_runtime.py::test_adopt_leftover_overrides`).
-- **Every action is explained.** Every `level_change` carries the rule that fired, the factor change and the numeric evidence (`tests/test_core.py::test_every_event_explains_why`).
+- **Pure core**, replayable with a virtual clock.
+- **Fail-safe on stale input.** Missing telemetry freezes decisions but keeps renewing overrides already in force. Leaving `tenantguard` mode clears them.
+- **Restart-safe.** Leftover overrides are adopted (`tests/test_runtime.py::test_adopt_leftover_overrides`).
+- **Every action is explained** (`tests/test_core.py::test_every_event_explains_why`).
 
 ---
 
-## 14. `brain/tenantguard_brain/runtime.py` — the I/O shell
+## 15. `brain/tenantguard_brain/runtime.py` — the I/O shell
 
-Everything that touches the network. It runs seven asyncio loops around one `Brain`, serialises control sends per key, and fans events out to dashboard clients.
+Everything that touches the network. It picks the prover at start-up, runs seven asyncio loops around one `Brain`, serialises control sends per key, runs proofs and drain tests as background jobs, and fans events out to dashboard clients.
 
 | Loop | Period | Does |
 |---|---|---|
@@ -560,53 +758,61 @@ Everything that touches the network. It runs seven asyncio loops around one `Bra
 | `_telemetry_loop` | continuous | WS `<gateway>/internal/telemetry`, then `ingest_frame`. Bad frames are skipped; reconnect backoff 0.5 → 5 s |
 | `_stats_loop` | `brain.stats_poll_s` (1 s) | `GET <worker>/stats` for every worker in parallel |
 | `_canary_loop` | `health.canary_s` (1 s) | `GET <worker>/canary`; the round trip feeds health |
-| `_heartbeat_loop` | `fail_static_after_s / 4` (0.5 s) | `POST /control/heartbeat` |
-| `_tick_loop` | `brain.tick_ms` (250 ms) | `Brain.tick`, publishes the events, submits the commands |
-| `_snapshot_loop` | 0.5 s (2 Hz) | Publishes `StateSnapshot` to UI clients (only if any are connected) |
+| `_heartbeat_loop` | 0.5 s | `POST /control/heartbeat` |
+| `_tick_loop` | 250 ms | `Brain.tick`, then `_apply` |
+| `_snapshot_loop` | 0.5 s | Publishes `StateSnapshot` to UI clients (only if any are connected) |
+
+`_apply(TickResult)` publishes the events, submits each `LimitsCmd` (key `limits:<tenant>` → `/control/limits`), each `RouteWeightsCmd` (key `routes` → `/control/route_weights`), each control command (its own key → `/control/relocate`, `/control/drain` or `/control/charge`) and starts each job.
 
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
 | `Hub` | class | Fan-out to UI WebSocket clients; one bounded queue (256) per client | `Runtime.__init__` |
 | `Hub.__init__` | `(max_queue=256)` | — | `Runtime.__init__` |
-| `Hub.subscribe` | `subscribe() -> asyncio.Queue` | New client queue | `main.ws_events` |
-| `Hub.unsubscribe` | `unsubscribe(q)` | Removes a client | `main.ws_events` |
-| `Hub.publish` | `publish(text)` | Puts a message on every queue; a full queue drops its oldest message, so a slow client never stalls the brain | `Runtime._publish`, `_snapshot_loop` |
-| `Post`, `Done` | type aliases | Send function and completion callback signatures | `Sender` |
-| `Sender` | class | Serialised delivery **per key**: at most one request in flight per key, and the latest unsent command replaces an older one | `Runtime.__init__` |
-| `Sender.__init__` | `(post: Post)` | — | `Runtime.__init__` |
-| `Sender.submit` | `submit(key, path, model, done)` | Queues (latest wins) and starts the key's task if none is running; holds the task reference | `Runtime.send_limits`, `_tick_loop` (key `"routes"`) |
-| `Sender._run` | `async _run(key)` | Drains the key: posts, then calls `done(model, ok)`; removes itself synchronously at the end | `submit` |
-| `Sender.close` | `async close()` | Cancels and awaits all running sends | `Runtime.stop` |
-| `Runtime` | class | Owns the `Brain`, `Hub`, `Sender`, the `httpx.AsyncClient`, the loop tasks and health counters | `main.create_app` |
+| `Hub.subscribe` / `unsubscribe` | `subscribe() -> Queue`, `unsubscribe(q)` | Adds / removes a client | `main.ws_events` |
+| `Hub.publish` | `publish(text)` | Puts a message on every queue; a full queue drops its oldest message | `Runtime._publish`, `_snapshot_loop` |
+| `Post`, `Done` | type aliases | Send function and completion callback | `Sender` |
+| `Sender` | class | Serialised delivery **per key**: at most one request in flight per key, latest unsent command wins | `Runtime.__init__` |
+| `Sender.__init__` | `(post)` | — | `Runtime.__init__` |
+| `Sender.submit` | `submit(key, path, model, done)` | Queues (latest wins) and starts the key's task | `Runtime._apply`, `send_limits` |
+| `Sender._run` | `async _run(key)` | Drains the key: posts, then `done(model, ok)` | `submit` |
+| `Sender.close` | `async close()` | Cancels and awaits all sends | `Runtime.stop` |
+| `Runtime` | class | Owns the `Brain`, `Hub`, `Sender`, HTTP client, loop tasks, job tasks, `HostProver` and health counters | `main.create_app` |
 | `Runtime.__init__` | `(cfg, brain=None)` | — | `main.create_app`, tests |
-| `Runtime.ws_url` | property | Gateway URL turned into `ws(s)://…/internal/telemetry` | `_telemetry_loop` |
+| `Runtime.ws_url` | property | Gateway URL as `ws(s)://…/internal/telemetry` | `_telemetry_loop` |
 | `Runtime.control_headers` | property | `{X-TenantGuard-Control-Token: <token>}` | `_post`, `_adopt_once`, `_heartbeat_loop` |
-| `Runtime.start` | `async start()` | Creates the HTTP client (1 s timeouts, 64 connections) and starts the seven loops | `main.create_app.lifespan` |
-| `Runtime.stop` | `async stop()` | Cancels the loops, closes the sender and the client | `main.create_app.lifespan` |
-| `Runtime._post` | `async _post(path, model) -> bool` | POSTs with the control token; logs and returns False on ≥ 400 or any exception | `Sender` (as `post`) |
-| `Runtime._publish` | `_publish(events)` | Logs each incident event and publishes its JSON | `_adopt_once`, `_tick_loop`, `main.operator` |
-| `Runtime._limits_done` | `_limits_done(cmd, ok)` | `Brain.mark_sent` plus a counter and a log line | `Sender` callback for limits |
-| `Runtime._routes_done` | `_routes_done(cmd, ok)` | `Stage3.mark_routes` plus a counter and a log line | `Sender` callback for routes |
-| `Runtime.send_limits` | `send_limits(cmd)` | Submits under key `limits:<tenant>` to `/control/limits` | `_adopt_once`, `_tick_loop` |
+| `Runtime.start` | `async start()` | HTTP client (1 s timeouts, 64 connections); `brain.s3.prover = await make_prover(...)` (an error is logged and the brain continues without proofs); starts the seven loops | `main.create_app.lifespan` |
+| `Runtime.stop` | `async stop()` | Cancels loops and jobs, closes the sender and the client | `main.create_app.lifespan` |
+| `Runtime._post` | `async _post(path, model) -> bool` | POSTs with the control token; False on ≥ 400 or any exception | `Sender`, `send` |
+| `Runtime._publish` | `_publish(events)` | Logs and publishes each event | `_apply`, `_adopt_once`, `main.operator` |
+| `Runtime._limits_done` | `_limits_done(cmd, ok)` | `Brain.mark_sent` | `Sender` callback |
+| `Runtime._routes_done` | `_routes_done(cmd, ok)` | `Stage3.mark_routes` | `Sender` callback |
+| `Runtime._control_done` | `_control_done(cmd, ok)` | A failed `ChargeCmd` → `Brain.charge_failed`; otherwise `Brain.control_done` | `Sender` callback |
+| `Runtime.readings` | `readings() -> Readings` | `ProveEnv` method: `Brain.readings(now)` | Provers |
+| `Runtime.send` | `async send(path, model) -> bool` | `ProveEnv` method: a direct `_post` (not through the `Sender`) | Provers |
+| `Runtime.sleep` | `async sleep(seconds)` | `ProveEnv` method: `asyncio.sleep` | Provers |
+| `Runtime._apply` | `_apply(res)` | See above | `_tick_loop`, `_run_job` |
+| `Runtime._start_job` | `_start_job(job)` | Creates and tracks the job task | `_apply` |
+| `Runtime._run_job` | `async _run_job(job)` | `ProofRequest` → `prover.prove` → `_apply(brain.on_proof(...))`; `HostCheck` → `host_prover.check` → `_apply(brain.on_host(...))`; `("restore_spare", cores)` → `prover.restore_spare`. Failures are logged, never fatal | `_start_job` |
+| `Runtime.send_limits` | `send_limits(cmd)` | Key `limits:<tenant>` → `/control/limits` | `_apply`, `_adopt_once` |
 | `Runtime._adopt_once` | `async` | See the loop table | `start` |
 | `Runtime._telemetry_loop` | `async` | See the loop table | `start` |
-| `Runtime._poll_one` | `async _poll_one(server, url)` | One `/stats` poll, then `ingest_stats`; tracks `worker_ok` | `_stats_loop` |
+| `Runtime._poll_one` | `async _poll_one(server, url)` | One `/stats` poll, then `ingest_stats` | `_stats_loop` |
 | `Runtime._stats_loop` | `async` | See the loop table | `start` |
-| `Runtime._canary_one` | `async _canary_one(server, url)` | Times one `/canary` round trip (< 500 counts) and feeds `ingest_canary` | `_canary_loop` |
+| `Runtime._canary_one` | `async _canary_one(server, url)` | Times one `/canary` (status < 500 counts) | `_canary_loop` |
 | `Runtime._canary_loop` | `async` | See the loop table | `start` |
 | `Runtime._heartbeat_loop` | `async` | See the loop table; tracks `gateway_ok` | `start` |
-| `Runtime._tick_loop` | `async` | See the loop table; a failing tick is logged and skipped, never fatal | `start` |
+| `Runtime._tick_loop` | `async` | See the loop table; a failing tick is logged and skipped | `start` |
 | `Runtime._snapshot_loop` | `async` | See the loop table | `start` |
-| `Runtime.health` | `health() -> dict` | Mode, telemetry connected, last frame age, gateway OK, overrides adopted, workers OK, heartbeats, commands sent, sends in flight, UI clients | `GET /healthz` |
+| `Runtime.health` | `health() -> dict` | Mode, telemetry connected, last frame age, gateway OK, overrides adopted, workers OK, heartbeats, commands sent, sends in flight, `prover` (class name), `jobs_running`, UI clients | `GET /healthz` |
 
 **Key decisions**
-- **One in-flight send per key, latest wins.** A stale command can never overtake a newer one, e.g. a late 0.95 recovery step arriving after the 1.0/1.0 clear. `tests/test_runtime.py::test_sender_one_in_flight_per_key_and_latest_wins` covers this.
-- **Nothing in the I/O shell can kill the brain.** Bad frames, failed polls and tick exceptions are logged and skipped.
+- **One in-flight send per key, latest wins** (`tests/test_runtime.py::test_sender_one_in_flight_per_key_and_latest_wins`). Charges use a per-second key, so two charges never replace each other.
+- **Nothing in the I/O shell can kill the brain.** Bad frames, failed polls, tick exceptions and failed jobs are logged and skipped.
 - **The control token is sent on every `/admin` and `/control` call** (`test_control_token_header_is_sent`).
 
 ---
 
-## 15. `brain/tenantguard_brain/main.py` — the HTTP / WebSocket API
+## 16. `brain/tenantguard_brain/main.py` — the HTTP / WebSocket API
 
 | Endpoint | Returns | Notes |
 |---|---|---|
@@ -615,252 +821,183 @@ Everything that touches the network. It runs seven asyncio loops around one `Bra
 | `GET /api/incidents?incident_id=&tenant=&limit=200` | `List[IncidentEvent]` | Oldest first |
 | `POST /api/operator` | `ControlAck` | Human decision (see below) |
 | `GET /api/debug` | dict | `Brain.debug()` |
-| `WS /ws/events` | text frames | On connect: one `StateSnapshot`, then the last 100 `IncidentEvent`s. After that, a snapshot every 500 ms and every event as it happens. Clients are told apart by the `type` field (`"state"` / `"incident"`) |
+| `WS /ws/events` | text frames | On connect: one `StateSnapshot`, then the last 100 `IncidentEvent`s. After that, a snapshot every 500 ms and every event as it happens |
 
 **The operator endpoint** `POST /api/operator`, body `OperatorCmd {tenant, decision: release|extend|resume, until_s=120, by, case_id?}`:
-1. **Token check:** header `X-TenantGuard-Control-Token` must match `TENANTGUARD_CONTROL_TOKEN`, compared with `hmac.compare_digest`. Otherwise **401**.
-2. **Duration check:** `until_s` must be finite and in `(0, gateway.ttl_max_s]` (3600 s when the key is absent). Otherwise **400**.
-3. **Tenant check:** an unknown tenant gets **404**. A `decision` outside the three values fails body validation with **422**.
-4. Otherwise `Brain.operator(cmd, now)` runs, its events are published to every UI client, and the endpoint returns `ControlAck(ok=True, detail="release K by <who> for 120 s")`.
+1. **Token check** with `hmac.compare_digest`, otherwise **401**.
+2. **Duration check:** `until_s` finite and in `(0, gateway.ttl_max_s]`, otherwise **400**.
+3. **Tenant check:** unknown tenant **404**; a `decision` outside the three values fails validation with **422**.
+4. Otherwise `Brain.operator` runs, its events are published, and the endpoint returns `ControlAck(ok=True, detail="release K by <who> for 120 s")`.
 
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
-| `create_app` | `create_app(cfg=None, start_loops=True) -> FastAPI` | Builds the `Runtime`, the lifespan (start/stop loops), CORS for the UI origins and all routes. `start_loops=False` lets tests use the API without network loops | `run`, tests (`test_api.py`, `test_operator.py`) |
+| `create_app` | `create_app(cfg=None, start_loops=True) -> FastAPI` | Builds the `Runtime`, the lifespan, CORS for the UI origins and all routes | `run`, tests |
 | `create_app.lifespan` | `async lifespan(app)` | `Runtime.start()` / `Runtime.stop()` | FastAPI |
 | `create_app.healthz` | `GET /healthz` | — | HTTP |
-| `create_app.state` | `GET /api/state` | — | HTTP, UI |
-| `create_app.incidents` | `GET /api/incidents` | — | UI (`ui/src/lib/backend.ts`), lab (`lab/tenantguard_lab/core.py`), narrator (`narrator/tenantguard_narrator/app.py`), demo driver (`tools/demo.py`) |
-| `create_app.operator` | `POST /api/operator` | Validation as above, then `Brain.operator` | Handoff bridge (`integrations/handoff/tenantguard_handoff/cases.py`), manual calls |
-| `create_app.operator.fail` | `fail(code, detail) -> JSONResponse` | Error `ControlAck` with a status code | `operator` |
-| `create_app.debug` | `GET /api/debug` | — | HTTP |
-| `create_app.ws_events` | `WS /ws/events` | Subscribes to the hub and runs `pump` and `drain` until either ends, then unsubscribes | UI |
+| `create_app.state` | `GET /api/state` | — | UI |
+| `create_app.incidents` | `GET /api/incidents` | — | UI, lab, narrator, `tools/demo.py`, `tools/calibrate_health.py` |
+| `create_app.operator` | `POST /api/operator` | Validation, then `Brain.operator` | Handoff bridge, manual calls |
+| `create_app.operator.fail` | `fail(code, detail) -> JSONResponse` | Error `ControlAck` | `operator` |
+| `create_app.debug` | `GET /api/debug` | — | HTTP, `tools/calibrate_health.py` |
+| `create_app.ws_events` | `WS /ws/events` | Subscribes to the hub, runs `pump` and `drain` until either ends | UI, handoff, narrator |
 | `ws_events.pump` | `async pump()` | Backfill, then forwards hub messages | `ws_events` |
-| `ws_events.drain` | `async drain()` | Reads from the socket only to notice a disconnect | `ws_events` |
-| `run` | `run() -> None` | Logging setup (httpx at WARNING so 10 polls/s don't drown the incident log), loads settings, starts uvicorn on `cfg.host:cfg.port` | `__main__.py` |
+| `ws_events.drain` | `async drain()` | Reads only to notice a disconnect | `ws_events` |
+| `run` | `run() -> None` | Logging (httpx at WARNING), settings, uvicorn on `cfg.host:cfg.port` | `__main__.py` |
 
 ---
 
-## 16. `brain/tenantguard_brain/sim.py` — toy fleet simulator
+## 17. `brain/tenantguard_brain/sim.py` — toy fleet simulator
 
-Produces the same `TelemetryFrame` and `WorkerStats` the real gateway and workers emit, and honours `LimitsCmd` and route weights. This lets the brain be developed and tested without the gateway, workers or Docker. Latency on a server grows with its CPU utilisation, so a whale hurts exactly its barcode neighbours. The numbers are illustrative; real numbers come from lab runs.
+Produces the same `TelemetryFrame` and `WorkerStats` the real gateway and workers emit, and in `tenantguard` mode honours `LimitsCmd`, route weights, `RelocateCmd`, `DrainCmd` and spare resizing. Latency on a server grows with its CPU utilisation, so a whale hurts exactly its barcode neighbours. A `blackbox` attack burns CPU nobody is billed for. Each tenant has two request classes, `c-light` (calm work) and `c-heavy` (the attack). The numbers are illustrative; real numbers come from lab runs.
 
 ```
-latency(u) = 6 ms × (1 + 0.6 × u / (1 − u)),  u = min(0.97, server load seen / capacity)
+latency(u) = 12 ms × (1 + 0.6 × u / (1 − u)),  u = min(0.97, server load seen / capacity)
 ```
 
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
-| `CALM_RPS`, `CALM_COST_MS`, `BASE_LATENCY_MS` | constants | Calm rps by tier (30 / 22 / 15), 4.5 ms per calm request, 6 ms idle p95 | `Simulator.step`, `canary_ms` |
-| `Phase` | `@dataclass` | A scenario phase: name, duration, optional attacker (rps × cost), optional legit `burst` with a multiplier | `whale_scenario`, tests |
-| `whale_scenario` | `whale_scenario(attacker="K", calm_s=20, attack_s=40, after_s=60, rps=10.0, cost_ms=90.0) -> List[Phase]` | calm → whale → after | `fake_gateway.new_sim`, tests |
-| `Override` | `@dataclass` | factor, weight_factor, expiry | `Simulator.apply_limits`, `_override` |
-| `SimWorker` | `@dataclass` | Cumulative counters per simulated server | `Simulator.__init__` |
-| `Simulator` | class | The fleet: tenants, phases, overrides, route weights, faults, a seeded RNG | `fake_gateway`, tests |
-| `Simulator.__init__` | `(tenants, phases, *, tick_ms=250, server_cores=0.5, quota_mult=None, seed=7, start=0.0, mode="tenantguard")` | — | `fake_gateway.new_sim`, tests |
-| `Simulator.apply_route_weights` | `apply_route_weights(weights, ttl_s)` | Stores normalised weights with expiry | `fake_gateway.control_rw`, `drive` |
-| `Simulator.set_fault` | `set_fault(server, latency_ms)` | Adds or clears a host fault (extra latency) | `fake_gateway.set_fault/clear_fault`, `test_stage3_sim.py` |
-| `Simulator.share` | `share(t) -> Dict[str, float]` | Traffic share per server: route weights (tenantguard mode, unexpired) or equal | `step` |
-| `Simulator.canary_ms` | `canary_ms(server) -> float` | Canary round trip: base/2 with jitter, plus the fault | `fake_gateway.canary`, `drive` |
-| `Simulator.apply_limits` | `apply_limits(tenant, factor, weight_factor, ttl_s)` | Stores or clears an override | `fake_gateway.control_limits`, `drive` |
-| `Simulator._override` | `_override(tenant) -> Override` | Override in force (expired ones are dropped) | `step` |
-| `Simulator.phase_at` | `phase_at(t) -> Optional[Phase]` | Phase at a time, or None when the scenario is over | `step`, `fake_gateway` |
+| `CALM_RPS`, `CALM_COST_MS`, `BASE_LATENCY_MS` | constants | Calm rps by tier (30 / 22 / 15), 4.5 ms per calm request, 12 ms idle p95 | `Simulator` |
+| `LIGHT`, `HEAVY` | constants | `"c-light"`, `"c-heavy"` | `Simulator.step` |
+| `POOL` | constant | Extra servers and cores: `spare` 1.0, `quarantine` 0.25 | `Simulator.__init__` |
+| `Phase` | `@dataclass` | name, duration, optional attacker (rps × cost), optional legit `burst`, `blackbox` | `whale_scenario`, tests |
+| `whale_scenario` | `whale_scenario(attacker="K", calm_s=20, attack_s=40, after_s=60, rps=10.0, cost_ms=90.0, blackbox=False) -> List[Phase]` | calm → whale → after | `fake_gateway.new_sim`, tests |
+| `Override` | `@dataclass` | factor, weight_factor, expiry | `Simulator` |
+| `SimWorker` | `@dataclass` | Cumulative counters per simulated server, including black-box and per-class | `Simulator.__init__` |
+| `Simulator` | class | The fleet | `fake_gateway`, tests |
+| `Simulator.__init__` | `(tenants, phases, *, tick_ms=250, server_cores=0.5, quota_mult=None, seed=7, start=0.0, mode="tenantguard", noise=None, calm_scale=1.0)` | `noise="host"` adds CPU-quota stalls (0.5-3 s, about every 30 s, x3-8) and 5 % tail spikes; `calm_scale` makes a busier calm | Tests, `fake_gateway` |
+| `Simulator.cap_ms` | property | A barcode server's CPU ms/s | Tests |
+| `Simulator.apply_limits` | `apply_limits(tenant, factor, weight_factor, ttl_s)` | Stores or clears an override | `apply`, `fake_gateway` |
+| `Simulator.apply_route_weights` | `apply_route_weights(weights, ttl_s)` | Normalised weights with expiry | `apply`, `fake_gateway`, `drive` |
+| `Simulator.apply_relocate` | `apply_relocate(tenant, cls, target, ttl_s)` | Relocation per (tenant, class); `target=None` clears | `apply`, `fake_gateway` |
+| `Simulator.apply_drain` | `apply_drain(server, drained, ttl_s)` | Drain on or off | `apply`, `fake_gateway` |
+| `Simulator.apply` | `apply(path, cmd)` | Applies a control command by path, as the gateway would; logs it | `SimEnv.send`, `drive_jobs` |
+| `Simulator.set_cpus` | `set_cpus(server, cores)` | Resizes a server | `SimDocker.set_cpus` |
+| `Simulator.set_fault` | `set_fault(server, latency_ms)` | Adds or clears a host fault | `fake_gateway`, tests |
+| `Simulator._override` | `_override(tenant) -> Override` | Override in force | `step` |
+| `Simulator._live` | `_live() -> bool` | True in `tenantguard` mode | Several |
+| `Simulator.share` | `share(t) -> Dict[str, float]` | Route weights (or equal) minus drained servers; drains never black-hole a tenant | `route` |
+| `Simulator.route` | `route(t, cls) -> Dict[str, float]` | A relocation wins, per class first, then the whole tenant | `step` |
+| `Simulator._stall_mult` | `_stall_mult(server) -> float` | Current stall multiplier | `step`, `canary_ms` |
+| `Simulator.canary_ms` | `canary_ms(server) -> float` | Canary RTT: queues for CPU, plus stall and fault | `fake_gateway.canary`, `drive` |
+| `Simulator.phase_at` | `phase_at(t) -> Optional[Phase]` | Phase at a time | `step`, `fake_gateway` |
 | `Simulator.total_s` | property | Scenario length | `fake_gateway.scenario` |
-| `Simulator.step` | `step() -> TelemetryFrame` | One tick: demand → cost-quota admission (× factor; none in `off` mode) → server load (deprioritised load counts less for others) → CPU capped at the container limit → latency per cell → `Cell`s and `QueueStat`s → worker counters | `fake_gateway.ticker`, `drive` |
-| `step.lat` (inner) | `lat(u) -> float` | The latency model above | `step` |
-| `Simulator.worker_stats` | `worker_stats(server) -> WorkerStats` | Cumulative stats for one server | `fake_gateway.stats`, `drive` |
+| `Simulator.step` | `step() -> TelemetryFrame` | One tick: demand → cost-quota admission (× factor, billed CPU only) → routing → CPU capped at the limit → latency per cell → `Cell`s, `QueueStat`s, worker counters | `fake_gateway.ticker`, `drive` |
+| `step.lat` (inner) | `lat(u) -> float` | The latency model | `step` |
+| `Simulator.worker_stats` | `worker_stats(server) -> WorkerStats` | Cumulative stats including black-box CPU and class costs | `fake_gateway.stats`, `drive` |
+| `SimDocker` | class | Fake Docker for the prover: resizing the spare container resizes the simulator's spare | Tests |
+| `SimDocker.__init__` | `(sim, server="spare")` | — | Tests |
+| `SimDocker.get_cpus` / `set_cpus` | `async` | Reads / sets `sim.cores[server]`; records calls | `DockerProver` in tests |
 
 ---
 
-## 17. `brain/tools/fake_gateway.py`
+## 18. Dev tools (`brain/tools/`)
 
-A stand-in gateway and set of workers for developing the brain alone:
-- streams frames from `Simulator` on `WS /internal/telemetry`;
-- serves `/fake/workers/{server}/stats`, `/canary` and `/admin/fault`;
-- accepts every `/control/*` call like the real gateway, including the control-token check, validation, and 400s.
-
-`LimitsCmd` and route weights are applied to the simulation, so throttling really changes the next frames. Run: `python tools/fake_gateway.py --port 8000`. `--print-worker-urls` prints the `TENANTGUARD_WORKER_URLS` value for the brain.
+### `tools/fake_gateway.py`
+A stand-in gateway and workers for developing the brain alone: streams `Simulator` frames on `WS /internal/telemetry`, serves `/fake/workers/{server}/stats`, `/canary` and `/admin/fault`, and accepts `/control/*` like the real gateway (control token, validation, 400s). Limits, route weights, relocations and drains are applied to the simulation. It has no `/control/charge` route. Run: `python tools/fake_gateway.py --port 8000`; `--print-worker-urls` prints `TENANTGUARD_WORKER_URLS` including `spare` and `quarantine`.
 
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
 | `build_app` | `build_app(args) -> FastAPI` | Builds the app and its in-memory override stores | `main` |
 | `build_app.lifespan` | `async lifespan(_app)` | Starts and stops `ticker` | FastAPI |
-| `build_app.new_sim` | `new_sim(mode) -> Simulator` | New whale scenario run (seed = run number) | `build_app`, `ticker` (with `--loop`), `restart` |
-| `build_app.ticker` | `async ticker()` | Steps the sim on wall-clock time every `gateway.tick_ms` and pushes frames to clients (bounded queues, oldest dropped) | `lifespan` |
-| `build_app.telemetry` | `WS /internal/telemetry` | Streams frames | Brain `Runtime._telemetry_loop` |
+| `build_app.new_sim` | `new_sim(mode) -> Simulator` | New whale scenario run (seed = run number) | `build_app`, `ticker`, `restart` |
+| `build_app.ticker` | `async ticker()` | Steps the sim every `gateway.tick_ms` and pushes frames | `lifespan` |
+| `build_app.telemetry` | `WS /internal/telemetry` | Streams frames | Brain |
 | `build_app.latest` | `GET /internal/telemetry/latest` | Last frame | HTTP |
-| `build_app.control_token` | HTTP middleware | 401 on `/admin*` and `/control*` without the right token | FastAPI |
-| `build_app.canary` | `GET /fake/workers/{server}/canary` | Sleeps the simulated canary time | Brain `_canary_one` |
-| `build_app.set_fault` / `clear_fault` | `POST` / `DELETE /fake/workers/{server}/admin/fault` | Host fault on or off (`FaultReq`) | Manual testing |
-| `build_app.stats` | `GET /fake/workers/{server}/stats` | `WorkerStats` | Brain `_poll_one` |
+| `build_app.control_token` | HTTP middleware | 401 on `/admin*` and `/control*` without the token | FastAPI |
+| `build_app.canary` | `GET /fake/workers/{server}/canary` | Sleeps the simulated canary time | Brain |
+| `build_app.set_fault` / `clear_fault` | `POST` / `DELETE /fake/workers/{server}/admin/fault` | Host fault on or off | Manual testing |
+| `build_app.stats` | `GET /fake/workers/{server}/stats` | `WorkerStats` | Brain |
 | `build_app.scenario` | `GET /fake/scenario` | Run number, elapsed, phase, total, mode | Manual |
 | `build_app.restart` | `POST /fake/scenario/restart` | New run | Manual |
-| `build_app.get_control_log` | `GET /fake/control_log?limit=200` | Every control call received | Manual verification |
+| `build_app.get_control_log` | `GET /fake/control_log?limit=200` | Every control call received | Manual |
 | `build_app.get_mode` / `set_mode` | `GET` / `POST /admin/mode` | Mode of the sim | UI, manual |
-| `build_app.overrides` | `GET /admin/overrides` | `OverridesView` with expiry and fail-static state | Brain `_adopt_once` |
+| `build_app.overrides` | `GET /admin/overrides` | `OverridesView` | Brain `_adopt_once` |
 | `build_app.parse` | `async parse(request, model)` | Validates the body; 400 on error | Control routes |
-| `build_app.heartbeat` | `POST /control/heartbeat` | Records the heartbeat time | Brain heartbeat loop |
-| `build_app.control_limits` | `POST /control/limits` | Validates (factors in (0, 1], ttl > 0, known tenant), applies to the sim, stores or clears | Brain sender |
+| `build_app.heartbeat` | `POST /control/heartbeat` | Records the heartbeat | Brain |
+| `build_app.control_limits` | `POST /control/limits` | Validates and applies | Brain |
 | `build_app.control_block` | `POST /control/block` | Stored, not simulated | — |
-| `build_app.control_rw` | `POST /control/route_weights` | Validates tenants, servers and weights, then applies to the sim | Brain sender (`routes`) |
-| `build_app.control_relocate` | `POST /control/relocate` | Stored, not simulated | — |
-| `build_app.control_drain` | `POST /control/drain` | Stored, not simulated | — |
-| `main` | `main() -> None` | CLI: host, port, attacker, phase lengths, whale rps/cost, attacker quota multiplier (3.0: an over-provisioned plan the gateway alone won't stop), mode, `--loop`, `--print-worker-urls` | `python tools/fake_gateway.py` |
+| `build_app.control_rw` | `POST /control/route_weights` | Validates and applies | Brain |
+| `build_app.control_relocate` | `POST /control/relocate` | Validates the target and applies | Brain |
+| `build_app.control_drain` | `POST /control/drain` | Validates the server and applies | Brain |
+| `main` | `main() -> None` | CLI: host, port, attacker, phase lengths, whale rps/cost, `--quota-mult` 3.0, mode, `--loop`, `--print-worker-urls` | `python tools/fake_gateway.py` |
 
----
+### `tools/local_stack.py`
+Starts the **real** workers (w0..w8 on `--worker-base + i`), the real gateway and optionally the brain as local processes without Docker, each with a log file. Ctrl+C stops everything.
 
-## 18. `brain/tools/local_stack.py`
-
-Starts the **real** workers (w0..w8 on `--worker-base + i`), the real gateway and optionally the brain as local processes without Docker. Each writes a log file. Ctrl+C stops everything. Used for end-to-end checks on a laptop.
-
-| Function / class | Signature | What it does | Called by |
+| Function | Signature | What it does | Called by |
 |---|---|---|---|
+| `ROOT` | constant | Repo root | `main` |
 | `wait_http` | `wait_http(url, timeout=30.0) -> bool` | Polls a URL until it answers below 500 | `main` |
-| `main` | `main() -> None` | Parses ports and dirs, spawns workers, waits for `/healthz`, spawns the gateway (with `TENANTGUARD_WORKER_URLS`) and the brain (with the gateway URL), prints the env to reuse, and watches the children | `python brain/tools/local_stack.py` |
-| `main.spawn` | `spawn(name, cmd, cwd, env)` | Starts a child process with its log file | `main` |
-| `main.stop` | `stop(*_)` | Terminates (then kills) all children and exits; also the SIGINT/SIGTERM handler | `main`, signals |
+| `main` | `main() -> None` | Spawns workers, waits for `/healthz`, spawns the gateway and the brain, prints the env, watches the children | CLI |
+| `main.spawn` | `spawn(name, cmd, cwd, env)` | Starts a child with its log file | `main` |
+| `main.stop` | `stop(*_)` | Terminates (then kills) all children; SIGINT/SIGTERM handler | `main`, signals |
 
----
+### `tools/traffic.py`
+Calm traffic for every tenant through the real gateway, plus an optional whale (`/api/search?n=…`). Every 5 s it prints per-tenant p95 and status counts. `--servers` limits it to tenants on the listed servers.
 
-## 19. `brain/tools/traffic.py`
-
-Light calm traffic for every tenant through the real gateway, plus an optional whale (`/api/search?n=…` at a set rate and concurrency). Every 5 s it prints per-tenant client-side p95 and status counts. It is kept modest on purpose so it runs on a laptop.
-
-| Function / class | Signature | What it does | Called by |
+| Function | Signature | What it does | Called by |
 |---|---|---|---|
 | `p95` | `p95(xs) -> float` | Nearest-rank 95th percentile | `main.report` |
-| `main` | `async main() -> None` | CLI parsing, `httpx.AsyncClient` with keep-alive, starts the tasks below and waits | `asyncio.run(main())` |
-| `main.call` | `async call(tid, path)` | One request with the tenant's API key; records status and latency | `calm`, `whale.one` |
+| `main` | `async main() -> None` | CLI, client, tasks | `asyncio.run(main())` |
+| `main.call` | `async call(tid, path)` | One request with the tenant's key | `calm`, `whale.one` |
 | `main.calm` | `async calm(tid)` | Poisson arrivals: 80 % `/api/light`, 20 % `/api/read` | `main` |
-| `main.whale` | `async whale()` | Starts after the calm phase and stops after the attack phase | `main` |
+| `main.whale` | `async whale()` | Runs during the attack phase | `main` |
 | `main.whale.one` | `async one()` | One whale request under the concurrency semaphore | `whale` |
 | `main.report` | `async report()` | 5 s summary line | `main` |
 
+### `tools/calibrate_health.py`
+`python brain/tools/calibrate_health.py --brain http://<host>:8200 --minutes 10 [--json out.json]`. Polls `GET /api/debug` once a second and prints, per server and health source, the peer-ratio p50 / p95 / p99 / max, the share of "slow now" samples, the excess latency and the tenants used. It then lists every incident opened and every ladder move during the run (`GET /api/incidents`). Exit code 1 if anything opened or moved (the acceptance test for a calm or idle run), 2 if the brain could not be read at the end.
+
+| Function | Signature | What it does | Called by |
+|---|---|---|---|
+| `get` | `get(url, tries=1, timeout=5.0)` | GET JSON, retrying with a growing timeout | `main` |
+| `pct` | `pct(xs, q)` | Nearest-rank quantile | `main` |
+| `main` | `main() -> int` | The run described above | CLI |
+
 ---
 
-## 20. Tests (`brain/tests/`)
+## 19. Tests (`brain/tests/`)
 
-80 test functions in 9 files (`test_every_single_culprit_is_named` and `test_single_slow_server_is_a_host_suspect_and_nobody_is_blamed` are parametrised over every tenant and server). The pure modules are tested directly; the scenarios drive `Brain` and `Simulator` in lock-step on a virtual clock.
+142 test functions in 15 files; 166 tests are collected because some are parametrised (every culprit, every server, three seeds × two calm levels). The pure modules are tested directly; the scenarios drive `Brain` and `Simulator` in lock-step on a virtual clock, and `drive_jobs` runs proofs and drain tests through the simulator.
 
 ### `tests/conftest.py`
-| Function / class | Signature | What it does | Called by |
-|---|---|---|---|
-| `T0` | constant | Virtual start time | Tests |
-| `cfg` | fixture `-> BrainSettings` | `settings.load()` | Every test that needs settings |
-| `drive` | `drive(brain, sim, until, *, apply=True, routes_apply=True, sent_ok=True, log=None) -> (events, commands)` | Lock-step loop: frame every tick; stats and canaries every 4 ticks; `brain.tick`; applies commands and routes to the sim; `mark_sent` / `mark_routes` | Scenario tests |
-
-### `tests/test_api.py`
-| Function | What it checks |
+| Function / class | What it does |
 |---|---|
-| `make_client(cfg)` | Helper: `TestClient` on `create_app(cfg, start_loops=False)` |
-| `test_state_and_incidents` | `/api/state` and `/api/incidents` return contract shapes |
-| `test_ws_backfills_state_then_incidents` | WS sends a snapshot first, then the incident log |
-| `test_cors_allows_ui_origin` | CORS allows the UI origin |
+| `cfg` (fixture) | `settings.load()` against this checkout's yaml and layout (`TENANTGUARD_ROOT` is set to the repo) |
+| `T0` | Virtual start time |
+| `drive(brain, sim, until, *, apply=True, routes_apply=True, sent_ok=True, log=None)` | Lock-step loop: frame every tick, stats and canaries every 4 ticks, `brain.tick`, commands and routes applied to the sim |
+| `SimEnv` | `ProveEnv` over the simulator: `readings` from the brain, `send` = `sim.apply`, `sleep` advances the simulation |
+| `drive_jobs(brain, sim, until, prover=None, host_prover=None, **kw)` | `drive` plus running queued proof requests, host checks and spare restores, applying their control commands (charges skipped) |
 
-### `tests/test_core.py`
-| Function | What it checks |
-|---|---|
-| `whale_run(cfg, mode, ladder_only, **kw)` | Helper: whale scenario through `drive` |
-| `test_quiet_fleet_raises_no_incident` | Calm fleet opens nothing |
-| `test_whale_is_detected_throttled_and_recovers` | Whale detected, throttled, recovered |
-| `test_every_command_carries_both_factors_and_a_ttl` | Both factors and a TTL on every `LimitsCmd` |
-| `test_every_event_explains_why` | Every event has a non-empty `detail` |
-| `test_actions_are_renewed_while_needed` | Renewal before the TTL |
-| `test_failed_sends_are_retried` | Retry after a failed send |
-| `test_no_actions_outside_tenantguard_mode` | No commands in `off` / `industry` |
-| `test_leaving_tenantguard_mode_resets_and_clears` | Reset and an explicit clear on mode change |
-| `test_ticks_without_completions_are_skipped` (inner `frame`) | `completed == 0` ticks ignored |
-| `test_worker_restart_does_not_produce_negative_cpu` (inner `ws`) | `started_at` change handled |
-| `test_snapshot_matches_contract` | `StateSnapshot` validates |
-| `test_stale_telemetry_holds_and_says_so` | Stale telemetry holds; the status sentence says so |
-| `_moderate_attack(cfg, freeze)` | Helper: moderate attack, with or without baseline freeze |
-| `test_moderate_attack_is_not_absorbed_into_the_baseline` | Baseline freeze works |
+### Test files
 
-### `tests/test_fairness.py`
-`test_jain_bounds`, `test_normalized_throughput_uses_weights_and_skips_idle`, `test_peer_ratio`: the three functions in `fairness.py`.
-
-### `tests/test_ladder.py`
-| Function | What it checks |
-|---|---|
-| `run(st, sig, t0, secs)` | Helper: steps a ladder for N seconds |
-| `test_params_from_yaml` | yaml → `LadderParams`, `ttl_for` |
-| `test_no_escalation_before_hold` | Hold time respected |
-| `test_half_duty_flapping_never_escalates` | 50 % duty never escalates |
-| `test_one_dip_does_not_restart_the_hold` | `hold_ratio` tolerance |
-| `test_strict_hold_ratio_restarts_on_a_dip` | Ratio 1.0 behaves strictly |
-| `test_full_walk_up_the_ladder` | normal → … → quarantine |
-| `test_quarantine_needs_the_quarantine_threshold` | Quarantine needs ≥ 4.0 |
-| `test_ladder_recovers_after_the_attack_stops` | AIMD recovery back to normal |
-| `test_hysteresis_band_holds_still` | Between hurt_on and hurt_off: no move |
-| `test_aimd_probe_then_decrease_again` | Relax, then tighten again if harm returns |
-| `test_legit_burst_never_leaves_normal` | Not flagged, so never warned |
-| `test_plain_warning_clears_without_action` | warn → normal with no command |
-| `test_reset` | `reset` semantics |
-
-### `tests/test_operator.py`
-| Function | What it checks |
-|---|---|
-| `throttled_k(cfg, until)` / `k_events(events)` | Helpers: K throttled by a whale; K's events |
-| `test_release_clears_and_suppresses_re_escalation` | release → clear, no escalation, one suppression note |
-| `test_extend_holds_the_level_and_keeps_renewing` | extend keeps factors and renews |
-| `test_resume_cancels_the_hold` | resume returns control to the ladder |
-| `make_client(cfg)` | Helper: API client |
-| `test_operator_endpoint_validation` | 401 without or with a wrong token, 400 for a bad `until_s`, 404 for an unknown tenant, 422 for an unknown decision, 200 + hold in force on success |
-
-### `tests/test_runtime.py`
-| Function | What it checks |
-|---|---|
-| `test_sender_one_in_flight_per_key_and_latest_wins` (inner `post`) | `Sender` serialisation |
-| `test_sender_keys_are_independent` (inner `post`) | Keys don't block each other |
-| `test_control_token_header_is_sent` (inner `handler`) | Token header on control calls |
-| `test_refused_send_reports_false` | A 4xx → `ok=False` |
-| `test_adopt_leftover_overrides` | Adoption sets the ladder; unknown tenants are cleared |
-| `test_adopted_override_recovers_when_calm` | An adopted override relaxes by AIMD |
-| `test_mode_before_first_frame_is_the_yaml_default` | Snapshot mode = `gateway.default_mode` |
-
-### `tests/test_score.py`
-| Function | What it checks |
-|---|---|
-| `score(...)`, `calm_cpu()` | Helpers |
-| `test_shares_and_fair_shares` | Share maths |
-| `test_slowdown_and_floor` | 8 ms floor |
-| `test_victim_impact_mean_over_neighbours_and_clipped` | Neighbours only, clip at 3 |
-| `test_noisy_score_formula` | The formula |
-| `test_calm_fleet_nobody_flagged` | No false flags |
-| `test_whale_flagged_only_when_neighbours_hurt` | Both conditions needed |
-| `test_legit_burst_with_no_victim_impact_is_not_flagged` | Legitimate burst safe |
-| `test_queue_occupancy_dimension` | Queue share can flag on its own |
-| `test_baseline_ewma_is_time_based` | Half-life independent of frame rate |
-
-### `tests/test_stage3_pure.py`
-| Function | What it checks |
-|---|---|
-| `test_ag23_any_two_tenants_share_at_most_one_server` | Layout property the decoder relies on |
-| `feed(h, levels, t0, secs, n)` | Helper: feed health ticks |
-| `test_peer_ratio_and_debounce`, `test_ratio_alone_is_not_enough`, `test_one_bad_tick_is_ignored`, `test_fleet_wide_slowdown_accuses_nobody`, `test_canary_takes_over_when_traffic_moved_away` | `health.py` |
-| `calm_load(per_tenant)` | Helper: calm load map |
-| `test_rescue_moves_every_neighbour_off_the_slow_server`, `test_rescue_respects_the_capacity_guard`, `test_tenant_on_all_slow_servers_is_stuck`, `test_no_room_at_all_leaves_the_tenant_alone`, `test_rescue_only_targets_servers_that_are_up`, `test_no_load_data_splits_evenly` | `rescue.py` |
-| `ratios_for(slow, bad)`, `stuck_for(slow)` | Helpers |
-| `test_logistic`, `test_every_single_culprit_is_named`, `test_all_66_culprit_pairs_are_named_exactly`, `test_single_slow_server_is_a_host_suspect_and_nobody_is_blamed`, `test_two_slow_servers_on_one_barcode_line_are_not_a_tenant`, `test_nothing_slow_names_nothing`, `test_culprit_plus_unrelated_host_fault`, `test_partial_signal_lowers_confidence`, `test_ledger_hint_breaks_a_tie_only_where_servers_are_slow`, `test_params_from_yaml_override` | `decoder.py` |
-
-### `tests/test_stage3_sim.py`
-| Function | What it checks |
-|---|---|
-| `srv_events(events)`, `host_fault_run(cfg, mode)` | Helpers |
-| `test_host_fault_is_rescued_and_named_without_blaming_a_tenant` | Host fault: rescue, then host suspect, no tenant blamed |
-| `test_servers_show_slow_in_the_snapshot` | `ServerView.status = slow` |
-| `test_whale_is_named_from_its_barcode` | The decoder names the whale |
-| `test_no_routing_outside_tenantguard_mode` | No `RouteWeightsCmd` in other modes |
-| `test_quiet_fleet_opens_no_server_incident` | No false server incidents |
-| `test_rescue_first_then_throttle_only_if_harm_persists` | Order of actions |
+| File | Tests | What it covers |
+|---|---|---|
+| `test_api.py` | 3 | `/api/state`, `/api/incidents`, WS backfill order, CORS |
+| `test_core.py` | 13 | Quiet fleet, whale detected → throttled → recovered, both factors and TTL on every command, every event explained, renewals, retries, no actions outside tenantguard, mode change clears, skipped empty ticks, worker restart, snapshot contract, stale telemetry, baseline freeze |
+| `test_fairness.py` | 2 | `jain`, `normalized_throughput` |
+| `test_host_noise.py` | 9 (14 collected) | Noisy calm opens nothing (3 seeds × 2 calm levels); whale still found and proved, host fault still found under host noise; fast server never slow; two slow neighbours do not flag; held host not drained; real host fault still drained; deferred drain said once; below-floor server enters the decoder as normal |
+| `test_impact.py` | 4 | Meter maths; whale run shields victims with no innocents; a low-score escalation is an innocent; "recovering" status sentence |
+| `test_ladder.py` | 13 | Holds, hold ratio, full walk up, quarantine threshold, AIMD recovery, hysteresis, legit burst, plain warning, `reset` |
+| `test_operator.py` | 4 | release / extend / resume semantics; endpoint validation (401, 400, 404, 422, 200) |
+| `test_prover.py` | 19 | `DockerProver` confirm / reject / paused culprit / sizing clamp / Docker failure / refused relocation / nothing to prove / restore; `NullProver`; `HostProver` confirm and refused drain; `make_prover` modes; `EngineDocker` label resolution with two stacks, no project, ambiguous spare, explicit name, `NanoCpus` vs `CpuQuota` |
+| `test_runtime.py` | 8 | `Sender` serialisation and independent keys, control token header, refused send, override adoption and recovery, mode before the first frame, drain test for an ended incident undrains |
+| `test_score.py` | 9 | Shares, slowdown floor, victim impact, formula, calm fleet, whale flagged only when neighbours hurt, legit burst, queue dimension, time-based baseline |
+| `test_stage3_pure.py` | 26 (45 collected) | AG(2,3) property; health (peer ratio and persistence, workload mix, sparse cells, ratio alone, one bad tick, fleet-wide slowdown, canary sustains only, pool servers); rescue (6); decoder (every culprit, all 66 pairs, every single server, line pairs, nothing slow, culprit plus host fault, partial signal, ledger tie-break, yaml override) |
+| `test_stage3_sim.py` | 6 | Host fault rescued and named with no tenant blamed, slow in the snapshot, whale named from its barcode, no routing outside tenantguard, quiet fleet, rescue first then throttle |
+| `test_t12_regressions.py` | 3 | Failed requests are not slot usage; background CPU charged once a second in tenantguard mode; no charge outside it |
+| `test_t12_sim.py` | 7 | End-to-end verdicts in the simulator: `honest_growth` stays on the spare, `costly_pattern` sends the guilty class to the heavy lane, a pausing culprit is `mitigated_no_blame`, `over_plan` tightens and sends it home, below the confidence bar is not proved, repeat offender gets its last verdict, relocation budget defers the proof |
+| `test_verdicts.py` | 16 | `classify` for each verdict and ordering, `host_verdict`, `evaluate_proof` cases (including harm by latency alone), `ActionBudget`, `OffenderMemory`, yaml params |
 
 ---
 
-## 21. Summary of brain-wide design decisions
+## 20. Summary of brain-wide design decisions
 
-1. **Pure core, thin I/O shell.** All decisions live in `core.py` and the modules under it, with time passed in. `runtime.py` and `main.py` only move data. This makes every behaviour reproducible in a unit test.
-2. **Flag only on over-use AND harm to neighbours.** Legitimate bursts on idle capacity are never punished.
-3. **Graduated, reversible, time-limited actions.** The AIMD ladder uses holds and hysteresis. Every override has a TTL and is renewed only while needed. Leaving `tenantguard` mode clears overrides at once.
-4. **Rescue before blame.** Victims are routed around slow servers first. The decoder then names a culprit, a host suspect, or nobody. Proof by relocation is the next step (in progress).
-5. **Explain everything.** Each incident event carries the rule that fired, the numbers behind it, and the action taken, in plain English.
-6. **Humans win.** Operator decisions (`release` / `extend` / `resume`) own a tenant until they expire, and the ladder never fights them.
-7. **Safe across failures.** Stale telemetry holds decisions, sends are serialised per tenant (latest wins), and leftover overrides are adopted after a restart.
+1. **Pure core, thin I/O shell.** All decisions live in `core.py` and the modules under it, with time passed in. `runtime.py`, `main.py` and the provers only move data and wait. Every behaviour is reproducible in a unit test.
+2. **Flag only on clear over-use AND broad harm.** 1.6× the fair share and at least 4 hurt neighbours; legitimate bursts on idle capacity are never punished.
+3. **Sustained signals.** Victim latency, cell levels and occupancy are quantiles or medians over windows, servers open on persistence, and no server is slow below its SLA floor. CPU-quota stalls of a 0.5-CPU container are not incidents.
+4. **Graduated, reversible, time-limited actions.** The AIMD ladder uses holds and hysteresis; every override, relocation and drain has a TTL and is renewed only while needed.
+5. **Rescue before blame, proof before penalty.** Victims are routed around slow servers first. The decoder names a culprit, a host suspect or nobody; tenants hot on a suspect server are judged before the host. A culprit is penalised only after the relocation proof confirms it (R ≥ 0.5 and the harm followed it), and the verdict picks a proportionate action.
+6. **Explain everything.** Each event carries the rule, the numbers and the action in plain English; verdict events carry the evidence and readings.
+7. **Humans win.** Operator decisions own a tenant until they expire.
+8. **Safe across failures.** Stale telemetry holds decisions, sends are serialised per key (latest wins), leftover overrides are adopted after a restart, and an undelivered charge is folded into the next one.

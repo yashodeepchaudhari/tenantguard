@@ -17,12 +17,13 @@ flowchart TB
     end
   end
   subgraph CTRL["Control plane (laptop A)"]
-    BR["Brain :8200<br/>Stage 2 ladder · Stage 3 health/rescue/decoder"]
+    BR["Brain :8200<br/>Stage 2 ladder · Stage 3 health/rescue/decoder<br/>prover · verdicts · charge-back"]
   end
   subgraph MGMT["Management plane"]
     UI["Control Room UI :5173"]
     HO["Handoff bridge :8400"]
     NA["Narrator :8700"]
+    BI["Billing :8600"]
     WEB["Web PS3 Digital Handoff app<br/>(partner)"]
   end
   LAB -- "X-API-Key" --> GW
@@ -31,7 +32,9 @@ flowchart TB
   GW -- "TelemetryFrame WS 250 ms" --> BR
   W -- "/stats 1 Hz" --> BR
   BR -- "/control/* (token, TTL)" --> GW
-  BR -- "StateSnapshot + IncidentEvent WS" --> UI & HO & NA
+  BR -- "StateSnapshot + IncidentEvent WS" --> UI & HO & NA & BI
+  BR -- "Docker socket: resize spare" --> SP
+  W -- "/stats 1 Hz" --> BI
   UI -- "/admin/* (token)" --> GW
   UI -- "/lab/*" --> LAB
   HO -- "cases" --> WEB
@@ -45,8 +48,8 @@ flowchart TB
 | Plane | Components | Responsibility |
 |---|---|---|
 | **Data plane** | gateway, `w0..w8`, `spare`, `quarantine` | Serve every tenant request: identify, admit, queue fairly, route by barcode, measure |
-| **Control plane** | brain | Watch telemetry and worker stats; rescue victims; name the culprit; throttle with timers; explain every action |
-| **Management plane** | admin API, UI, handoff bridge, narrator, lab, demo driver | Let people see and steer it: modes, quotas, cases, reports, attacks, scorecard |
+| **Control plane** | brain | Watch telemetry and worker stats; rescue victims; name the culprit; prove it by relocation and give a verdict; throttle with timers; charge background CPU back; explain every action |
+| **Management plane** | admin API, UI, handoff bridge, narrator, billing, lab, demo driver | Let people see and steer it: modes, quotas, cases, reports, bills, attacks, scorecard |
 
 The planes talk only through the contracts in `common/tenantguard_common/contracts.py` (Pydantic models). Every tunable value is in `tenantguard.yaml`, read by `common/tenantguard_common/config.py`.
 
@@ -112,15 +115,21 @@ flowchart LR
   T["Telemetry 250 ms<br/>+ worker stats 1 Hz"] --> S2["Stage 2<br/>noisy score = usage share ÷ fair share × victim impact"]
   T --> S3["Stage 3<br/>server health by peer ratio"]
   S3 --> RES["Rescue<br/>RouteWeightsCmd (TTL)"]
-  S3 --> DEC["Decoder<br/>name culprit or host fault"]
+  S3 --> DEC["Decoder<br/>name culprit or host fault<br/>(held hosts: hot tenant judged first)"]
+  DEC --> PRV["Prover<br/>culprit → spare (RelocateCmd), R = 1 − post/pre<br/>host suspect → drain (DrainCmd)"]
+  PRV --> VER["Verdict<br/>no blame · over plan · costly · honest growth · host fault"]
   S2 --> LAD["Throttle ladder<br/>warn → throttle → deprioritize → quarantine"]
   LAD --> LIM["LimitsCmd (TTL)"]
-  RES & LIM --> GW["Gateway applies, auto-reverts at TTL"]
-  DEC & LAD --> EV["IncidentEvent stream<br/>UI · handoff · narrator"]
+  VER --> ACT["RelocateCmd / LimitsCmd / DrainCmd (TTL)"]
+  T --> CH["ChargeCmd 1/s<br/>background CPU → cost bucket"]
+  RES & LIM & ACT & CH --> GW["Gateway applies, auto-reverts at TTL"]
+  DEC & LAD & VER --> EV["IncidentEvent stream<br/>UI · handoff · narrator · billing"]
   OP["Operator decision<br/>(handoff case)"] --> HOLD["OperatorCmd<br/>extend / release / resume"] --> LAD
 ```
 
-The ladder acts only when harm persists after the rescue. Every action carries a TTL and is renewed only while it is still needed. If the brain stops sending heartbeats, the gateway keeps its last configuration (fail-static) while TTLs still expire. Relocation proof and the five verdicts are **in progress** (T12).
+The ladder acts only when harm persists after the rescue. Every action carries a TTL and is renewed only while it is still needed. If the brain stops sending heartbeats, the gateway keeps its last configuration (fail-static) while TTLs still expire.
+
+Once a culprit is named with at least `confidence_to_prove` (0.8), the prover moves it to the spare (sized to `spare_sizing` × its CPU footprint through the Docker socket), waits `prove_settle_s`, measures for `prove_window_s` and computes R = 1 − post/pre slowdown on its old servers. It is confirmed when R ≥ `recovery_R` and the harm followed it to the spare. The verdict then picks the action: `honest_growth` stays on the spare as a burst lane, `costly_pattern` sends its most expensive request class to the quarantine worker, `over_plan` goes home with tightened limits, `mitigated_no_blame` goes home with no action. A host suspect is drained and measured idle; still ≥ `host_idle_ratio` × its peers means `host_fault`, and it stays drained. A server where a hot tenant runs is a *held host*: it is not treated as a faulty host until that tenant has been judged. An action budget caps relocations (6/min), quarantines (one per 30 s) and drains (one at a time, only while peers are below 75% busy). Separately, once a second in `tenantguard` mode the brain sends each tenant's background-job CPU to the gateway as a `ChargeCmd`, so hidden work is debited from the tenant's own cost bucket.
 
 ## 7. Deployment: two laptops over Tailscale
 
@@ -141,6 +150,7 @@ flowchart LR
 
 - **Why two laptops:** 11 worker containers at 0.5 CPU each, plus the brain, need about 8 cores to themselves. Generating traffic on the same machine would distort the latencies being measured.
 - Laptop B drives laptop A's Docker over a single SSH session: `git archive` of `master` is shipped, then `docker compose up -d --build` runs on the host. Details: `docs/SETUP.md`, `docs/DOCKER-HOST-SETUP.md`.
+- The measured scorecard and the acceptance run used the lab container on the Docker host itself (compose profile `lab`), so the traffic generator and the stack share one machine's clock and network; the comparison between modes is fair because every mode ran under the same conditions.
 - Host ports are configurable (`GATEWAY_PORT`, `BRAIN_PORT`, `LAB_PORT`, `HANDOFF_PORT`, `NARRATOR_PORT`, `BILLING_PORT`) and so is the project name (`COMPOSE_PROJECT_NAME`), so a frozen demo stack can run beside a development stack.
 
 ## 8. Components and ports
@@ -150,10 +160,10 @@ flowchart LR
 | Gateway | `gateway/` | 8000 | yes (`GATEWAY_PORT`) | Python 3.12, FastAPI, httpx, uvicorn |
 | Workers `w0..w8` | `worker/` | 8100 in compose (local 8100–8108) | no | Python, FastAPI (sync handlers), SQLite, psutil |
 | `spare` / `quarantine` | `worker/` | 8100 in compose (local 8109 / 8110) | no | same image; spare 1.0 CPU, quarantine 0.25 CPU / 128 MB |
-| Brain | `brain/` | 8200 | yes (`BRAIN_PORT`) | Python asyncio, websockets, httpx, Pydantic; Docker socket mounted |
+| Brain | `brain/` | 8200 | yes (`BRAIN_PORT`) | Python asyncio, websockets, httpx, Pydantic; Docker socket mounted for the prover (`COMPOSE_PROJECT` picks this stack's spare) |
 | Lab | `lab/` | 8300 | yes, profile `lab` | Python asyncio + httpx |
 | Handoff bridge | `integrations/handoff/` | 8400 | yes, profile `handoff` | Python, FastAPI, websockets |
-| Billing | `billing/` | 8600 | profile `billing` (code **in progress**, T17) | n/a |
+| Billing | `billing/` | 8600 | yes, profile `billing` | Python, FastAPI, httpx, websockets |
 | Narrator | `narrator/` | 8700 | yes, profile `narrator` | Python, FastAPI, websockets |
 | UI | `ui/` | 5173 | runs outside Docker | React 18, Vite, TypeScript, Tailwind, Recharts |
 | Web PS3 app (partner) | n/a | `WEB_URL` (mock: 8500) | n/a | `integrations/handoff/tools/mock_web.py` for demos |

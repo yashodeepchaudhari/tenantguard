@@ -148,7 +148,7 @@ even when the expensive work is invisible to a rate limiter."</p>
 <h3>Stage 3: Rescue, Name, Prove</h3>
 <table>
   <tr><th style="width:16%">Step</th><th>How</th></tr>
-  <tr><td>Health</td><td>Each server's p95 compared with its peers (median over its tenants, so a whale's own slow requests don't count). Calibrated on the Docker host: the signal must be sustained over a 5 s window, and a server is never "slow" below 25 ms or half the strictest SLA on it</td></tr>
+  <tr><td>Health</td><td>Each server's p95 compared with its peers (median over its tenants, so a whale's own slow requests don't count). Calibrated on the Docker host: the signal must be sustained over a 5 s window, and a server is never "slow" below the larger of 25 ms and half the strictest SLA on it</td></tr>
   <tr><td>Rescue</td><td>Route weights move victims off slow servers onto their healthy ones, keeping every server under 70% CPU</td></tr>
   <tr><td>Name</td><td>AG(2,3) barcodes: any two tenants share at most one server, so the set of slow servers decodes to the culprit (with a confidence) or to a host fault with no tenant blamed. A slow server where a hot tenant runs is <i>held</i>: that tenant is judged before the server is suspected</td></tr>
   <tr><td>Prove</td><td>Move the suspect to the spare: the original servers recover and the slowdown follows it (R = 1 − post/pre slowdown). <code>DockerProver</code> sizes the spare through the Docker socket; a suspect host is drained and measured idle</td></tr>

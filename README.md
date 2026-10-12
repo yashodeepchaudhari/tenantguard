@@ -92,7 +92,7 @@ cd lab     && python -m tenantguard_lab serve                # :8300
 cd lab     && python -m tenantguard_lab scorecard            # OFF / Industry / TenantGuard, 3 runs each
 ```
 
-Every service has `python -m pytest` in its directory: 459 Python tests on master (gateway 94, worker 53 + 1 Linux-only skip, brain 166, lab 49, billing 25, handoff 47, narrator 9, tools 16). The UI has 76 unit tests (`npm test`) and 24 Playwright end-to-end tests (`ui/e2e/`). All `/admin/*` and `/control/*` calls need the header `X-TenantGuard-Control-Token` (env `TENANTGUARD_CONTROL_TOKEN`, default `dev`).
+Every service has `python -m pytest` in its directory: 459 Python tests on master (gateway 94, worker 53 + 1 Linux-only skip, brain 166, lab 49, billing 25, handoff 47, narrator 9, tools 16). The UI has 76 unit tests (`npm test`) and 27 Playwright end-to-end tests (`ui/e2e/`; 26 run by default, the `@live` one needs `E2E_LIVE=1`). All `/admin/*` and `/control/*` calls need the header `X-TenantGuard-Control-Token` (env `TENANTGUARD_CONTROL_TOKEN`, default `dev`).
 
 ## Run the demo
 ```
@@ -127,7 +127,7 @@ An `ingest` call looks 6× cheaper than a `light` call to anything that meters t
 | flood | Industry | 166 | 164 | 163 | 3,133 |
 | flood | TenantGuard | 143 | 144 | 175 | 2,977 |
 
-No innocent tenant was penalised in any run. **How to read it honestly:** the whale and the flood are contained by the gateway limits that both protected modes share (rate, CPU cost, fair queue), so Industry ≈ TenantGuard on these two; the brain had nothing left to name. One OFF flood run (`20261012-222805-flood-off.json`) recorded 1,522 refused requests, which OFF should never do; it is most likely carried over from the previous mode switch.
+No innocent tenant was penalised in any run. **How to read it honestly:** the whale and the flood are contained by the gateway limits that both protected modes share (rate, CPU cost, fair queue), so Industry ≈ TenantGuard on these two; the brain had nothing left to name. One OFF flood run (`20261012-222805-flood-off.json`) recorded 1,522 refused requests, which OFF should never do; it is most likely carried over from the previous mode switch. Another OFF flood run (`20261012-222323-flood-off.json`) recorded 6,415 503s for the attacker: the bounded queue wait applies in every mode, OFF included.
 
 **Where the brain earns its place** (host acceptance run, 2026-10-13, inside the lab container on the Docker host):
 - idle: 0 events; calm traffic: 0 ladder moves (2 real slowdowns on w7 were routed around, no tenant blamed);

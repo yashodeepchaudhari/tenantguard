@@ -55,6 +55,16 @@ Key decisions:
 - **No hard-coded host address:** defaults come from `tenantguard.yaml` (a test checks the old IP is absent).
 - The fault fallback is TTL-bound (`duration_s`), so even a crashed driver cannot leave a worker faulty.
 
+What the demo does against the lab on this branch, where the Wave 2 attacks are not included (the lab answers 501 for `blackbox_bomb`, `faulty_server` and `honest_spike`):
+
+| Step | Plan | What runs |
+|---|---|---|
+| industry + bomb, tenantguard + bomb | `blackbox_bomb` on the attacker | the `whale` fallback (announced in the preflight, or used on a late 501) |
+| faulty server | `faulty_server` on `w4` | a TTL-bound `POST {worker}/admin/fault` when the worker answers from the driver's machine; otherwise the step is skipped with a `[NOT AVAILABLE]` banner |
+| honest spike | `honest_spike` on `J` | skipped with a `[NOT AVAILABLE]` banner (no fallback) |
+
+`--bomb whale` asks for the whale directly.
+
 ### tools/tests/test_demo.py
 Sequencing tests against a fake HTTP backend (`httpx.MockTransport`) and a fake clock, so the whole 240-second show runs instantly.
 

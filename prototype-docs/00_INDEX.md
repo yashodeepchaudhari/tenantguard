@@ -1,6 +1,6 @@
 # TenantGuard prototype documentation: index
 
-This folder documents the TenantGuard prototype exactly as it is built on the `master` branch: what it does, how it is designed, and every source file and function. Work that is still on task branches is marked **in progress**; it is never described as done.
+This folder documents the TenantGuard prototype exactly as it is built on the final `master` branch: what it does, how it is designed, and every source file and function. Everything described here is merged and tested. The one thing left out on purpose is the second wave of lab attacks (black-box bomb, background bomb, cache flood, faulty server, honest spike): it is **not included**, and the documents say so wherever it matters.
 
 ## How to read it
 
@@ -27,7 +27,7 @@ Suggested order for a reviewer: 01 → 02 → 05 → 07 → 03 → 06 → 10, th
 | `02_ARCHITECTURE.md` | System diagram, the three planes, the five isolation layers, the two-laptop deployment, components and ports |
 | `03_SOLID_AND_DESIGN.md` | SOLID principles with concrete code from the repo, design patterns, refactorings done and possible |
 | `04_DATA_MODELS.md` | Every contract model and field (with units), class diagrams, layout and yaml shapes, the per-tenant SQLite schema |
-| `05_SEQUENCE_DIAGRAMS.md` | Request path, admission/429, fair dispatch, detection → throttle ladder → recovery, health → rescue → naming, host fault, operator/handoff decision, narrator report, UI live stream |
+| `05_SEQUENCE_DIAGRAMS.md` | Request path, admission/429, fair dispatch, detection → throttle ladder → recovery, health → rescue → naming, held hosts (a server with a hot tenant is judged on the tenant first), relocation proof → verdict, host fault (drain test → `host_fault`), background-CPU charge (`ChargeCmd`), operator/handoff decision, narrator report, UI live stream |
 | `06_RISKS_AND_MITIGATIONS.md` | Technical, operational, security and demo risks, each with its mitigation and where it lives |
 | `07_UNIQUE_FEATURES.md` | What TenantGuard does that a rate limiter or a typical fair-share gateway does not |
 | `08_ARCHITECTURE_FLOW.md` | One end-to-end flow diagram (technical + simple) and the attack protection loop |
@@ -41,6 +41,7 @@ Suggested order for a reviewer: 01 → 02 → 05 → 07 → 03 → 06 → 10, th
 | `11_FILES_common.md` | `common/`: contracts and config loader |
 | `11_FILES_handoff.md` | `integrations/handoff/`: the Web PS3 convergence bridge |
 | `11_FILES_narrator.md` | `narrator/`: the incident report service |
+| `11_FILES_billing.md` | `billing/`: the fair-billing service (bills at calm reference prices, SLA credits, "Why was I slow?") |
 | `11_FILES_tools.md` | `tools/`: the demo driver |
 
 ## Repository at a glance
@@ -58,17 +59,18 @@ flowchart LR
     brain["brain/ :8200"]
     lab["lab/ :8300"]
     handoff["integrations/handoff/ :8400"]
+    billing["billing/ :8600"]
     narrator["narrator/ :8700"]
     ui["ui/ :5173"]
   end
   tools["tools/demo.py"]
-  common --> gateway & worker & brain & lab & handoff & narrator
-  yaml --> gateway & worker & brain & lab & handoff & narrator
-  layout --> gateway & brain & lab & handoff & narrator
+  common --> gateway & worker & brain & lab & handoff & billing & narrator
+  yaml --> gateway & worker & brain & lab & handoff & billing & narrator
+  layout --> gateway & brain & lab & handoff & billing & narrator
   tools --> gateway & brain & lab
 ```
 
 ## Conventions used in these documents
 - **Times:** every `ts` / `*_at` field is epoch seconds; every `*_ms` field is milliseconds; `*_ist` fields are display strings (`HH:MM:SS`, India Standard Time).
-- **Numbers:** only measured values from committed files are quoted (`worker/calibration.json`, test assertions). Anything else is marked *to be measured*.
+- **Numbers:** only measured values are quoted: committed files (`worker/calibration.json`, `lab/results/*.json`, test assertions) and the recorded host acceptance run of 2026-10-13.
 - **Paths** are relative to the repository root.
