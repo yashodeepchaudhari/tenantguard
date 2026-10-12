@@ -259,3 +259,8 @@ def test_cli_hook_dispatches_scorecard(monkeypatch):
     monkeypatch.setattr(sc, "main", lambda argv: seen.setdefault("argv", argv) and 0 or 0)
     assert cli.main(["scorecard", "--aggregate-only"]) == 0
     assert seen["argv"] == ["--aggregate-only"]
+
+
+def test_summary_models_come_from_contracts():
+    from tenantguard_common import contracts
+    assert sc.CrashSummary is contracts.CrashSummary and sc.CellStats is contracts.CellStats

@@ -25,7 +25,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 import httpx
 from pydantic import BaseModel, Field
 
-from tenantguard_common.contracts import AttackName, Mode, PhaseP99, RunReq, RunResult
+from tenantguard_common.contracts import AttackName, CellStats, CrashSummary, PhaseP99, RunReq, RunResult
 
 from .settings import LabConfig, load_config
 
@@ -33,7 +33,7 @@ ACTED_LEVELS = {"throttle", "deprioritize", "quarantine", "blocked"}
 MODES_ALL = ["off", "industry", "tenantguard"]
 
 
-# ---- output models (proposed CrashSummary contract; local until it lands in contracts.py) ----
+# ---- per-run brain check (internal; the summary models are CellStats / CrashSummary in contracts) ----
 class BrainCheck(BaseModel):
     """What the brain did inside one run's [attack_start, end] window."""
     reachable: bool
@@ -41,44 +41,6 @@ class BrainCheck(BaseModel):
     first_named_after_s: Optional[float] = None
     wrongly_named: List[str] = Field(default_factory=list)       # non-attackers named as suspects / ladder tenants
     innocents_penalised: List[str] = Field(default_factory=list)  # non-attackers moved to throttle or above
-
-
-class CellStats(BaseModel):
-    scenario: AttackName
-    mode: Mode
-    runs: int                                   # successful runs aggregated
-    failed_runs: int = 0
-    victim_p99_ms_median: Optional[PhaseP99] = None
-    victim_p99_ms_mean: Optional[PhaseP99] = None
-    time_to_detect_s_median: Optional[float] = None
-    detected_runs: int = 0
-    time_to_recover_s_median: Optional[float] = None
-    recovered_runs: int = 0
-    attacker_429_median: float = 0.0
-    attacker_503_median: float = 0.0
-    brain_checked_runs: int = 0                 # runs with brain incidents aligned to marks
-    culprit_named_runs: int = 0
-    innocents_penalised: List[str] = Field(default_factory=list)   # union over runs
-    innocents_penalised_runs: int = 0
-    run_files: List[str] = Field(default_factory=list)
-
-
-class CrashSummary(BaseModel):
-    """lab/results/summary-<ts>.json (written by `python -m tenantguard_lab scorecard`)."""
-    created_at: float
-    lab_url: str
-    brain_url: str
-    scenarios: List[AttackName]
-    modes: List[Mode]
-    runs_per_cell: int
-    attacker: Optional[str] = None
-    intensity: float = 1.0
-    calm_s: float = 20
-    attack_s: float = 40
-    aggregate_only: bool = False
-    cells: List[CellStats]
-    skipped: List[str] = Field(default_factory=list)
-    file: str = ""
 
 
 # ---- pure helpers ----
