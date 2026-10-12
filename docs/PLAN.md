@@ -405,6 +405,28 @@ Build:
 
 No code changes. Done = files rendered and checked (open the PDF pages as images via a headless screenshot, as before).
 
+### T17: Fair billing + "Why was I slow?" (T2 session, same worktree)
+**You are TASK T17:** when this is finished, every tenant sees a fair bill. They pay only for the resources they used, at calm reference prices; victims are never charged for an attack and get SLA credits. A victim can ask "Why was I slow?" and get a plain-English, anonymised answer.
+
+You own a NEW dir `billing/` (package `tenantguard_billing`, FastAPI on :8600, Dockerfile, tests). Read-only consumer: never sends control commands.
+
+Inputs (from env URLs; inside compose: http://w0..w8:8100, brain:8200, gateway:8000):
+- worker `/stats` (cumulative per-tenant handler/bg/db CPU, per-class costs, blackbox)
+- brain `/api/incidents` + WS `/ws/events`
+- gateway `/admin/tenants` (control token)
+- the layout (revenue, SLA)
+
+Build:
+1. **Metering:** per tenant per minute, handler + bg CPU-ms, DB ms, requests. Diff the cumulative counters (handle worker restarts via `started_at`).
+2. **Reference pricing:** a price per CPU-ms per tier from yaml (propose `billing:` keys). Charge each request class at its *calm* reference cost (EWMA updated only when no incident is open), so contention never inflates a victim's bill.
+3. **SLA credits:** per victim, SLO-violation-seconds (p95 > `sla_p95_ms` from the lab personas, or a yaml default) during incidents → credit % per the yaml table.
+4. **True-cost line** for a named culprit: black-box CPU on its servers during its incident is attributed to it as an "unmetered cost" line (evidence: decoder confidence).
+5. **"Why was I slow?":** `GET /why/{tenant}?from=&to=` → a sentence like *"Between 14:02:10 and 14:02:12, another tenant's workload slowed 1 of your 3 servers. Your traffic was moved to healthy servers in 0.9 s. A 4% service credit has been applied."* Built from brain incident stages; never reveals the other tenant.
+6. API: `GET /bills`, `GET /bills/{tenant}`, `GET /why/{tenant}`. Propose contract models (`BillView`, `WhyView`) to the coordinator first.
+7. Tests: counter diffing incl. restarts, calm-price freeze during incidents, credits math, anonymisation (the culprit id never appears in a victim's text), restarts.
+
+Proof: unit tests + a run against the Docker host (I'll add the compose service and run it there; send me the exact commands).
+
 ## Task table
 
 | Task | Branch | Worktree | Session | Status |
@@ -417,6 +439,7 @@ No code changes. Done = files rendered and checked (open the PDF pages as images
 | T2 Workers | task/T2-workers | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged** (9cebaaf) |
 | T6 Workers wave 2 | task/T6-worker-blackbox | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged** |
 | T15 Worker calibration in-container | task/T15-worker-calib | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged**; host calibration committed (fa011b3) |
+| T17 Fair billing + "Why was I slow?" | task/T17-billing | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | assigned |
 | T3 Brain | task/T3-brain | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | **merged** |
 | T8 Brain integration + health/rescue/decoder | task/T8-brain-detect | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | **merged** |
 | T12 Brain prover + verdicts + calibration | task/T12-brain-prover | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | in progress (merges coord/layout-balance) |
