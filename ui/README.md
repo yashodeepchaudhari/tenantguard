@@ -57,10 +57,10 @@ The e2e changes mode, launches/stops an attack and edits (then restores) a quota
 
 ## ₹ impact (client-side until the brain owns it)
 Counted since the page opened (reset button under "innocents"), integrated per snapshot (dt capped at 2 s):
-- a tenant is **threatened** when it shares a server with a flagged tenant (level ≥ warn), sits on a slow server, or is being routed around one (route weights / relocation);
+- a tenant is **threatened** when it shares a server with a flagged tenant (level ≥ warn), or sits on a slow server whose p95 would breach the SLO (a server merely 1.6× its peers at 20 ms threatens nobody); culprits (own score ≥ warn, or named by a brain incident) never count as customers;
 - **SLO breach avoided** = seconds a threatened tenant stayed within SLO (`p95 < VITE_P95_WARN_MS`) in TenantGuard mode; **suffered** = seconds any tenant was over SLO (any mode);
 - **revenue protected** = Σ avoided seconds × that tenant's `monthly_revenue_rs` ÷ 30 days; **customers shielded** = tenants with avoided time;
-- **innocents penalised** = tenants acted on (level ≥ throttle or factor < 1) while their own noisy score was below warn. It must stay 0.
+- **innocents penalised** = tenants acted on (level ≥ throttle or factor < 1) that were never noisy this session and that no brain incident names. A culprit still recovering on the ladder is not an innocent. It must stay 0.
 
 Proposed contract field so the brain (which has the calm baselines and the real victim set) owns these numbers:
 

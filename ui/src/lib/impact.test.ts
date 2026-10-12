@@ -14,9 +14,9 @@ const snap = (ts: number, tenants: TenantView[], mode: Mode = 'tenantguard', slo
 const ctx: ImpactContext = {
   barcodes: { K: ['w1'], A: ['w0', 'w1'], B: ['w2'], C: ['w2'] },
   revenue: { A: 2_592_000, B: 1000, C: 0, K: 5 },
-  rerouted: new Set(),
   warn: 1.5,
   sloMs: 150,
+  suspected: new Set(),
 }
 
 function run(steps: StateSnapshot[], c = ctx) {
@@ -42,17 +42,40 @@ describe('impact meter', () => {
     expect(st.sufferedS).toEqual({ A: 1 })
   })
 
+  it('a culprit recovering on the ladder (factor < 1, score back to 0) is not an innocent', () => {
+    const st = run([
+      snap(0, [tv('K', { level: 'throttle', factor: 0.5, noisy_score: 3 })]),
+      snap(1, [tv('K', { level: 'throttle', factor: 0.9, noisy_score: 0 })]),
+      snap(2, [tv('K', { level: 'warn', factor: 1, noisy_score: 0 })]),
+    ])
+    expect(st.innocents).toEqual([])
+  })
+
+  it('a culprit is never counted as a shielded customer', () => {
+    const k = tv('K', { level: 'warn', noisy_score: 3 })
+    const st = run([snap(0, [k, tv('A', { noisy_score: 2 })]), snap(1, [k, tv('A', { noisy_score: 0.2 })]), snap(2, [k, tv('A')])])
+    expect(st.avoidedS).toEqual({}) // A was noisy itself (2 >= 1.5) earlier this session
+  })
+
+  it('a page opened mid-recovery: the brain incident names K, so K is not an innocent', () => {
+    const k = tv('K', { level: 'throttle', factor: 0.9, noisy_score: 0 })
+    expect(run([snap(0, [k]), snap(1, [k])]).innocents).toEqual(['K']) // no evidence at all
+    expect(run([snap(0, [k]), snap(1, [k])], { ...ctx, suspected: new Set(['K']) }).innocents).toEqual([])
+  })
+
   it('a tenant acted on below warn is an innocent penalised', () => {
     const st = run([snap(0, [tv('B', { level: 'throttle', factor: 0.5, noisy_score: 0.4 })]), snap(1, [tv('B', { level: 'throttle', factor: 0.5, noisy_score: 0.4 })])])
     expect(st.innocents).toEqual(['B'])
   })
 
-  it('slow servers and rerouting threaten their tenants; p95 0 is no data', () => {
-    const st = run(
-      [snap(0, [tv('A'), tv('B', { p95_ms: 0 }), tv('C')], 'tenantguard', ['w0']), snap(1, [tv('A'), tv('B', { p95_ms: 0 }), tv('C')], 'tenantguard', ['w0'])],
-      { ...ctx, rerouted: new Set(['C']) },
-    )
-    expect(st.avoidedS).toEqual({ A: 1, C: 1 }) // B: rerouted? no; p95 0 anyway
+  it('only a slow server that would breach the SLO threatens its tenants; p95 0 is no data', () => {
+    const breach = (ts: number, p95: number) => {
+      const s = snap(ts, [tv('A'), tv('B', { p95_ms: 0 })], 'tenantguard', ['w0'])
+      s.servers[0].p95_ms = p95
+      return s
+    }
+    expect(run([breach(0, 400), breach(1, 400)]).avoidedS).toEqual({ A: 1 }) // B has no data
+    expect(run([breach(0, 25), breach(1, 25)]).avoidedS).toEqual({}) // 'slow' at 25 ms threatens nobody
   })
 
   it('caps a stalled interval at 2 s and survives a clock jump back', () => {

@@ -16,8 +16,8 @@ const dur = (s: number) => (s >= 120 ? `${(s / 60).toFixed(1)} min` : `${Math.ro
 
 const TIP =
   'Since this page opened. Revenue protected = Σ (seconds a threatened customer stayed within SLO in TenantGuard mode) × its monthly revenue ÷ 30 days. ' +
-  'Threatened = shares a server with a flagged tenant, sits on a slow server, or is being routed around one. ' +
-  'Innocents penalised = tenants throttled while their own noisy score was below warn.'
+  'Threatened = shares a server with a flagged tenant, or sits on a slow server whose p95 would breach the SLO. Culprits never count as customers. ' +
+  'Innocents penalised = tenants throttled that were never noisy and that no brain incident names (must stay 0).'
 
 /** ₹ impact: money and customers protected, innocents penalised (must stay 0). */
 export function ImpactPanel() {

@@ -43,11 +43,6 @@ export interface StoreOptions {
   warnFallback?: number
 }
 
-/** Tenants the gateway is currently steering: route weights or a relocation. */
-export function reroutedTenants(ov: OverridesView | null): Set<string> {
-  if (!ov) return new Set()
-  return new Set([...Object.keys(ov.route_weights ?? {}), ...(ov.relocations ?? []).map((r) => r.tenant)])
-}
 
 const MAX_INCIDENTS = 300
 
@@ -142,9 +137,9 @@ export class LiveStore {
     const impact = updateImpact(this.state.impact, s, {
       barcodes: this.state.barcodes,
       revenue: this.state.revenue,
-      rerouted: reroutedTenants(this.state.overrides),
       warn: s.noisy_thresholds?.warn ?? this.warnFallback,
       sloMs: this.sloMs,
+      suspected: new Set(this.state.incidents.map((e) => e.tenant).filter((t): t is string => !!t)),
     })
     this.set({ snapshot: s, receivedAt, history, pendingMode, impact })
   }

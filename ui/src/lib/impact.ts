@@ -2,15 +2,18 @@
 // brain owns it (proposed contract field: StateSnapshot.impact, see ui/README.md).
 //
 // Definitions (per snapshot interval dt, capped at 2 s so a stalled tab does not inflate them):
-// - a tenant is THREATENED when it shares a server with a flagged tenant (level >= warn), when one
-//   of its barcode servers is slow, or when the gateway is routing it around a server (route weights)
+// - a tenant is THREATENED when it shares a server with a flagged tenant (level >= warn), or when
+//   one of its barcode servers is slow with a p95 that would breach the SLO (a server that is merely
+//   1.6x its peers at 20 ms would not hurt anyone, so rerouting around it avoids no breach)
 // - SLO-violation time AVOIDED: a threatened tenant stays within SLO (p95 < sloMs) while TenantGuard
 //   mode is on. Each such second counts once per tenant.
 // - SLO-violation time SUFFERED: any tenant over SLO (any mode), so OFF-mode damage is visible too
 // - revenue protected (₹) = Σ avoided seconds × that tenant's monthly_revenue_rs / seconds in a month
-// - customers shielded = distinct tenants with avoided time > 0
-// - innocents penalised = distinct tenants acted on (level >= throttle or factor < 1) while their
-//   own noisy score was below warn. TenantGuard's promise is that this stays 0.
+// - customers shielded = distinct tenants with avoided time > 0, never counting a tenant that was
+//   itself noisy in this session (a culprit is not a protected customer)
+// - innocents penalised = distinct tenants acted on (level >= throttle or factor < 1) that were
+//   were never noisy in this session (own score >= warn) and that no brain incident names. A culprit
+//   still recovering on the ladder (factor < 1, score back to 0) is not an innocent. Must stay 0.
 import type { Level, StateSnapshot } from '../types.ts'
 
 export const MONTH_S = 30 * 24 * 3600
@@ -18,9 +21,10 @@ export const MONTH_S = 30 * 24 * 3600
 export interface ImpactContext {
   barcodes: Record<string, string[]>
   revenue: Record<string, number> // tenant -> monthly_revenue_rs
-  rerouted: Set<string> // tenants with active route weights / relocation
   warn: number // noisy warn threshold
   sloMs: number
+  /** tenants the brain opened an incident against (IncidentEvent.tenant) */
+  suspected: Set<string>
 }
 
 export interface ImpactState {
@@ -29,17 +33,22 @@ export interface ImpactState {
   avoidedS: Record<string, number>
   sufferedS: Record<string, number>
   innocents: string[]
+  /** tenants seen noisy (own score >= warn) at any point this session */
+  noisy: string[]
   revenueRs: number
 }
 
-export const emptyImpact = (): ImpactState => ({ since: null, lastTs: null, avoidedS: {}, sufferedS: {}, innocents: [], revenueRs: 0 })
+export const emptyImpact = (): ImpactState => ({ since: null, lastTs: null, avoidedS: {}, sufferedS: {}, innocents: [], noisy: [], revenueRs: 0 })
 
 const ACTED: Level[] = ['throttle', 'deprioritize', 'quarantine', 'blocked']
 
 export function updateImpact(prev: ImpactState, s: StateSnapshot, ctx: ImpactContext): ImpactState {
+  const noisy = new Set(prev.noisy)
+  for (const t of s.tenants) if (t.noisy_score >= ctx.warn) noisy.add(t.tenant)
+  const culprit = (id: string) => noisy.has(id) || ctx.suspected.has(id)
   if (prev.lastTs === null || s.ts <= prev.lastTs) {
     // first snapshot (or a clock jump back): start the clock, nothing to integrate yet
-    return { ...prev, since: prev.since ?? s.ts, lastTs: s.ts }
+    return { ...prev, since: prev.since ?? s.ts, lastTs: s.ts, noisy: [...noisy].sort() }
   }
   const dt = Math.min(2, s.ts - prev.lastTs)
   const avoidedS = { ...prev.avoidedS }
@@ -47,7 +56,7 @@ export function updateImpact(prev: ImpactState, s: StateSnapshot, ctx: ImpactCon
   const innocents = new Set(prev.innocents)
   let revenueRs = prev.revenueRs
 
-  const slow = new Set(s.servers.filter((x) => x.status === 'slow').map((x) => x.server))
+  const slow = new Set(s.servers.filter((x) => x.status === 'slow' && x.p95_ms >= ctx.sloMs).map((x) => x.server))
   const flaggedServers = new Set<string>()
   const flagged = new Set<string>()
   for (const t of s.tenants) {
@@ -62,15 +71,14 @@ export function updateImpact(prev: ImpactState, s: StateSnapshot, ctx: ImpactCon
     const hasData = t.p95_ms > 0 // p95 0 = nothing completed: no data, skip
     if (hasData && t.p95_ms >= ctx.sloMs) sufferedS[id] = (sufferedS[id] ?? 0) + dt
     const barcode = ctx.barcodes[id] ?? []
-    const threatened =
-      !flagged.has(id) && (barcode.some((sv) => flaggedServers.has(sv) || slow.has(sv)) || ctx.rerouted.has(id))
+    const threatened = !flagged.has(id) && !culprit(id) && barcode.some((sv) => flaggedServers.has(sv) || slow.has(sv))
     if (s.mode === 'tenantguard' && threatened && hasData && t.p95_ms < ctx.sloMs) {
       avoidedS[id] = (avoidedS[id] ?? 0) + dt
       revenueRs += ((ctx.revenue[id] ?? 0) * dt) / MONTH_S
     }
-    if ((ACTED.includes(t.level) || t.factor < 1) && t.noisy_score < ctx.warn) innocents.add(id)
+    if ((ACTED.includes(t.level) || t.factor < 1) && !culprit(id)) innocents.add(id)
   }
-  return { since: prev.since ?? s.ts, lastTs: s.ts, avoidedS, sufferedS, innocents: [...innocents].sort(), revenueRs }
+  return { since: prev.since ?? s.ts, lastTs: s.ts, avoidedS, sufferedS, innocents: [...innocents].sort(), noisy: [...noisy].sort(), revenueRs }
 }
 
 export interface ImpactSummary {
