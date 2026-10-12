@@ -48,5 +48,7 @@ still with the CPU header.
   dies; its CPU (psutil on the child) is reported only as `blackbox_cpu_ms`. It shares the container's CPU
   limit, so heavy ingest slows co-located tenants while every tenant meter stays near zero.
 - `tools/noisy_demo.py`: measures the noisy-neighbor effect (`--attack search|ingest`).
-- `tools/calibrate.py` → `calibration.json`: cost of each endpoint at default params, measured in Docker.
+- `tools/calibrate.py` → `calibration.json`: cost of each endpoint at default params (stdlib only, shipped in
+  the image). On the Docker host, inside a real 0.5-CPU container:
+  `docker compose exec -T w1 python tools/calibrate.py --where docker --out - > worker/calibration.json`
 - `compose.dev.yml`: overlay that publishes w0..w2 on host ports 18100..18102 for the tools.
