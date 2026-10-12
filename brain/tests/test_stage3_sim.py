@@ -73,10 +73,13 @@ def test_whale_is_named_from_its_barcode(cfg):
     brain = Brain(cfg)
     sim = Simulator(cfg.tenants, whale_scenario("K", 20, 40, 60), quota_mult={"K": 3}, start=T0)
     events, _ = drive(brain, sim, T0 + sim.total_s)
-    named = [e for e in srv_events(events) if e.stage == "named"]
+    named = [e for e in srv_events(events) if e.stage == "named" and e.suspects]
     assert named and all([s.tenant for s in e.suspects] == ["K"] for e in named)
     assert named[0].suspects[0].confidence > 0.9 and named[0].ts - (T0 + 20) < 9
-    assert all(not e.report["host_suspects"] for e in named)
+    allnamed = [e for e in srv_events(events) if e.stage == "named"]
+    assert all(not e.report["host_suspects"] for e in allnamed)          # K's servers are never host suspects
+    held = [e for e in allnamed if e.report.get("held_hosts")]
+    assert all(set(sum(e.report["held_hosts"].values(), [])) == {"K"} for e in held)
     # the culprit itself is never moved by a rescue once named, and every rescue keeps to barcodes
     for t, rc in sim.route_log:
         for tenant, w in rc.weights.items():

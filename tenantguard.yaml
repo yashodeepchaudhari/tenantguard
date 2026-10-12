@@ -92,7 +92,7 @@ brain:
     slow_abs_ms: 8
     open_after_ticks: 4
   rescue_capacity_guard: 0.7
-  confidence_to_prove: 0.6
+  confidence_to_prove: 0.8
   spare_sizing: 1.25
   prove_settle_s: 2
   prove_window_s: 6

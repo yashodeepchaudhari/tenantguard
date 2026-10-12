@@ -97,3 +97,50 @@ def test_two_slow_neighbours_do_not_flag_an_over_user():
     assert two["G"].usage_ratio >= 1.25 and two["G"].victim_impact >= 0.2 and not two["G"].flagged
     three = compute_scores(slowdowns={"A": 1.5, "B": 1.5, "C": 1.0, "D": 0.0}, **common)
     assert three["G"].flagged
+
+
+def test_a_server_a_hot_tenant_runs_on_is_not_drained_as_a_faulty_host(cfg):
+    """Host run step 2b: while K ramped, the decoder named 'host suspect w1' and drained it twice."""
+    from tenantguard_brain.sim import HEAVY
+    brain = Brain(cfg)
+    sim = Simulator(cfg.tenants, whale_scenario("K", 20, 40, 20, rps=6), quota_mult={"K": 3}, start=T0)
+    sim.apply_relocate("K", HEAVY, "w1", 600)          # K's heavy work lands on w1 only: w1 slow, w3/w8 fine
+    events, _ = drive_jobs(brain, sim, T0 + sim.total_s)
+    drains = [c for _, p, c in sim.control_log if p.endswith("/drain")]
+    assert drains == []
+    assert not any("Host suspect w1" in e.detail for e in events if e.stage == "named")
+    held = [e for e in events if e.stage == "named" and "w1 is not treated as a faulty host" in e.detail]
+    assert len(held) == 1 and "while K runs hot there" in held[0].detail
+    assert held[0].report["held_hosts"] == {"w1": ["K"]} and held[0].suspects == []
+
+
+def test_a_real_host_fault_with_no_hot_tenant_is_still_drained(cfg):
+    brain = Brain(cfg)
+    sim = Simulator(cfg.tenants, [Phase("calm", 120)], start=T0)
+    drive(brain, sim, T0 + 20)
+    sim.set_fault("w4", 40.0)
+    events, _ = drive_jobs(brain, sim, T0 + 50)
+    assert [e.verdict for e in events if e.stage == "verdict"] == ["host_fault"]
+
+
+def test_a_deferred_drain_is_said_once(cfg):
+    """Host run step 2b: 62 'Drain test for w1 deferred: peers are too busy (95% >= 75%)' events, one per second."""
+    brain = Brain(cfg)
+    brain.s3.budget.drain_peer_busy = 0.0               # peers always "too busy"
+    sim = Simulator(cfg.tenants, [Phase("calm", 120)], start=T0)
+    drive(brain, sim, T0 + 20)
+    sim.set_fault("w4", 40.0)
+    events, _ = drive(brain, sim, T0 + 60)
+    deferred = [e for e in events if e.stage == "proving" and "deferred" in e.detail]
+    assert len(deferred) == 1 and "w4" in deferred[0].detail
+
+
+def test_a_server_below_its_floor_enters_the_decoder_as_normal(cfg):
+    """Host step 3: during the w4 incident, 'Host suspect w0 3.8x (24 ms vs 6 ms)' was named: under the floor."""
+    brain = Brain(cfg)
+    h = brain.s3.health
+    h.servers["w0"].level_ms, h.servers["w0"].peer_ratio = 24.0, 3.8      # 3.8x but 24 ms (< 25 ms floor)
+    h.servers["w4"].level_ms, h.servers["w4"].peer_ratio = 60.0, 6.0      # really slow
+    r = brain.s3.decoder_ratios()
+    assert r["w0"] == 1.0 and r["w4"] == 6.0
+    assert "spare" not in r and "quarantine" not in r                      # pool servers are never decoded

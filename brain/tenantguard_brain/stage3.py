@@ -111,6 +111,8 @@ class Stage3:
         self.control: List[Tuple[str, str, object]] = []   # (sender key, path, command)
         self.drains: Dict[str, float] = {}            # server -> last DrainCmd sent (ours, host_fault)
         self.pre_evidence: Dict[str, dict] = {}       # culprit -> verdict inputs captured before its test
+        self.held_hosts: Dict[str, List[str]] = {}    # server -> hot tenants on it (not a host suspect yet)
+        self.ever_held: Dict[str, List[str]] = {}     # same, remembered for the rest of the incident
         self.rescued_at: Optional[float] = None       # last time the rescue grew (ladder grace, see core)
 
     # ------------------------------------------------------------- inputs
@@ -157,6 +159,39 @@ class Stage3:
                 self.bb_base.update(s, r)
 
     # ------------------------------------------------------------- tick
+    def decoder_ratios(self) -> Dict[str, float]:
+        """Fleet servers' peer ratios for the decoder. Below its SLA floor a server is not slow, whatever its
+        ratio (24 ms vs 6 ms is 4x), so it must not be named either: it enters the decoder as 'like its peers'."""
+        out = {}
+        for k, h in self.health.servers.items():
+            if self.health._peer(k):
+                floor = self.health.floor_ms.get(k, self.cfg.health.min_slow_ms)
+                out[k] = h.peer_ratio if (h.level_ms or 0.0) >= floor else min(h.peer_ratio, 1.0)
+        return out
+
+    def hot_on(self, server: str, now: float) -> List[str]:
+        """Tenants on `server` still under suspicion there: named culprits not yet judged, tenants the ladder is
+        warning or acting on, and tenants using >= `over_use` x their weighted fair share of THIS server's CPU
+        (a whale aimed at one server is hot there even if its average over 3 servers is not)."""
+        on = [t for t, srv in self.barcodes.items() if server in srv]
+        out = set()
+        if self.named_key:
+            out |= {t for t in self.named_key[0] if t in on and (t not in self.judged or t in self.proving)}
+        for t in on:
+            st = self.b.ladders[t]
+            if st.level != "normal" or st.acting:
+                out.add(t)
+        cpu = self.b.cpu_by_server(now).get(server, {})
+        cap = self.b.server_capacity(now).get(server, 0.0)
+        # entitlement over EVERY tenant placed on the server, not only the ones still sending there: once a rescue
+        # has moved the victims away, the culprit is alone on the server and "within its share" of nobody
+        wsum = sum(self.b.weights[t] for t in on)
+        for t in on:
+            fair = self.b.weights[t] / wsum * cap if wsum > 0 else 0.0
+            if fair > 0 and cpu.get(t, 0.0) / fair >= self.cfg.over_use:
+                out.add(t)
+        return sorted(out)
+
     def held_by_culprit(self) -> List[str]:
         """Servers a named culprit still over-uses. A rescue moves the victims away, so those servers can look
         fine again while the culprit is still hot; lifting the rescue then would just bring the victims back
@@ -174,10 +209,24 @@ class Stage3:
         slow = sorted(set(self.health.slow_servers()) | set(self.held_by_culprit()))
         self._update_ledger(now, slow)
         stuck = {t: all(s in slow for s in v) for t, v in self.barcodes.items()} if slow else {}
-        fleet_ratios = {k: v for k, v in self.health.ratios().items() if self.health._peer(k)}
+        fleet_ratios = self.decoder_ratios()
         self.decoding = decode(self.barcodes, fleet_ratios, stuck=stuck,
                                ledger={t: self.ledger.hint(t) for t in self.barcodes},
                                params=self.cfg.decoder) if slow else None
+        if self.decoding is not None:
+            # tenant hypothesis first: a server a hot tenant runs on is not a host suspect (not named, never
+            # drained) until that tenant is cleared. During a ramp the decoder sees one or two of the culprit's
+            # servers slow before all three, which looks exactly like a faulty host (host run step 2b).
+            hot_on = {srv: self.hot_on(srv, now) for srv in self.decoding.host_suspects}
+            for srv, ts in hot_on.items():
+                if not ts and srv in self.ever_held:
+                    hot_on[srv] = self.ever_held[srv]       # a tenant hot there earlier in this incident explains it
+                elif ts:
+                    self.ever_held[srv] = ts
+            self.held_hosts = {srv: ts for srv, ts in hot_on.items() if ts}
+            self.decoding.host_suspects = [srv for srv in self.decoding.host_suspects if not hot_on[srv]]
+        else:
+            self.held_hosts = {}
         events: List[IncidentEvent] = []
         cmds: List[RouteWeightsCmd] = []
         if not acting:
@@ -244,6 +293,14 @@ class Stage3:
                 if c.tenant not in self.confidence:
                     self.memory.note_named(c.tenant, now)
                 self.confidence[c.tenant] = c.confidence
+        for srv, ts in sorted(self.held_hosts.items()):
+            subj = f"held:{srv}"
+            if subj not in self.noted:
+                self.noted[subj] = "held"
+                e = self._emit(now, "named", detail=f"{self._srv(srv)} is slow while {', '.join(ts)} runs hot there: "
+                                                    f"{s_and(ts)} judged first, {srv} is not treated as a faulty host.",
+                               report={"host_suspects": [], "held_hosts": {srv: ts}})
+                events.append(e)
         if self.named_key:
             events += self._judge(now)
         events += self._renew_drains(now)
@@ -310,10 +367,12 @@ class Stage3:
         return out
 
     def _note(self, now: float, subj: str, text: str) -> List[IncidentEvent]:
-        if self.noted.get(subj) == text:
+        """Say it once per subject per incident (the reason's numbers change every tick; the verdict, when it
+        comes, is the outcome)."""
+        if subj in self.noted:
             return []
         self.noted[subj] = text
-        return [self._emit(now, "proving", detail=text.capitalize() + ".")]
+        return [self._emit(now, "proving", detail=text[0].upper() + text[1:] + ".")]
 
     def on_proof(self, res: ProofResult, now: float) -> List[IncidentEvent]:
         t = res.tenant
@@ -491,6 +550,7 @@ class Stage3:
         self.named_key = self.pending_key = None
         self.pending_n = 0
         self.confidence, self.judged, self.noted = {}, {}, {}
+        self.ever_held = {}
         return out
 
     def _srv(self, s: str) -> str:
@@ -532,6 +592,9 @@ class Stage3:
         for s in d.host_suspects:
             texts.append(f"Host suspect {self._srv(s)}: no tenant's barcode explains it "
                          f"(host fault {d.top_confidence.get('host_fault', 0):.0%}). No tenant blamed.")
+        for s, ts in sorted(self.held_hosts.items()):
+            texts.append(f"{s} is not treated as a faulty host while {', '.join(ts)} (running hot there) is "
+                         f"being judged.")
         if d.culprits and self.prover.available:
             texts.append("Proof by relocation is next (if confidence >= "
                          f"{self.vp.confidence_to_prove:.0%}).")
@@ -546,6 +609,10 @@ class Stage3:
         if d.culprits:
             ev.tenant = d.culprits[0].tenant
         return ev
+
+
+def s_and(ts: List[str]) -> str:
+    return ("it is" if len(ts) == 1 else "they are")
 
 
 def _diff(a: Dict[str, float], b: Dict[str, float]) -> float:
