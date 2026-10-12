@@ -597,6 +597,7 @@ class ReplicaView(BaseModel):
     cpu_shares: int = 0           # cpu.weight
     mem_mb: int = 0
     started_at: float = 0.0
+    tenants: List[str] = Field(default_factory=list)   # tenants this replica was started for (TENANTGUARD_TENANTS)
 
 
 class SnapTenant(BaseModel):
