@@ -22,6 +22,8 @@ demand_p = clip(α·raw_p + (1−α)·demand_prev_p, 0, cap_p)        α = 0.5
 ```
 Without the queue and refused terms, a project held at its cap would never show more demand than its cap allows, and would never get surplus.
 
+**As built:** when a project uses ≥ 90% of its caps, `raw ≥ 1.25 × used` (saturation probe, *estimates*; `09_AS_BUILT.md` D3).
+
 ## 3. Allocation (`allocator.allocate` + `allocator.water_fill`)
 ```
 usable = cpu_total × (1 − headroom)
@@ -83,7 +85,7 @@ The surplus is 5.175 − 4.10 = 1.075.
 
 **Docker mapping:**
 - `CpuShares` per replica = clamp(round(10240 × floor_p ÷ replicas_p), 2, 262144): 10240 shares per core of floor, inside the Docker range. Example: health 1.25 ÷ 3 replicas → 4267; free 0.5 ÷ 1 → 5120.
-- `NanoCpus` = min(1.0, alloc_p ÷ replicas_p) × 1e9.
+- `NanoCpus` = min(1.0, max(alloc_p, floor_p)) × 1e9 per replica (as built; an even split starved sticky tenants, `09_AS_BUILT.md` D1).
 - `CgroupParent` = `tg-pool.slice`, created once on the host with `cpu.max` = cpu_total.
 
 ## 5. Scaling (`scaler.replicas_needed`, `scaler.plan`)

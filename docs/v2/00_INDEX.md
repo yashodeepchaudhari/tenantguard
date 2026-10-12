@@ -23,3 +23,4 @@
 | 06 | `06_DIAGRAMS.md` | 21 diagrams: context, topology, flows, state machines, 8 sequences, class, ER, chart, build graph |
 | 07 | `07_BUILD_PLAN.md` | Tasks V1–V11 with files, tests, acceptance; waves; scenarios; scorecard; acceptance gate |
 | 08 | `08_RISKS.md` | Risks R1–R13 with mitigations |
+| 09 | `09_AS_BUILT.md` | What was built on `v2/main`: deviations and why, simulated scenarios, task status, what is left |

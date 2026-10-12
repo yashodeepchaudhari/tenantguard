@@ -62,7 +62,7 @@ Pool (admin sets cpu_total, mem_total_mb, headroom_ratio)
 | Layer | Mechanism | Job | Speed |
 |---|---|---|---|
 | **Safety (floors)** | Per-replica `CpuShares` ∝ the project's floor (optionally inside a pool cgroup via `CgroupParent`) | Under contention every project gets at least its share; idle CPU flows to busy projects | Kernel scheduler, immediate |
-| **Policy (surplus shape)** | Per-replica `NanoCpus` = max(alloc, floor) ÷ replicas, ≤ 1.0 core | A borrower gets no more than its weighted surplus; an idle project keeps a cap of at least its floor, so it is never capped below its floor when it wakes | One tick (1 s) |
+| **Policy (surplus shape)** | Per-replica `NanoCpus` = min(1.0 core, max(alloc, floor)) (tenants are sticky, so the allocation is not split; see `09_AS_BUILT.md` D1) | A borrower gets no more than its weighted surplus; an idle project keeps a cap of at least its floor, so it is never capped below its floor when it wakes | One tick (1 s) |
 
 - **Why `max(alloc, floor)`:** an idle project keeps its cap at its floor. When it wakes, the kernel shares decide at once; the next tick lowers the borrowers' caps.
 - **Why ≤ 1.0 core per replica:** the worker is one Python process holding the GIL (`worker/app/work.py:1-2`). A project needing more CPU gets more replicas. *(est., measure with `worker/tools/calibrate.py` on the host)*

@@ -1,169 +1,167 @@
-# 04 — v2 function catalog (one task → one function)
+# 04 — v2 function catalog (as built: one task, one function)
+
+This catalog matches the code on branch `v2/main`. Differences from the first draft of the spec, and the reasons for them, are in `09_AS_BUILT.md`.
 
 ## 1. Rules
-| # | Rule | Check |
+| # | Rule | How it holds |
 |---|---|---|
-| F1 | Each task has exactly one function. If two places need it, they call the same function. | §3 task index: every task appears once |
-| F2 | Every function has at least one caller in production code (tests don't count). | `vulture` with min-confidence 80 in CI |
-| F3 | ≤ 30 lines, ≤ 4 parameters, a one-line docstring saying the task. | `ruff` (C901 complexity ≤ 8, PLR0913) |
-| F4 | Pure functions (allocator, scaler, detector math, costs) do no I/O. I/O lives only in adapters (`docker_adapter`, `http_clients`, `registry_store`). | Import-linter contract |
-| F5 | Only `ControlLoop.tick` mutates control state. Only `DockerAdapter` imports the Docker client. | Import-linter contract + grep test |
-
-**Column key:**
-- **v1 source:** where the code comes from (`reuse` = keep the file; `adapt` = small change; `new`).
-- **Caller:** the production caller.
+| F1 | Each task has exactly one function; other places call it | §3 task index |
+| F2 | Every function has a production caller | Callers listed below; v1 code without a caller was deleted (§4) |
+| F3 | Small functions with a one-line docstring | Followed in the new modules; v1 modules kept as they were |
+| F4 | Pure logic has no I/O | `registry`, `allocator`, `scaler`, `detector`, `control`, `core` (brain) and `router`, `costs`, `admission`, `scheduler`, `limiter` (gateway) import no network or Docker client |
+| F5 | One writer per kind of state | `ControlLoop` writes allocations, replicas, splits and blame. `Brain` writes ladders and incidents. Only `backends.py` touches Docker or processes |
 
 ## 2. Modules
-### 2.1 `common/tg_common/contracts.py`: data only (see `05_DATA_AND_CONFIG.md`)
-No functions except Pydantic validators.
-
-### 2.2 `brain/tg_brain/registry.py`: who exists
-| Function | Task | In → Out | Caller | v1 source |
-|---|---|---|---|---|
-| `check_capacity(pool, projects) -> list[str]` | Validate I2, I3 | Pool, projects → error list (empty = ok) | `create_project`, `update_project`, `set_pool` | new |
-| `set_pool(reg, pool) -> Registry` | Admin sets the capacity | → new registry | Admin API `PUT /admin/pool` | new |
-| `create_project(reg, spec) -> Registry` | Add a project | ProjectSpec → registry | `POST /admin/projects` | new |
-| `update_project(reg, id, patch) -> Registry` | Change floor, cap, tier, warm_min | → registry | `PATCH /admin/projects/{id}` | new |
-| `add_tenant(reg, project_id, name) -> tuple[Registry, str]` | Bind a new tenant to a project (I1), make its key | → (registry, plain key shown once) | `POST /admin/projects/{id}/tenants` | adapt `tenants.py` hashing |
-| `remove_tenant(reg, tenant_id) -> Registry` | Unbind a tenant | → registry | `DELETE /admin/tenants/{id}` | new |
-
-### 2.3 `brain/tg_brain/registry_store.py`: persistence (I/O adapter)
-| Function | Task | Caller |
+### 2.1 `common/tenantguard_common/`
+| Function | Task | Callers |
 |---|---|---|
-| `load(path) -> Registry` | Read `registry.json`, or seed it from `tenantguard.yaml` | brain startup |
-| `save(reg, path) -> None` | Atomic write (write to a temp file, then rename) | every Admin API mutation |
+| `config.load_settings()` | Read `tenantguard.yaml` | Every service |
+| `config.load_pool()`, `load_projects()`, `load_tenants()` | Seed pool / projects / tenants from the yaml | `brain.settings.load`; handoff, narrator, lab, worker (tenant metadata) |
+| `config.tier_quota()` | One tier's per-tenant quota | `load_tenants`, `brain.settings.load` |
+| `contracts.*` | Data only (Pydantic): `PoolSpec`, `ProjectSpec`, `TenantCreate`, `ReplicaView`, `SnapTenant`, `Snapshot`, `WakeCmd`, `PoolView`, `ProjectView`, plus the v1 models still in use | All |
 
-### 2.4 `brain/tg_brain/allocator.py`: pure
-| Function | Task | Caller |
+### 2.2 `brain/tenantguard_brain/registry.py`: who exists (pure)
+| Function | Task | Callers |
 |---|---|---|
-| `estimate_demand(prev, sample, alpha, cap) -> float` | EWMA demand of one project (03 §2) | `ControlLoop.tick` |
-| `water_fill(surplus, wants, weights) -> dict` | Split the surplus (03 §3) | `allocate` |
-| `allocate(pool, projects, demand) -> dict[str, Alloc]` | Floors + loans + caps (03 §3) | `ControlLoop.tick` |
+| `check_capacity(reg, cfg)` | List every broken invariant (I2, I3, memory reservation) | `_checked` (every change), tests |
+| `set_pool`, `create_project`, `update_project`, `remove_project`, `add_tenant`, `remove_tenant` | One validated registry change each | `main.admin_router` |
+| `seed(pool, projects, tenants, cfg)` | Registry from the yaml | `runtime.load_registry` |
+| `snap_tenants(reg, quotas)` | Tenants as the gateway needs them | `ControlLoop.snapshot`, `Runtime` (brain topology) |
+| `usable(pool)`, `tenants_of(reg, p)`, `hash_key(key)` | Small shared helpers | Registry, control, tests |
 
-### 2.5 `brain/tg_brain/scaler.py`: pure
-| Function | Task | Caller |
+### 2.3 `registry_store.py` (I/O)
+| Function | Task | Callers |
 |---|---|---|
-| `replica_memory_mb(n_tenants, cfg) -> int` | Memory of one replica (02 §6) | `plan`, `registry.check_capacity` |
-| `replicas_needed(project, alloc, demand, hyst, cfg) -> tuple[int, Hyst]` | Target count with hysteresis (03 §5.1) | `plan` |
-| `cpu_settings(project, alloc, n) -> CpuSettings` | NanoCpus and CpuShares per replica (03 §4) | `plan` |
-| `plan(state, allocs, demand, cfg) -> list[Action]` | Ordered actions: drain → stop → lower → start → raise (03 §5.2) | `ControlLoop.tick` |
+| `load(path, seed)` | Saved registry, or the seed on first start | `runtime.load_registry` |
+| `save(reg, path)` | Atomic write (temp file + rename) | `load`, `Runtime.set_registry` |
 
-### 2.6 `brain/tg_brain/docker_adapter.py`: the only Docker caller (I/O)
-| Function | Task | Caller | v1 source |
-|---|---|---|---|
-| `list_replicas() -> list[Replica]` | Rebuild the replica set from labels `tg.project`, `tg.replica`, `tg.borrowed` | brain startup (reconcile) | adapt T12 `DockerControl` label filter |
-| `apply(actions) -> list[ActionResult]` | Run start / stop / update; never raises, failures are returned | `ControlLoop.tick` | adapt T12 `set_cpus` (NanoCpus) + new create/start/stop |
-| `cpu_ms(replica_ids) -> dict[str, float]` | Cumulative cgroup CPU per container (`/containers/{id}/stats?stream=false`) | `ControlLoop.tick` | new |
-
-### 2.7 `brain/tg_brain/detector.py`: pure
-| Function | Task | Caller |
+### 2.4 `allocator.py` (pure)
+| Function | Task | Callers |
 |---|---|---|
-| `attribute(project_view) -> Attribution` | Tenant CPU + unattributed remainder (03 §7.1) | `ControlLoop.tick` |
-| `score(tenant_view, project_view, baselines) -> float` | v1 score formula, project scope (03 §7.2) | `ControlLoop.tick` |
-| `update_baseline(b, p95, calm, half_life) -> float` | Victim p95 baseline (v1 rule: learn only when calm) | `ControlLoop.tick` |
-| `split_step(state, observation) -> SplitState` | One step of the hash split; ends with a Finding (03 §7.3) | `ControlLoop.tick` |
-| `external_contention(views) -> Finding | None` | No-blame host contention (03 §7.4) | `ControlLoop.tick` |
+| `estimate_demand(prev, raw, alpha, cap)` | Demand EWMA, clipped | `ControlLoop._demand` |
+| `water_fill(surplus, wants, weights)` | Weighted split with re-split of capped excess | `allocate`; `sim._host_share` (models kernel shares) |
+| `allocate(usable, projects, weights, demand, mode)` | Floors first, then the surplus by tier weight (`industry` = floors; `off` = caps) | `ControlLoop.tick` |
 
-### 2.8 `brain/tg_brain/ladder.py`: v1 file, reused
-| Function | Task | Caller |
+### 2.5 `scaler.py` (pure)
+| Function | Task | Callers |
 |---|---|---|
-| `Ladder.step(score, now) -> LadderOut` | Escalate / recover one tenant (v1 thresholds) | `ControlLoop.tick` |
-| `Ladder.hold(kind, until)` | Operator release / extend / resume (v1) | Operator API |
+| `replica_memory_mb(n_tenants, cfg)` | Memory of one replica | `registry.check_capacity`, `_starts` |
+| `own_replicas(p, cfg)` | Replicas whose memory a project always has reserved; more are borrowed | `check_capacity`, `_starts`, `ControlLoop._targets` |
+| `replicas_needed(p, current, demand, alloc, hyst, cfg)` | Target count with hysteresis, sleep and wake | `ControlLoop._targets` |
+| `cpu_settings(p, alloc, n, cfg, mode)` | NanoCpus and CpuShares per replica | `ControlLoop._targets` |
+| `plan(fleet, targets, usable_mem, now, cfg)` | Ordered actions: drain → reclaim → stop → lower → start → raise | `ControlLoop.tick` |
 
-### 2.9 `brain/tg_brain/policy.py`
-| Function | Task | Caller |
+### 2.6 `backends.py`: the only code that starts, stops or resizes replicas
+| Function | Task | Callers |
 |---|---|---|
-| `apply_finding(finding, ladders, log) -> None` | Write the event (I7), then pass the evidence to that tenant's ladder | `ControlLoop.tick` |
-| `overrides(ladders, now) -> list[LimitsCmd]` | Current per-tenant factors with TTL | `publisher.build` |
+| `DockerBackend.apply(actions)` | Engine API create/start, update (NanoCpus, CpuShares), delete; never raises | `Runtime.control_once` |
+| `DockerBackend.list_replicas()` | Our stack's replicas (label `tg.stack`) after a restart | `Runtime.start` |
+| `DockerBackend.cpu_ms(ids)` | Cumulative cgroup CPU per replica | `Runtime.control_once` |
+| `ProcessBackend.*` | The same interface with local worker processes (no Docker on the laptop) | `runtime.make_backend` when `backend: process` |
 
-### 2.10 `brain/tg_brain/publisher.py`
-| Function | Task | Caller |
+### 2.7 `detector.py` (pure)
+| Function | Task | Callers |
 |---|---|---|
-| `build(reg, replicas, overrides, pins, version) -> Snapshot` | One immutable snapshot | `ControlLoop.tick` |
-| `push(snapshot) -> bool` | POST to the gateway `/control/snapshot` (I/O) | `ControlLoop.tick` |
+| `attribute(usage, cfg, blamed)` | Replica CPU → tenants (metered, black box by docs, overhead by requests up to the ceiling) + the unattributed rest | `ControlLoop._attribute` |
+| `needs_split(...)` | Unexplained CPU above the ratio and the floor, a hurt tenant, ≥ 2 active tenants | `ControlLoop._detect` |
+| `split_step(split, unattributed, now, cfg)` | One tick of the hash split: settle → sample → keep the heavier half | `ControlLoop._advance_split` |
+| `halves(suspects, round)` | Balanced split ordered by a per-round hash | `split_step`, `Split.pins` |
+| `contention(slow, over_alloc)` | Every project slow, none above its allocation | `ControlLoop._contention` |
 
-### 2.11 `brain/tg_brain/control.py`
-| Function | Task | Caller |
+### 2.8 `control.py`: `ControlLoop`, the single writer of allocation and replicas
+| Method | Task | Callers |
 |---|---|---|
-| `ControlLoop.tick()` | Run the steps of `05_DATA_AND_CONFIG.md` §4 in order; the only writer | timer (1 s) and `wake` |
-| `ControlLoop.wake(project_id)` | Mark the project as demanded and tick now (debounced) | `POST /control/wake` from the gateway |
+| `tick(obs)` | Container rates → attribution → demand → allocate → targets → plan → detection | `Runtime.control_once` |
+| `applied(results, now)`, `mark_ready(rid)`, `adopt(replicas, now)` | Keep the fleet in step with the backend and health checks | `Runtime` |
+| `set_registry(reg)`, `wake(project, now)` | React to admin changes and gateway wakes | `Runtime.set_registry`, `Runtime.wake` |
+| `snapshot(limits)` | The one message the gateway receives | `Runtime.push_snapshot`, `GET /snapshot` |
+| `pool_view()`, `tenant_cpu_by_replica()`, `replicas_of(p)` | Views for the API, the brain's scores, topology | `main`, `Runtime` |
 
-### 2.12 `brain/tg_brain/collect.py`: inputs (I/O)
-| Function | Task | Caller |
+### 2.9 `core.py`: `Brain`, the ladder and incidents
+| Method | Task | Callers |
 |---|---|---|
-| `on_telemetry(msg)` | Store the latest gateway telemetry (250 ms WebSocket, v1) | WebSocket handler |
-| `poll_workers(replicas) -> dict` | `/stats` of each replica (v1 runtime polling) | `ControlLoop.tick` |
-| `views(now) -> Views` | Build per-tenant / per-project windows from the stored samples | `ControlLoop.tick` |
+| `ingest_frame`, `ingest_stats` | Gateway telemetry, replica meters | `Runtime` loops |
+| `set_topology`, `set_attribution` | Project tenants and replicas; per-tenant CPU from the control loop | `Runtime._sync_topology` |
+| `replica_usage`, `demand_signals` | Meters and the queued/refused cost the control loop needs | `Runtime.observation` |
+| `tick(now)` | Score → ladder transitions → incident events | `Runtime._ladder_loop` |
+| `limits()` | Active per-tenant overrides for the snapshot | `Runtime.push_snapshot` |
+| `on_finding(...)` | Control-loop findings → incident events | `Runtime.control_once` |
+| `operator(cmd)`, `adopt_overrides(ov)` | Human decisions; take over limits after a restart | `main`, `Runtime._adopt_once` |
+| `snapshot(now, pool)`, `status_sentence`, `debug` | UI views | `main`, `Runtime._ui_loop` |
 
-### 2.13 `gateway/tg_gateway/`
-| Function | Task | Caller | v1 source |
-|---|---|---|---|
-| `identify(key) -> Identity` | Key hash → tenant, project | `handle` | reuse `tenants.py` |
-| `classify(req) -> str` | Class id with size bucket (03 §6.2) | `handle` | adapt `tenants.py:26-29` |
-| `RetryBudget.check(...)` | v1 retry budget | `handle` | reuse `retry.py` |
-| `admit(identity, snapshot) -> Refusal | None` | Block / token / concurrency | `handle` | adapt `admission.py` (drop cost) |
-| `ProjectQueues.enqueue(item)` / `.next()` | Lanes + DRR per project | `handle`, `pump` | reuse `scheduler.py` (one instance per project) |
-| `route(tenant, project, lane, snapshot, windows) -> Replica | None` | Pin, else rendezvous with bounded spill (03 §6.6) | `pump` | new (replaces `router.py`) |
-| `Window.allow(lane)` / `.observe(rtt, cpu)` | Gradient2 per replica | `route`, `observe` | reuse `limiter.py` |
-| `observe(item, response)` | Debit costs, update the window, record telemetry | `handle` | adapt `core.py:310-319` |
-| `request_wake(project)` | Debounced POST `/control/wake` | `handle` (when the project has 0 ready replicas) | new |
-| `on_snapshot(snapshot)` | Atomic swap; drop queues of removed tenants | `/control/snapshot` | new (replaces most of `overrides.py`) |
-| `costs.reference_cost(tenant, cls) -> float` | **The only** cost estimate: calibration seed → EWMA α 0.2 | `enqueue` (gateway), `billing.charge` | new; replaces `core.py:121-125` and the billing EWMA |
-| `costs.update(tenant, cls, ms)` | Feed the EWMA | `observe` | — |
+### 2.10 `runtime.py` (I/O) and `main.py` (HTTP)
+| Function | Task |
+|---|---|
+| `Runtime.control_once(now)` | One control tick: health checks, container CPU, `ControlLoop.tick`, backend, findings, snapshot |
+| `Runtime.push_snapshot()` | POST `/control/snapshot` to the gateway |
+| `Runtime.set_registry(reg)` | Save, apply, tick at once |
+| `Runtime.observation(now, container)` | Build the control loop's input from the brain's windows |
+| `Runtime.audit(kind, data)` | Append to the audit log |
+| `main.admin_router`, `main.create_app` | Admin API, `/snapshot`, `/control/wake`, operator, UI reads |
 
-### 2.14 `worker/app/` (v1, one addition)
-| Function | Task | Caller |
+### 2.11 `gateway/tenantguard_gateway/`
+| Function | Task | Callers |
 |---|---|---|
-| `BlackBox.hand_off(tenant, docs)`: add a counter `docs_by_tenant[tenant] += n` | Lets the brain split black-box CPU by documents (03 §7.1) | `ingest` endpoint |
-| Everything else | Unchanged | — |
+| `Gateway.on_snapshot(snap)` | Swap tenants, replicas, limits, pins | `POST /control/snapshot`, `fetch_snapshot` |
+| `Gateway.handle(...)` | The request path | `/api/*` |
+| `tenants.request_class(..., size)`, `tenants.size_bucket(...)` | Class id with size bucket | `handle` |
+| `costs.Costs.reference_cost(tenant, cls, method, path)` | **The only** cost estimate: EWMA → calibration seed → default | `handle` |
+| `costs.Costs.update(...)`, `costs.load_seed(path)` | Learn from the CPU header; read `calibration.json` | `_measure`, `Gateway.__init__` |
+| `admission.admit(...)` | Block, token bucket, concurrency | `handle` |
+| `router.choose(tenant, ready, has_capacity, pin)`, `router.rank(...)` | Pin, else rendezvous with spill | `_route`, `admin_view` |
+| `Gateway.request_wake(project)` | Debounced wake to the brain | `handle`, `tick` |
+| `overrides.Overrides.apply_snapshot`, `set_block`, getters | TTL'd limits, pins, blocks; fail-static clock | `on_snapshot`, `/control/block`, the request path |
+| `app.snapshot_problems(snap, ttl_max)` | Validate a snapshot (400) | `/control/snapshot` |
 
-### 2.15 `billing/` (T17): input source change only
-| Function | Task | Caller |
+### 2.12 `worker/app/` (v1 + 2 changes)
+| Change | Task | Callers |
 |---|---|---|
-| `charge(bucket, attribution, prices) -> Lines` | T17 pricing, using `tenant_ms_t` and `costs.reference_cost` | billing timer |
+| `BlackBox.submit(docs, tenant)` + `docs_by_tenant` in `/stats` | Lets attribution split black-box CPU by documents | `/api/ingest` |
+| `config._tenants(settings)` | The replica's tenant list from `TENANTGUARD_TENANTS` (set by the brain) | `load_config` |
 
-## 3. Task index: proof of "one task, one function"
+## 3. Task index: one task, one function
 | Task | The single function | v1 had |
 |---|---|---|
 | Validate capacity | `registry.check_capacity` | — |
-| Estimate demand | `allocator.estimate_demand` | — |
+| Estimate demand | `allocator.estimate_demand` (called once per project in `ControlLoop._demand`) | — |
 | Split the surplus | `allocator.water_fill` | — |
 | Decide replica count | `scaler.replicas_needed` | Fixed fleet |
-| Change containers | `docker_adapter.apply` | T12 `set_cpus` only |
-| Per-request cost | `costs.reference_cost` | Gateway EWMA + billing EWMA + unused calibration (3) |
-| Move traffic | `route` (reads snapshot pins and replicas) | RouteWeightsCmd + RelocateCmd + DrainCmd (3) |
-| Lower a tenant's limits | `Ladder.step` → `policy.overrides` | Ladder + verdict `force_throttle` (2) |
-| Attribute CPU | `detector.attribute` | Ledger hints in decoder + billing unmetered line (2) |
+| Change containers | `backends.*.apply` | T12 `set_cpus` only |
+| Cost of a request class | `gateway.costs.Costs.reference_cost` | Gateway EWMA + brain reference push + unused calibration (3) |
+| Move traffic | `gateway.router.choose` (reads snapshot replicas + pins) | RouteWeights + Relocate + Drain commands (3) |
+| Lower a tenant's limits | `ladder.step` → `Brain.limits` → snapshot | Ladder sends + verdict `force_throttle` (2) |
+| Per-tenant CPU | `detector.attribute` (used by scores and views) | Worker meters + decoder ledger hints + billing unmetered line |
 | Find a hidden culprit | `detector.split_step` | Decoder + prover + verdicts (3) |
-| Host / external slowness | `detector.external_contention` | `health.py` + HostProver (2) |
-| Publish policy | `publisher.build` + `push` | Many separate commands with separate TTLs |
+| Slowness outside the projects | `detector.contention` | `health.py` + HostProver (2) |
+| Publish policy | `ControlLoop.snapshot` + `Runtime.push_snapshot` | 7 control endpoints with separate TTLs |
+| Fail-static signal | Snapshot receive time (`Overrides.snapshot_age`) | Separate heartbeat loop and endpoint |
 
-## 4. Call graph
+## 4. Deleted (no caller left in v2)
+- **Brain:** `stage3.py`, `health.py`, `rescue.py`, `decoder.py`, `prover.py`, `tools/fake_gateway.py`
+- **Gateway:** route weights / relocate / drain / charge / reference-cost / limits / heartbeat endpoints; the CPU cost bucket; admin tenant CRUD (the brain owns the registry); `tools/prove.py`, `tools/prove_t7.py`
+- **Other:** `layouts/ag23.json`, `lab/tools/stub_gateway.py`, `config.worker_urls`
+- **Contracts:** `RouteWeightsCmd`, `RelocateCmd`, `DrainCmd`, `ChargeCmd`, `ReferenceCostsCmd`, `Heartbeat`, `QuotaPatch`, `Quota.cost_ms_per_s`
+
+## 5. Call graph
 ```mermaid
 flowchart LR
-  T["timer 1 s"] --> TICK["ControlLoop.tick"]
-  WK["POST /control/wake"] --> WAKE["ControlLoop.wake"] --> TICK
-  TICK --> V["collect.views"]
-  TICK --> PW["collect.poll_workers"]
-  TICK --> CPU["docker_adapter.cpu_ms"]
-  TICK --> ED["allocator.estimate_demand"]
-  TICK --> AL["allocator.allocate"] --> WF["allocator.water_fill"]
-  TICK --> PL["scaler.plan"]
-  PL --> RN["scaler.replicas_needed"]
-  PL --> CS["scaler.cpu_settings"]
-  PL --> RM["scaler.replica_memory_mb"]
-  TICK --> AP["docker_adapter.apply"]
-  TICK --> AT["detector.attribute"]
-  TICK --> SC["detector.score"]
-  TICK --> UB["detector.update_baseline"]
-  TICK --> SS["detector.split_step"]
-  TICK --> EC["detector.external_contention"]
-  TICK --> LS["Ladder.step"]
-  TICK --> AF["policy.apply_finding"]
-  TICK --> BU["publisher.build"] --> OV["policy.overrides"]
-  TICK --> PU["publisher.push"]
-  ADM["Admin API"] --> CP["registry.create_project"] --> CC["registry.check_capacity"]
-  ADM --> AT2["registry.add_tenant"]
-  ADM --> SV["registry_store.save"]
-  CC --> RM
+  T["control loop 1 s / wake / registry change"] --> CO["Runtime.control_once"]
+  CO --> HC["health checks -> ControlLoop.mark_ready"]
+  CO --> CPU["backend.cpu_ms"]
+  CO --> OB["Runtime.observation"] --> RU["Brain.replica_usage"] & DS["Brain.demand_signals"]
+  CO --> TK["ControlLoop.tick"]
+  TK --> AT["detector.attribute"]
+  TK --> ED["allocator.estimate_demand"]
+  TK --> AL["allocator.allocate"] --> WF["allocator.water_fill"]
+  TK --> TG["scaler.replicas_needed + cpu_settings"]
+  TK --> PL["scaler.plan"]
+  TK --> DT["detector.needs_split / split_step / contention"]
+  CO --> AP["backend.apply"] --> APD["ControlLoop.applied"]
+  CO --> OF["Brain.on_finding"]
+  CO --> PS["Runtime.push_snapshot"] --> SN["ControlLoop.snapshot"] & LM["Brain.limits"]
+  L["ladder loop 250 ms"] --> BT["Brain.tick"] --> LS["ladder.step"]
+  BT -->|changed| PS
+  ADM["admin API"] --> REG["registry.*"] --> CC["registry.check_capacity"]
+  ADM --> SR["Runtime.set_registry"] --> SV["registry_store.save"]
+  GW["gateway POST /control/snapshot"] --> ONS["Gateway.on_snapshot"]
 ```
