@@ -19,6 +19,7 @@ import type {
   TenantAdminView,
   TenantView,
 } from '../types.ts'
+import { LEVELS } from '../types.ts'
 import { NOISY, SERVERS, TENANTS, TIERS } from './fixture.ts'
 
 const SERVER_CAP_MS = 500 // 0.5 core = 500 CPU-ms per second
@@ -57,6 +58,8 @@ export class SimError extends Error {
 
 interface TState {
   id: string
+  /** per-incident story for the Case File: when the incident opened, the peak, what was done */
+  story: { openedAt: number; peakScore: number; peakFactor: number; actions: string[]; victimPeak: number } | null
   quota: Quota
   level: Level
   factor: number
@@ -72,10 +75,6 @@ interface TState {
   lastStep: number
   incident: string | null
   overrideExpires: number | null
-}
-
-interface Attack extends AttackStatus {
-  stopped_at?: number
 }
 
 // Small seeded PRNG so screenshots are stable-ish.
@@ -95,7 +94,7 @@ const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x
 export class MockPlatform {
   mode: Mode = 'tenantguard'
   tenants: Map<string, TState> = new Map()
-  attacks: Attack[] = []
+  attacks: AttackStatus[] = []
   serverViews: ServerView[] = []
   utilization = 0
   fairness = 1
@@ -124,6 +123,7 @@ export class MockPlatform {
         lastStep: 0,
         incident: null,
         overrideExpires: null,
+        story: null,
       })
     }
   }
@@ -221,7 +221,7 @@ export class MockPlatform {
     } else if (!req.tenant || !this.tenants.has(req.tenant)) {
       throw new SimError(422, 'tenant required (A..L)')
     }
-    const a: Attack = {
+    const a: AttackStatus = {
       attack_id: `atk-${Math.floor(now * 1000).toString(36)}-${this.attacks.length}`,
       attack: req.attack,
       tenant: req.attack === 'faulty_server' ? null : req.tenant,
@@ -385,17 +385,27 @@ export class MockPlatform {
     }
 
     // 5. servers, fleet
+    const sp95 = new Map(
+      SERVERS.map((sv) => {
+        const load = serverLoad.get(sv)!
+        const others = TENANTS.filter((t) => t.servers.includes(sv)).map((t) => loads.get(t.id)!)
+        const heavy = Math.max(0, ...others.map((l) => (l.heavyCpuPerReq >= 50 ? clamp(l.heavyCpu / 3 / SERVER_CAP_MS / 0.08, 0, 1) * l.heavyCpuPerReq * 0.5 : 0)))
+        return [sv, (BASE_LAT_MS * (faults.get(sv) ?? 1)) / (1 - clamp(load / SERVER_CAP_MS, 0, 0.97)) + heavy]
+      }),
+    )
+    const med = (xs: number[]) => {
+      const v = [...xs].sort((x, y) => x - y)
+      return v.length % 2 ? v[(v.length - 1) / 2] : (v[v.length / 2 - 1] + v[v.length / 2]) / 2
+    }
     this.serverViews = SERVERS.map((sv) => {
       const load = serverLoad.get(sv)!
-      const p95 = BASE_LAT_MS * (faults.get(sv) ?? 1) / (1 - clamp(load / SERVER_CAP_MS, 0, 0.97))
-      return {
-        server: sv,
-        p95_ms: p95,
-        peer_ratio: 1,
-        cpu_pct: clamp((load / SERVER_CAP_MS) * 100, 0, 100),
-        status: faults.has(sv) ? 'slow' : 'healthy',
-      }
+      const p95 = sp95.get(sv)!
+      const peer = med(SERVERS.filter((x) => x !== sv).map((x) => sp95.get(x)!))
+      const ratio = peer > 0 ? p95 / peer : 1
+      const slow = faults.has(sv) || (ratio >= 1.6 && p95 >= 8)
+      return { server: sv, p95_ms: p95, peer_ratio: ratio, cpu_pct: clamp((load / SERVER_CAP_MS) * 100, 0, 100), status: slow ? 'slow' : 'healthy' }
     })
+    for (const sv of ['spare', 'quarantine']) this.serverViews.push({ server: sv, p95_ms: 0, peer_ratio: 1, cpu_pct: 1, status: 'healthy' })
     this.utilization = clamp(totalCpu / (SERVER_CAP_MS * SERVERS.length), 0, 1)
     const xs = TENANTS.map((t) => this.tenants.get(t.id)!.rps / TIERS[t.tier].weight)
     const sum = xs.reduce((a, b) => a + b, 0)
@@ -418,6 +428,7 @@ export class MockPlatform {
         events.push(this.ev(s, 'detected', now, { detail: `${name} (${id}) uses ${s.score.toFixed(1)}x its fair share while neighbours slow down.` }))
       }
       events.push(this.ev(s, 'level_change', now, { level, prev_level: prev, action, detail }))
+      this.storyStep(s, level, prev, action, now, events, name)
     }
     const held = (since: number | null, hold: number) => since !== null && now - since >= hold
 
@@ -485,7 +496,69 @@ export class MockPlatform {
     s.lastStep = now
     events.push(this.ev(s, 'level_change', now, { level: 'normal', prev_level: prev, action: 'limits cleared', detail: `${name} back under its fair share; override cleared.` }))
     events.push(this.ev(s, 'resolved', now, { detail: `Neighbours of ${name} back to baseline p95.` }))
+    const st = s.story
+    if (st && st.actions.length) {
+      const victims = this.coTenants(s.id)
+      events.push(
+        this.ev(s, 'explained', now, {
+          verdict: 'costly_pattern',
+          detail: `${name} sent a few very expensive requests that took most of the CPU of its servers; throttling it restored its neighbours.`,
+          report: {
+            verdict: 'costly_pattern',
+            attacker: s.id,
+            confidence: Math.min(1, st.peakScore / NOISY.quarantine),
+            duration_s: Math.round(now - st.openedAt),
+            summary: `${name} (${s.id}) ran heavy requests that used up to ${st.peakScore.toFixed(1)}x its fair share on ${this.barcode(s.id).join(', ')}. ${victims.length} neighbours sharing those servers slowed down (worst p95 ${Math.round(st.victimPeak)} ms). TenantGuard throttled ${s.id} step by step down to ${Math.round(st.peakFactor * 100)} % of its plan, the neighbours recovered, and the quota was restored once ${s.id} calmed down.`,
+            actions: st.actions,
+            evidence: {
+              barcode: this.barcode(s.id).join(' '),
+              neighbours_hurt: victims.join(' '),
+              peak_noisy_score: st.peakScore,
+              lowest_quota_factor: st.peakFactor,
+              worst_victim_p95_ms: Math.round(st.victimPeak),
+            },
+          },
+        }),
+      )
+    }
+    s.story = null
     s.incident = null
+  }
+
+  private barcode(id: string): string[] {
+    return TENANTS.find((t) => t.id === id)?.servers ?? []
+  }
+
+  private coTenants(id: string): string[] {
+    const b = new Set(this.barcode(id))
+    return TENANTS.filter((t) => t.id !== id && t.servers.some((sv) => b.has(sv))).map((t) => t.id)
+  }
+
+  /** Wave-2-style stages for the Case File: named -> proving -> verdict as the ladder climbs. */
+  private storyStep(s: TState, level: Level, prev: Level, action: string | null, now: number, events: IncidentEvent[], name: string) {
+    if (prev === 'normal' && level === 'warn') {
+      s.story = { openedAt: now, peakScore: s.score, peakFactor: 1, actions: [], victimPeak: 0 }
+    }
+    const st = s.story
+    if (!st) return
+    st.peakScore = Math.max(st.peakScore, s.score)
+    st.peakFactor = Math.min(st.peakFactor, s.factor)
+    for (const v of this.coTenants(s.id)) st.victimPeak = Math.max(st.victimPeak, this.tenants.get(v)!.p95)
+    if (action && level !== 'normal') st.actions.push(`${level}: ${action}`)
+    const rank = (l: Level) => LEVELS.indexOf(l)
+    if (this.mode !== 'tenantguard' || rank(level) <= rank(prev)) return // story stages only while escalating
+    const others = this.coTenants(s.id)
+      .map((id) => ({ tenant: id, confidence: clamp(this.tenants.get(id)!.score / NOISY.quarantine / 3, 0.02, 0.3) }))
+      .sort((a, b) => b.confidence - a.confidence)
+      .slice(0, 2)
+    const conf = clamp(s.score / NOISY.quarantine, 0.5, 0.97)
+    if (level === 'throttle' && prev === 'warn') {
+      events.push(this.ev(s, 'named', now, { suspects: [{ tenant: s.id, confidence: conf }, ...others], detail: `${name} named: its barcode ${this.barcode(s.id).join(' ')} covers every slow server.` }))
+    } else if (level === 'deprioritize') {
+      events.push(this.ev(s, 'proving', now, { suspects: [{ tenant: s.id, confidence: conf }, ...others], detail: `Proving: halving ${s.id}'s quota cut its neighbours' p95; the effect follows ${s.id}.` }))
+    } else if (level === 'quarantine') {
+      events.push(this.ev(s, 'verdict', now, { verdict: 'costly_pattern', action: action, suspects: [{ tenant: s.id, confidence: Math.max(conf, 0.9) }, ...others], detail: `Verdict costly_pattern: ${s.id} pays for a plan but sends requests far heavier than it; quarantined until it calms down.` }))
+    }
   }
 
   private ev(s: TState, stage: IncidentEvent['stage'], now: number, extra: Partial<IncidentEvent>): IncidentEvent {
@@ -534,6 +607,7 @@ export class MockPlatform {
       fairness: this.fairness,
       status_sentence: this.sentence(tenants),
       brain_ok: true,
+      noisy_thresholds: { warn: NOISY.warn, throttle: NOISY.throttle, quarantine: NOISY.quarantine },
     }
   }
 

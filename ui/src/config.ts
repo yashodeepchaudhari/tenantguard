@@ -15,11 +15,13 @@ export const config = {
   brainUrl: trim(env.VITE_BRAIN_URL, 'http://127.0.0.1:8200'),
   gatewayUrl: trim(env.VITE_GATEWAY_URL, 'http://127.0.0.1:8000'),
   labUrl: trim(env.VITE_LAB_URL, 'http://127.0.0.1:8300'),
+  /** Sent as X-TenantGuard-Control-Token on gateway /admin/* (gateway env TENANTGUARD_CONTROL_TOKEN). */
+  controlToken: env.VITE_CONTROL_TOKEN?.trim() || 'dev',
   mock: urlMock !== null ? urlMock === '1' : env.VITE_MOCK === '1',
   p95WarnMs: num(env.VITE_P95_WARN_MS, 150),
   p95BadMs: num(env.VITE_P95_BAD_MS, 400),
   historyS: 60,
-  // Mirrors tenantguard.yaml brain.noisy, only for threshold markers on the noisy bars.
+  // Fallback only: the UI uses StateSnapshot.noisy_thresholds from the brain when present.
   noisy: {
     warn: num(env.VITE_NOISY_WARN, 1.5),
     throttle: num(env.VITE_NOISY_THROTTLE, 2),

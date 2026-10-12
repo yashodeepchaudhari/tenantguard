@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom'
 import { clock } from '../lib/format.ts'
 import { levelStatus, STATUS_HEX } from '../lib/status.ts'
 import type { IncidentEvent, Level, Stage } from '../types.ts'
@@ -61,11 +62,14 @@ export function IncidentTimeline({ events, max = 40 }: { events: IncidentEvent[]
       ) : (
         <ol className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
           {shown.map((e) => (
-            <li
-              key={`${e.incident_id}-${e.stage}-${e.ts}-${e.level ?? ''}`}
-              className="grid grid-cols-[5.5rem_2rem_6.5rem_1fr] items-start gap-2 rounded-lg border-l-4 bg-ink-800/60 px-2 py-1.5"
-              style={{ borderLeftColor: stageColour(e) }}
-            >
+            <li key={`${e.incident_id}-${e.stage}-${e.ts}-${e.level ?? ''}`}>
+              <Link
+                to={`/case/${encodeURIComponent(e.incident_id)}`}
+                title={`Open case file ${e.incident_id}`}
+                data-testid="timeline-row"
+                className="grid grid-cols-[5.5rem_2rem_6.5rem_1fr] items-start gap-2 rounded-lg border-l-4 bg-ink-800/60 px-2 py-1.5 hover:bg-ink-700/70"
+                style={{ borderLeftColor: stageColour(e) }}
+              >
               <span className="font-mono text-sm text-ink-300">{clock(e.ts)}</span>
               <span className="text-lg font-black leading-tight text-ink-100">{e.tenant ?? '–'}</span>
               <span className="text-sm font-bold uppercase leading-6" style={{ color: stageColour(e) }}>
@@ -79,6 +83,7 @@ export function IncidentTimeline({ events, max = 40 }: { events: IncidentEvent[]
                 </div>
                 {e.detail && <div className="text-base leading-snug text-ink-100">{e.detail}</div>}
               </div>
+              </Link>
             </li>
           ))}
         </ol>

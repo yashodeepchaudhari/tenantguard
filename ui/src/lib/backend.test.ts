@@ -16,4 +16,9 @@ describe('backend helpers', () => {
     )
     expect(errorText(undefined, 'fallback')).toBe('fallback')
   })
+
+  it('reads gateway 400 bodies whose detail is a list of strings', () => {
+    expect(errorText({ detail: ['rate_rps must be > 0', 'burst must be <= 20000'] }, 'x')).toBe('rate_rps must be > 0; burst must be <= 20000')
+    expect(errorText({ ok: false, detail: 'factor must be in (0, 1]' }, 'x')).toBe('factor must be in (0, 1]')
+  })
 })

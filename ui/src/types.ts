@@ -124,6 +124,8 @@ export interface StateSnapshot {
   fairness: number // Jain index 0..1
   status_sentence: string
   brain_ok: boolean
+  /** e.g. {warn: 1.5, throttle: 2.0, quarantine: 4.0} from brain.noisy; the UI uses these, not its own copies */
+  noisy_thresholds?: Record<string, number>
 }
 
 export type Stage =
@@ -208,6 +210,39 @@ export interface AttackStatus {
   state: 'running' | 'stopped' | 'done'
   started_at: number
   ends_at: number
+}
+
+/** POST /lab/run: calm -> attack -> calm, after setting the gateway mode. */
+export interface RunReq {
+  scenario: AttackName
+  mode: Mode
+  tenant?: string | null
+  server?: string | null
+  intensity: number // 0.1..5
+  calm_s: number // default 20
+  attack_s: number // default 40
+}
+
+export interface PhaseP99 {
+  baseline: number
+  attack: number
+  after: number
+}
+
+/** Written to lab/results/<ts>-<scenario>-<mode>.json. Slide numbers come only from these. */
+export interface RunResult {
+  run_id: string
+  scenario: AttackName
+  mode: Mode
+  attacker?: string | null
+  started_at: number
+  victim_p99_ms: PhaseP99 // pooled over all non-attacker tenants
+  victim_p99_by_tenant: Record<string, PhaseP99>
+  time_to_detect_s?: number | null // attack start -> first incident event
+  time_to_recover_s?: number | null // attack start -> victim p99 <= 1.5x baseline for 5 s
+  attacker_429: number
+  attacker_503: number
+  file: string
 }
 
 /** GET /lab/status */

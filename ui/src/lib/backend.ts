@@ -11,6 +11,7 @@ import type {
   ModeBody,
   OverridesView,
   QuotaPatch,
+  RunResult,
   TenantAdminView,
 } from '../types.ts'
 
@@ -22,6 +23,10 @@ export interface Backend {
   subscribe(onMessage: (m: BrainMessage) => void, onConn: (s: ConnState) => void): () => void
   /** Recent incidents for backfill when the page loads (may be empty). */
   incidents(): Promise<IncidentEvent[]>
+  /** Every event of one incident, oldest first (brain GET /api/incidents?incident_id=). */
+  incident(id: string): Promise<IncidentEvent[]>
+  /** Measured scenario runs (lab GET /lab/results). */
+  results(): Promise<RunResult[]>
   getMode(): Promise<Mode>
   setMode(mode: Mode): Promise<Mode>
   tenants(): Promise<TenantAdminView[]>
@@ -48,14 +53,20 @@ export function errorText(body: unknown, fallback: string): string {
     if (Array.isArray(d)) {
       return d
         .map((x) => {
+          if (typeof x === 'string') return x
           const loc = Array.isArray(x?.loc) ? x.loc.filter((p: unknown) => p !== 'body').join('.') : ''
           return loc ? `${loc}: ${x?.msg ?? ''}` : String(x?.msg ?? '')
         })
+        .filter(Boolean)
         .join('; ')
     }
   }
   return fallback
 }
+
+/** Header required on gateway /admin/* and /control/* (contracts.H_CONTROL_TOKEN). */
+export const H_CONTROL_TOKEN = 'X-TenantGuard-Control-Token'
+const admin = (init: RequestInit = {}): RequestInit => ({ ...init, headers: { ...init.headers, [H_CONTROL_TOKEN]: config.controlToken } })
 
 async function http<T>(base: string, path: string, init?: RequestInit): Promise<T> {
   let res: Response
@@ -80,6 +91,19 @@ async function http<T>(base: string, path: string, init?: RequestInit): Promise<
 }
 
 const json = (method: string, data: unknown): RequestInit => ({ method, body: JSON.stringify(data) })
+
+/** Accepts a bare list or {incidents: [...]}. */
+export function incidentList(body: unknown): IncidentEvent[] {
+  const list = Array.isArray(body) ? body : (body as { incidents?: unknown })?.incidents
+  return Array.isArray(list) ? (list.filter((e) => e?.type === 'incident') as IncidentEvent[]) : []
+}
+
+/** Accepts a bare list or {results: [...]}; drops entries without the RunResult essentials. */
+export function resultList(body: unknown): RunResult[] {
+  const list = Array.isArray(body) ? body : (body as { results?: unknown })?.results
+  if (!Array.isArray(list)) return []
+  return list.filter((r) => r && typeof r.run_id === 'string' && typeof r.scenario === 'string' && r.victim_p99_ms) as RunResult[]
+}
 
 export function parseBrainMessage(raw: string): BrainMessage | null {
   try {
@@ -129,25 +153,33 @@ export const realBackend: Backend = {
 
   async incidents() {
     try {
-      const body = await http<unknown>(config.brainUrl, '/api/incidents')
-      const list = Array.isArray(body) ? body : (body as { incidents?: unknown })?.incidents
-      return Array.isArray(list) ? (list.filter((e) => e?.type === 'incident') as IncidentEvent[]) : []
+      return incidentList(await http<unknown>(config.brainUrl, '/api/incidents'))
     } catch {
       return []
     }
   },
 
+  async incident(id) {
+    const list = incidentList(await http<unknown>(config.brainUrl, `/api/incidents?incident_id=${encodeURIComponent(id)}`))
+    // older brains ignore the filter: filter here too
+    return list.filter((e) => e.incident_id === id).sort((a, b) => a.ts - b.ts)
+  },
+
+  async results() {
+    return resultList(await http<unknown>(config.labUrl, '/lab/results'))
+  },
+
   async getMode() {
-    return (await http<ModeBody>(config.gatewayUrl, '/admin/mode')).mode
+    return (await http<ModeBody>(config.gatewayUrl, '/admin/mode', admin())).mode
   },
   async setMode(mode) {
-    const body = await http<Partial<ModeBody> | undefined>(config.gatewayUrl, '/admin/mode', json('POST', { mode }))
+    const body = await http<Partial<ModeBody> | undefined>(config.gatewayUrl, '/admin/mode', admin(json('POST', { mode })))
     return body?.mode ?? mode
   },
-  tenants: () => http<TenantAdminView[]>(config.gatewayUrl, '/admin/tenants'),
+  tenants: () => http<TenantAdminView[]>(config.gatewayUrl, '/admin/tenants', admin()),
   patchQuota: (id, patch) =>
-    http<TenantAdminView>(config.gatewayUrl, `/admin/tenants/${encodeURIComponent(id)}/quota`, json('PATCH', patch)),
-  overrides: () => http<OverridesView>(config.gatewayUrl, '/admin/overrides'),
+    http<TenantAdminView>(config.gatewayUrl, `/admin/tenants/${encodeURIComponent(id)}/quota`, admin(json('PATCH', patch))),
+  overrides: () => http<OverridesView>(config.gatewayUrl, '/admin/overrides', admin()),
   labStatus: () => http<LabStatus>(config.labUrl, '/lab/status'),
   startAttack: (req) => http<AttackStatus>(config.labUrl, '/lab/attack', json('POST', req)),
   stopAttack: (id) => http<AttackStatus>(config.labUrl, `/lab/attack/${encodeURIComponent(id)}`, { method: 'DELETE' }),

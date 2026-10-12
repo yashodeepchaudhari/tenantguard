@@ -50,6 +50,12 @@ export function Layout() {
           <NavLink to="/tenants" className={tab}>
             Tenants
           </NavLink>
+          <NavLink to="/case" className={tab}>
+            Cases
+          </NavLink>
+          <NavLink to="/scorecard" className={tab}>
+            Scorecard
+          </NavLink>
         </nav>
         <Connection />
         <div className="ml-auto">
