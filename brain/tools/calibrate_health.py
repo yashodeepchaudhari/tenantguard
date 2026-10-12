@@ -6,7 +6,7 @@ Polls GET /api/debug once a second. For every server it prints the peer_ratio di
 (p50 / p95 / p99 / max) per health source (traffic / canary / none), the share of samples that were
 "slow now", and the excess latency. It also lists every incident opened and every ladder level change during
 the run (GET /api/incidents). Exit code 1 if anything opened or moved: on a quiet (calm or idle) run that is
-the acceptance test.
+the acceptance test. Exit code 2 if the brain could not be read at the end (the run is not judged).
 """
 from __future__ import annotations
 
@@ -18,9 +18,16 @@ import urllib.request
 from collections import defaultdict
 
 
-def get(url: str):
-    with urllib.request.urlopen(url, timeout=5) as r:
-        return json.loads(r.read())
+def get(url: str, tries: int = 1, timeout: float = 5.0):
+    """GET JSON; with tries > 1, retry with a growing timeout (a network blip must not end the run)."""
+    for i in range(tries):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout * (i + 1)) as r:
+                return json.loads(r.read())
+        except Exception:
+            if i == tries - 1:
+                raise
+            time.sleep(2.0)
 
 
 def pct(xs, q):
@@ -60,7 +67,11 @@ def main() -> int:
         if int(el) % 60 == 0:
             print(f"... {el / 60:.0f} min", flush=True)
         time.sleep(1.0)
-    evs = [e for e in get(args.brain + "/api/incidents?limit=1000") if e["ts"] >= t0]
+    try:
+        evs = [e for e in get(args.brain + "/api/incidents?limit=1000", tries=5) if e["ts"] >= t0]
+    except Exception as e:
+        print(f"could not fetch /api/incidents after 5 tries: {e}; the run is NOT judged", file=sys.stderr)
+        return 2
     opened = [e for e in evs if e["stage"] == "detected"]
     moved = [e for e in evs if e["stage"] == "level_change"]
     print(f"\n{'server':10} {'samples':>7} {'source':>8} {'p50':>6} {'p95':>6} {'p99':>6} {'max':>6} "
