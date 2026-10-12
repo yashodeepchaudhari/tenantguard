@@ -89,11 +89,18 @@ def test_memory_budget_is_per_tenant_and_gauged(make_client):
     import threading
     c = make_client(seed_rows=5)
     out = {}
-    t = threading.Thread(target=lambda: out.setdefault("a", c.get("/api/memory", params={"mb": 30, "hold_ms": 600},
+    t = threading.Thread(target=lambda: out.setdefault("a", c.get("/api/memory", params={"mb": 30, "hold_ms": 1500},
                                                                    headers=hdr("A"))))
     t.start()
-    time.sleep(0.3)
-    gauge = next(x for x in c.get("/stats").json()["tenants"] if x["tenant"] == "A")["mem_mb"]
+
+    def gauge_a() -> float:
+        return next(x for x in c.get("/stats").json()["tenants"] if x["tenant"] == "A")["mem_mb"]
+
+    deadline = time.monotonic() + 5
+    gauge = gauge_a()
+    while gauge < 30 and time.monotonic() < deadline:
+        time.sleep(0.02)
+        gauge = gauge_a()
     second_a = c.get("/api/memory", params={"mb": 5, "hold_ms": 1}, headers=hdr("A")).status_code
     b = c.get("/api/memory", params={"mb": 30, "hold_ms": 1}, headers=hdr("B")).status_code
     t.join()

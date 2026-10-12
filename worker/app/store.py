@@ -11,10 +11,18 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Tuple
+from typing import Dict, FrozenSet, Iterator, List, Optional, Tuple
 
 from .meter import Meters
 from .tenancy import TENANT_RE, current_tenant
+
+class UnknownTenantError(LookupError):
+    """Tenant id is not in the configured allow-list."""
+
+
+class StoreClosedError(RuntimeError):
+    pass
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS items (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at REAL NOT NULL);
@@ -40,23 +48,30 @@ class _Db:
 
 
 class TenantStore:
-    def __init__(self, data_dir: Path, meters: Meters, seed_rows: int = 1000) -> None:
+    def __init__(self, data_dir: Path, meters: Meters, seed_rows: int = 1000,
+                 allowed: Optional[FrozenSet[str]] = None) -> None:
         self.dir = Path(data_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
         self.meters = meters
         self.seed_rows = seed_rows
+        self.allowed = allowed  # None = any well-formed id (tests); the app passes the configured tenants
         self._dbs: Dict[str, _Db] = {}
         self._lock = threading.Lock()
+        self._closed = False
 
     # ---- lifecycle ----
     def path_for(self, tenant: str) -> Path:
-        if not TENANT_RE.match(tenant) and tenant != "_canary":
-            raise ValueError(f"bad tenant id {tenant!r}")
+        if tenant != "_canary":
+            if not TENANT_RE.match(tenant):
+                raise ValueError(f"bad tenant id {tenant!r}")
+            if self.allowed is not None and tenant not in self.allowed:
+                raise UnknownTenantError(f"tenant {tenant!r} is not configured")
         return self.dir / f"{tenant}.db"
 
     def reset_and_seed(self, tenants: List[str]) -> None:
         """Start from fresh files so every process start is deterministic."""
         self.close()
+        self._closed = False
         for t in tenants + ["_canary"]:
             for suffix in ("", "-wal", "-shm"):
                 p = Path(str(self.path_for(t)) + suffix)
@@ -74,12 +89,16 @@ class TenantStore:
 
     def close(self) -> None:
         with self._lock:
+            self._closed = True
             for db in self._dbs.values():
-                db.conn.close()
+                with db.lock:  # never close a connection another thread is using
+                    db.conn.close()
             self._dbs.clear()
 
     def _db(self, tenant: str) -> _Db:
         with self._lock:
+            if self._closed:
+                raise StoreClosedError("store is closed")
             db = self._dbs.get(tenant)
             if db is None:
                 db = _Db(self.path_for(tenant))

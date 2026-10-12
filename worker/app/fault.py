@@ -5,13 +5,7 @@ import threading
 import time
 from typing import Optional
 
-from pydantic import BaseModel, Field
-
-
-class FaultReq(BaseModel):
-    latency_ms: float = Field(0.0, ge=0, le=10_000)
-    cpu_burn_pct: float = Field(0.0, ge=0, le=100)
-    duration_s: Optional[float] = Field(None, gt=0, le=3600)  # auto-clear; None = until DELETE
+from tenantguard_common.contracts import FaultReq
 
 
 class FaultInjector:

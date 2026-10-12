@@ -78,6 +78,9 @@ class TenantCache:
             self.suffered[victim] += 1
             self.ledger[(evictor, victim)] += size
 
+    def total_bytes(self) -> int:
+        return self._total
+
     def tenant_bytes(self, tenant: str) -> int:
         with self._lock:
             return self._bytes.get(tenant, 0)

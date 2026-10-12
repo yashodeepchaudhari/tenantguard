@@ -16,7 +16,8 @@ Env: `SERVER_NAME`, `WORKER_DATA_DIR` (Docker: `/data`), `TENANTGUARD_ADMIN_TOKE
 (CORS, comma list, default `http://127.0.0.1:5173`).
 
 ## API
-All `/api/*` calls need `X-TenantGuard-Tenant` (missing or invalid → 400). Every response carries
+All `/api/*` calls need `X-TenantGuard-Tenant`: missing or malformed → 400, and an id that is not exactly
+one of the configured tenants (`load_tenants()`) → 400 `unknown_tenant`. Every response carries
 `X-TenantGuard-Cpu-Ms` (handler thread CPU, decimal ms; background CPU excluded). Errors are `{error, tenant, detail}`.
 
 | Endpoint | What |
@@ -24,15 +25,17 @@ All `/api/*` calls need `X-TenantGuard-Tenant` (missing or invalid → 400). Eve
 | `GET /api/light` | ~0.5–1 ms CPU; the victim SLO probe |
 | `GET /api/read?key=k0001` | tenant-namespaced cache → tenant SQLite; 404 if absent |
 | `GET /api/search?n=20000&q=` | CPU-heavy, linear in n (~0.3–0.4 µs/doc), n ≤ 2,000,000 |
-| `POST /api/write {key?, value, index_rounds=200}` | DB write + background indexing job charged to the tenant (`bg_cpu_ms`) |
-| `GET /api/memory?mb=&hold_ms=500` | allocate + hold; 507 if over `worker.tenant_mem_budget_mb` (held + cache bytes) |
-| `GET /api/export?rows=1000&chunk=100&pause_ms=20` | batch CSV export, slow (≈ rows/chunk × pause) |
+| `POST /api/write {key?, value, index_rounds=200}` | DB write + background indexing job charged to the tenant (`bg_cpu_ms`); 503 `bg_backlog` past `worker.bg_pending` caps |
+| `POST /api/ingest {docs=10}` | 202; hands docs to the black-box "vendor indexer" child (`worker.blackbox.cpu_ms_per_doc` each); CPU only in `blackbox_cpu_ms` |
+| `GET /api/memory?mb=&hold_ms=500` | allocate + hold; 507 `tenant_memory_budget` (held + cache > `tenant_mem_budget_mb`) or `worker_memory` (all tenants > mem limit − `mem_baseline_mb`) |
+| `GET /api/export?rows=1000&chunk=100&pause_ms=20` | batch CSV export, slow (≈ rows/chunk × pause); 422 if that estimate > `worker.max_request_s` |
 | `GET /canary`, `GET /canary/{cpu,cache,db}` | unattributed probes (see fault latency) |
-| `GET /healthz` | liveness |
+| `GET /healthz` | liveness + background backlog per tenant + black-box queue/drops/restarts |
 | `GET /stats` | `WorkerStats` (cumulative counters; `cpu_total_ms` = psutil process tree) |
 | `POST/GET/DELETE /admin/fault {latency_ms, cpu_burn_pct, duration_s?}` | faulty-host simulation; header `X-Admin-Token` |
 
-Body limit `worker.body_limit_bytes` (1 MB) → 413, also without Content-Length.
+Body limit `worker.body_limit_bytes` (1 MB) → 413, also without Content-Length. An unhandled error → 500 JSON,
+still with the CPU header.
 
 ## Design
 - `tenancy.py`: pure-ASGI middleware puts the tenant in a `ContextVar`; it flows into the sync handler's thread.
@@ -41,4 +44,9 @@ Body limit `worker.body_limit_bytes` (1 MB) → 413, also without Content-Length
 - `jobs.py`: background jobs run in a copied context; their thread CPU is charged to that tenant.
 - `cpuclock.py`: per-thread CPU. Linux uses `time.thread_time()`; Windows uses `QueryThreadCycleTime`,
   because `GetThreadTimes` only moves in 15.6 ms steps.
-- `tools/noisy_demo.py`: measures the noisy-neighbor effect on real workers.
+- `blackbox.py`: spawned child process fed by a bounded queue (drops counted), restarted with backoff if it
+  dies; its CPU (psutil on the child) is reported only as `blackbox_cpu_ms`. It shares the container's CPU
+  limit, so heavy ingest slows co-located tenants while every tenant meter stays near zero.
+- `tools/noisy_demo.py`: measures the noisy-neighbor effect (`--attack search|ingest`).
+- `tools/calibrate.py` → `calibration.json`: cost of each endpoint at default params, measured in Docker.
+- `compose.dev.yml`: overlay that publishes w0..w2 on host ports 18100..18102 for the tools.

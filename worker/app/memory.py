@@ -13,15 +13,19 @@ PAGE = 4096
 
 
 class OverBudget(Exception):
-    def __init__(self, tenant: str, used_mb: float, asked_mb: float, budget_mb: float) -> None:
-        super().__init__(f"tenant {tenant} uses {used_mb:.1f} MB, asked {asked_mb:.1f} MB, budget {budget_mb:.0f} MB")
-        self.tenant = tenant
+    def __init__(self, kind: str, who: str, used_mb: float, asked_mb: float, budget_mb: float) -> None:
+        super().__init__(f"{who} uses {used_mb:.1f} MB, asked {asked_mb:.1f} MB, budget {budget_mb:.0f} MB")
+        self.kind = kind  # tenant_memory_budget | worker_memory
 
 
 class MemoryBudget:
-    def __init__(self, budget_mb: float, cache_bytes: Callable[[str], int]) -> None:
+    def __init__(self, budget_mb: float, cache_bytes: Callable[[str], int],
+                 cache_total: Callable[[], int] = lambda: 0,
+                 worker_budget_mb: Callable[[], float] = lambda: float("inf")) -> None:
         self.budget_mb = budget_mb
         self._cache_bytes = cache_bytes
+        self._cache_total = cache_total
+        self._worker_budget_mb = worker_budget_mb  # mem limit - baseline: all tenants together
         self._held: Dict[str, int] = defaultdict(int)
         self._lock = threading.Lock()
 
@@ -37,7 +41,11 @@ class MemoryBudget:
         with self._lock:
             used = self._held.get(tenant, 0) + self._cache_bytes(tenant)
             if used + n > self.budget_mb * MB:
-                raise OverBudget(tenant, used / MB, mb, self.budget_mb)
+                raise OverBudget("tenant_memory_budget", f"tenant {tenant}", used / MB, mb, self.budget_mb)
+            total = sum(self._held.values()) + self._cache_total()
+            worker_budget = self._worker_budget_mb()
+            if total + n > worker_budget * MB:
+                raise OverBudget("worker_memory", "worker (all tenants)", total / MB, mb, worker_budget)
             self._held[tenant] += n
         try:
             buf = bytearray(n)
