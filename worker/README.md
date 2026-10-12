@@ -50,5 +50,6 @@ still with the CPU header.
 - `tools/noisy_demo.py`: measures the noisy-neighbor effect (`--attack search|ingest`).
 - `tools/calibrate.py` → `calibration.json`: cost of each endpoint at default params (stdlib only, shipped in
   the image). On the Docker host, inside a real 0.5-CPU container:
-  `docker compose exec -T w1 python tools/calibrate.py --where docker --out - > worker/calibration.json`
+  `docker compose exec -T w1 python tools/calibrate.py --where docker --out - > cal.tmp && mv cal.tmp worker/calibration.json`
+  (it waits up to `--wait-s` 90 s for `/healthz`; on failure it exits non-zero and prints no JSON)
 - `compose.dev.yml`: overlay that publishes w0..w2 on host ports 18100..18102 for the tools.
