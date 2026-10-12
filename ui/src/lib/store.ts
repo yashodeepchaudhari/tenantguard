@@ -1,7 +1,7 @@
 // Live state assembled from the brain stream: latest snapshot, a rolling 60 s history for
 // charts, and the incident log. Framework-free so it can be unit tested.
 import { TENANTS } from '../mock/fixture.ts'
-import type { BrainMessage, IncidentEvent, Mode, OverridesView, StateSnapshot, TenantAdminView } from '../types.ts'
+import type { BrainMessage, IncidentEvent, LabStatus, Mode, OverridesView, StateSnapshot, TenantAdminView } from '../types.ts'
 import type { ConnState } from './backend.ts'
 import { emptyImpact, updateImpact, type ImpactState } from './impact.ts'
 
@@ -35,6 +35,10 @@ export interface LiveState {
   /** tenant -> monthly_revenue_rs (admin, else layout) */
   revenue: Record<string, number>
   impact: ImpactState
+  /** lab GET /lab/status (polled); null until it answers or while unreachable */
+  lab: LabStatus | null
+  /** null = not asked yet, false = lab did not answer */
+  labReachable: boolean | null
 }
 
 export interface StoreOptions {
@@ -76,7 +80,13 @@ export class LiveStore {
       barcodes: LAYOUT_BARCODES,
       revenue: LAYOUT_REVENUE,
       impact: emptyImpact(),
+      lab: null,
+      labReachable: null,
     }
+  }
+
+  setLab(lab: LabStatus | null) {
+    this.set({ lab, labReachable: lab !== null })
   }
 
   setAdmin(admin: TenantAdminView[]) {

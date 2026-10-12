@@ -8,7 +8,11 @@ python tools/demo.py --step               # Enter before each step (presenter pa
 python tools/demo.py --only tenantguard   # calm + one step;  --speed 0.5 halves every duration (rehearsal)
 python -m pytest tools                    # step sequencing against mocked HTTP
 ```
-Target: `TENANTGUARD_GATEWAY_URL`, `TENANTGUARD_BRAIN_URL`, `TENANTGUARD_LAB_URL` (default `http://100.112.232.8:{8000,8200,8300}`, the Docker host) and `TENANTGUARD_CONTROL_TOKEN` (default `dev`). The driver only uses the HTTP APIs: gateway `POST /admin/mode`; lab `/lab/calm/start`, `/lab/attack`, `DELETE /lab/attacks`, `/lab/metrics`, `/lab/results`; brain `/api/state`, `/api/incidents`.
+Target: `TENANTGUARD_GATEWAY_URL`, `TENANTGUARD_BRAIN_URL`, `TENANTGUARD_LAB_URL` (default: `tenantguard.yaml` `services`; set them to the Docker host's address for the real show), `TENANTGUARD_CONTROL_TOKEN` (default `dev`), and for the faulty-server fallback `TENANTGUARD_WORKER_URLS` (default: `workers`) and `TENANTGUARD_ADMIN_TOKEN` (default `dev`). The driver only uses the HTTP APIs: gateway `POST /admin/mode`; lab `/lab/calm/start`, `/lab/attack`, `DELETE /lab/attacks`, `DELETE /lab/attack/{id}`, `/lab/metrics`, `/lab/results`; brain `/api/state`, `/api/incidents`; worker `/healthz`, `/admin/fault` (fallback only).
+
+**Preflight:** before the show the driver asks the lab which attacks it can run, without starting any (a probe with an unknown tenant: a shipped attack answers 4xx, an unshipped one 501). The bomb falls back to `whale`. `faulty_server` falls back to a direct worker `POST /admin/fault` (TTL-bound by `duration_s`) only if that worker answers `/healthz` from here; on the Docker host workers are not published, so the step is skipped. Every step that cannot run is printed as `[NOT AVAILABLE]` up front and skipped in the show.
+
+**Cleanup** (normal exit, error, Ctrl-C): stop all attacks (retry, then one by one; anything left is printed), clear injected faults, mode back to `tenantguard`. A second Ctrl-C during cleanup is ignored.
 
 | # | Step | s | Mode | Attack |
 |---|---|---|---|---|

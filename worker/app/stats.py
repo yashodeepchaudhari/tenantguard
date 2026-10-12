@@ -8,6 +8,8 @@ import psutil
 
 CGROUP_CPU_MAX = Path("/sys/fs/cgroup/cpu.max")
 CGROUP_MEM_MAX = Path("/sys/fs/cgroup/memory.max")
+CGROUP_MEM_CURRENT = Path("/sys/fs/cgroup/memory.current")
+CGROUP_MEM_STAT = Path("/sys/fs/cgroup/memory.stat")
 
 
 class ProcessTree:
@@ -43,6 +45,18 @@ class ProcessTree:
             except psutil.Error:
                 continue
         return rss / (1024 * 1024)
+
+
+def cgroup_memory() -> Optional[dict]:
+    """Container memory in MB from cgroup v2: current, and anon vs file (page cache) from memory.stat."""
+    try:
+        current = int(CGROUP_MEM_CURRENT.read_text().strip())
+        stat = dict(line.split() for line in CGROUP_MEM_STAT.read_text().splitlines() if line.strip())
+    except (OSError, ValueError):
+        return None
+    mb = 1024 * 1024
+    return {"current_mb": round(current / mb, 2), "anon_mb": round(int(stat.get("anon", 0)) / mb, 2),
+            "file_mb": round(int(stat.get("file", 0)) / mb, 2)}
 
 
 def cgroup_mem_limit_mb() -> Optional[float]:

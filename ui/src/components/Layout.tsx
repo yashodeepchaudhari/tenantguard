@@ -37,7 +37,7 @@ const tab = ({ isActive }: { isActive: boolean }) =>
 
 export function Layout() {
   return (
-    <div className="flex min-h-screen flex-col xl:h-screen">
+    <div className="flex min-h-screen flex-col">
       <header className="flex items-center gap-6 border-b border-ink-800 px-4 py-2">
         <div className="flex items-center gap-2">
           <img src="/favicon.svg" alt="" className="h-7 w-7" />
@@ -62,7 +62,7 @@ export function Layout() {
           <ModeToggle />
         </div>
       </header>
-      <main className="flex min-h-0 flex-1 flex-col overflow-auto p-3">
+      <main className="flex flex-1 flex-col p-3">
         <Outlet />
       </main>
     </div>

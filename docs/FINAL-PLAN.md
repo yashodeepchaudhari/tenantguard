@@ -24,7 +24,7 @@ This plan merges two earlier plans:
 | **Compute isolation** | Docker cgroups + penalty-box container | 9 workers + spare + quarantine, `docker update --cpus` | **TenantGuard's**, with a 6-worker fallback layout if the laptop can't hold 9. |
 | **Observability** | Prometheus + Grafana + React | Prometheus `/metrics` + React | **React dashboard primary**, `/metrics` exposed, Grafana optional. |
 | **Admin API** | Explicit tenant / quota CRUD, isolation toggle | Control API (brain → gateway), mode toggle; **no tenant / quota admin** | **Add the admin API.** It is a listed PS deliverable and TenantGuard is missing it. |
-| **Showcase extras** | None | Phone play via Azure, AI narrator, billing / refunds, ₹ panel, flow animation, Scenario Director, hash chain, Event Calendar, 40-run drill | **Tiered** (§3). Most are COULD items: built only after the core is frozen and stable. |
+| **Showcase extras** | None | Phone play via Azure, incident narrator, billing / refunds, ₹ panel, flow animation, Scenario Director, hash chain, Event Calendar, 40-run drill | **Tiered** (§3). Most are COULD items: built only after the core is frozen and stable. |
 | **Infra** | One laptop | 2 laptops + wired LAN + Azure VM | **2 laptops (cheap and valuable).** The Azure VM is a COULD item, except as a standby for the "deployment" surprise challenge. |
 | **Timeline realism** | Realistic | Overloaded: H14–H18 holds about 15 features in 4 night hours | **Re-timed** (§8), with feature freeze at H17. |
 | **Risk** | Low risk, low wow | High wow, **high risk of nothing working end to end** | Tiered scope removes the risk without losing the wow. |
@@ -43,7 +43,7 @@ This plan merges two earlier plans:
 2. **Two languages** add contract-drift risk. Fix: JSON schemas + shared fixture tests + a Python-gateway fallback rule.
 3. **No tenant / quota admin API** (a PS deliverable). Fix: add `/admin/*`.
 4. **"Adaptive throttling" is hidden behind "move, don't punish".** Fix: show an explicit throttle ladder + an adaptive concurrency limiter on the dashboard.
-5. **Too many external dependencies at demo time** (Azure, Claude API, phones, venue Wi-Fi). Fix: every one of them has an offline fallback, and the core demo needs none of them.
+5. **Too many external dependencies at demo time** (Azure, phones, venue Wi-Fi). Fix: every one of them has an offline fallback, and the core demo needs none of them.
 6. **Two convergence documents** (Web Handoff and Cyber Identity). Fix: build one thin `integrations/` adapter interface and pick the partner at H6.
 7. **A 40-run drill needs about 2+ hours of machine time.** Fix: 20 runs, with the crash-test running unattended overnight on Laptop B.
 
@@ -121,10 +121,9 @@ If only this exists, you can still place well.
 14. **Scorecard:** `crashtest.py` runs 5 attacks × 3 modes × ~5 runs. The table and bar chart include victim SLO-violation-seconds, time to rescue, time to verdict, culprit correct, innocents penalised, and Jain's fairness index.
 15. **Cache isolation:** namespaced cache + guaranteed share + eviction ledger + `cache_flood` attack; `retry_storm` attack + retry budget.
 16. **Genuineness / importance, simplified:** 3 signals (paid share, new request class, obeys `Retry-After`) + tier, feeding the 4-cell decision matrix. Important + genuine is never throttled.
-17. **AI narrator (Claude `claude-opus-5-5`):**
-    - structured `IncidentReport`
-    - grounding check
-    - template fallback that shows instantly
+17. **Incident narrator:**
+    - structured `IncidentReport` built from the evidence pack
+    - victim-safe customer message
     - runs off the decision path
 18. **Convergence adapter:** `integrations/handoff.py` *or* `integrations/identity.py`, picked at H6. Each is 2 calls and fails safe.
 
@@ -171,7 +170,7 @@ STS(13) / AG(2,5) layouts and cells, Redis-backed multi-gateway, Postgres RLS, E
  │  │ relocation test · burst lane │ │ contained tenants/class│  CLASSIFY 5 verdicts│
  │  └──────────────────────────────┘ └────────────────────────┘  ACT  ladder + TTL  │
  │                                                                EXPLAIN template │
- │                                     docker.sock ◄── resize ──  + Claude narrator │
+ │                                     docker.sock ◄── resize ──  + incident narrator│
  │                                                                     │           │
  └─────────────────────────────────────────────────────────────────────┼───────────┘
                                                                        ▼
@@ -194,7 +193,6 @@ STS(13) / AG(2,5) layouts and cells, Redis-backed multi-gateway, Postgres RLS, E
 | Gateway | **Go 1.22+** (`net/http`, `httputil.ReverseProxy`, `nhooyr.io/websocket`) | Fallback: Python FastAPI + httpx if not routing by H3 |
 | Workers | Python 3.12, FastAPI, uvicorn, SQLite, psutil, `multiprocessing` | Sync handlers, so `time.thread_time()` = request CPU |
 | Brain | Python 3.12 asyncio, httpx, websockets, numpy, pydantic, PyYAML, `docker` SDK | All thresholds in `tenantguard.yaml` |
-| Narrator | `anthropic` SDK, `claude-opus-5-5`, structured output | Template-first; never in the decision path |
 | Traffic lab | Python asyncio + httpx | Crash-test writes JSON for the Scorecard |
 | UI | React 18 + Vite + TypeScript + Tailwind + Recharts | WebSocket push from the brain |
 | Infra | Docker Compose, cgroup v2 (`cpus`, `mem_limit`, `cpuset`) | Pre-pulled images, vendored deps |
@@ -258,7 +256,7 @@ Pairing points:
 | 03:30 | **H17** | **Feature freeze.** Tag `v1-demo`. COULD items only on a branch, merged only if they pass the demo script | |
 | 03:30–06:30 | H17–H20 | 20-run drill (unattended on Laptop B), threshold re-check, bug fixes; COULD items in parallel by whoever is free; **record the backup video** | 10 clean demo runs in a row |
 | 06:30–08:30 | H20–H22 | Deck with real numbers, 3 timed rehearsals, Q&A drill | Pitch < 5 min, demo < 4 min |
-| 08:30–09:30 | H22–H23 | Submission: repo, README, architecture diagram, setup guide, AI-tool disclosure | Submitted |
+| 08:30–09:30 | H22–H23 | Submission: repo, README, architecture diagram, setup guide | Submitted |
 | 09:30–10:30 | H23–H24 | Buffer / rest | |
 
 **Sleep rule:** two people sleep 2 hours each in shifts between H17 and H20, so the crash-test keeps running.
@@ -316,5 +314,4 @@ Backups: the recorded video; the 6-worker layout; the Python gateway; the templa
 - [ ] Laptop B: Python 3.12, Node 20, Chrome. Ethernet cable / switch. Hotspot tested.
 - [ ] Practise: Go `ReverseProxy`, FastAPI WebSocket, Recharts, Docker SDK `container.update`.
 - [ ] Paper copies of the contract templates and the UI wireframe; deck template.
-- [ ] `ANTHROPIC_API_KEY` in a local `.env` (never committed).
 - [ ] Optional: Azure VM with Docker + Caddy ready as the deployment standby.

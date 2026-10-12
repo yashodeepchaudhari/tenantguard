@@ -19,11 +19,16 @@ class Usage:
     bg_jobs: int = 0
 
 
+OTHER_CLASS = "other"
+
+
 class Meters:
-    def __init__(self) -> None:
+    def __init__(self, max_classes_per_tenant: int = 256) -> None:
         self._lock = threading.Lock()
         self._usage: Dict[str, Usage] = defaultdict(Usage)
         self._classes: Dict[Tuple[str, str], List[float]] = {}
+        self._class_count: Dict[str, int] = defaultdict(int)   # distinct classes per tenant
+        self.max_classes = max_classes_per_tenant               # beyond it: counted as "other" (bounded memory)
 
     def record_request(self, tenant: str, cls: str, cpu_ms: float, bytes_in: int) -> None:
         with self._lock:
@@ -31,7 +36,13 @@ class Meters:
             u.requests += 1
             u.handler_cpu_ms += cpu_ms
             u.bytes_in += bytes_in
-            c = self._classes.setdefault((tenant, cls), [0, 0.0])
+            key = (tenant, cls)
+            if key not in self._classes:
+                if self._class_count[tenant] >= self.max_classes:
+                    key = (tenant, OTHER_CLASS)
+                else:
+                    self._class_count[tenant] += 1
+            c = self._classes.setdefault(key, [0, 0.0])
             c[0] += 1
             c[1] += cpu_ms
 

@@ -116,7 +116,8 @@ def test_web_app_down_never_blocks_and_delivers_when_back(tmp_path):
     assert b.book.get("INC-0001").delivered_at is not None
 
 
-def test_case_update_api_owner_decision_404_400_and_control_token(tmp_path):
+def test_case_update_api_owner_decision_404_400_and_control_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("HANDOFF_PARTNER_TOKEN", "p4ss")
     web, ctl = Web(), Control(brain_status=404)                            # brain has no /api/operator yet
 
     async def go():
@@ -124,7 +125,8 @@ def test_case_update_api_owner_decision_404_400_and_control_token(tmp_path):
         app = create_app(b, start=False)
         b.ingest(incident("detected", 1.0))
         b.ingest(incident("level_change", 2.0, level="quarantine"))
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://bridge") as c:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://bridge",
+                                     headers={"X-Handoff-Token": "p4ss"}) as c:
             out = {
                 "owner": await c.post("/control/case-update", json={"case_id": "INC-0001", "type": "owner",
                                                                      "owner": "Rahul", "time": "15:03:30"}),

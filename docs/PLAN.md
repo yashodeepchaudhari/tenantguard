@@ -8,12 +8,12 @@ Product/design background: `docs/FINAL-PLAN.md` (scope tiers, demo), `enhanced-p
 
 ## §1 How we work
 
-- **Coordinator:** session `codeastra-ea`, running in `D:\yashodeep\codeAstra` (master). It owns this plan, `common/`, `tenantguard.yaml`, `layouts/`, `docker-compose.yml`, `README.md`, merges, and the user-facing status.
-- **Task sessions:** each task runs in its own git worktree `D:\yashodeep\codeAstra-T<n>` on branch `task/T<n>-<slug>`, with its brief in `TASK-T<n>.md` in that worktree. The user starts the session there (`cd` + `claude`, then paste the start line).
+- **Coordinator:** session `codeastra-b1`, running in `D:\yashodeep\codeAstra` (master). It owns this plan, `common/`, `tenantguard.yaml`, `layouts/`, `docker-compose.yml`, `README.md`, merges, and the user-facing status.
+- **Task sessions:** each task runs in its own git worktree `D:\yashodeep\codeAstra-T<n>` on branch `task/T<n>-<slug>`, with its brief in `TASK-T<n>.md` in that worktree. The user starts the session there (`cd` into it, start a session, then paste the start line).
 - **Support sessions** (in the main dir, write nothing under code paths):
   - `codeastra-21`: product/spec owner (author of the TenantGuard plan); convergence partner liaison. Writes only under `docs/convergence/`.
   - `codeastra-2b`: reviewer. Read-only reviews of task branches on request.
-- **Report moments** (SendMessage to `codeastra-ea`), and nothing else:
+- **Report moments** (SendMessage to `codeastra-b1`), and nothing else:
   - `T<n>: started. Plan: <3 lines>.`
   - `T<n>: BLOCKED on <thing>. I need <exact decision or file>.`
   - `T<n>: done on branch task/<...>. <what changed>. Checks: <all> pass.`
@@ -41,14 +41,14 @@ Product/design background: `docs/FINAL-PLAN.md` (scope tiers, demo), `enhanced-p
    The gateway owns the mode. The brain applies control commands only in `tenantguard` mode.
 9. **Safety:** every control override has `ttl_s` and auto-reverts. If the brain heartbeat stops for `fail_static_after_s`, the gateway keeps its last config (fail-static). The gateway validates control input and returns 400; it never crashes on bad input.
 10. **Verification standard:** "done" means unit tests pass (`pytest` in your dir) **and** you ran the real service and proved the behaviour with real HTTP calls. Paste the commands and their output in your done message. A test must be shown to fail when the behaviour is broken.
-10a. **No AI attribution in git (user rule):** never add `Co-Authored-By: Claude…`, "Generated with Claude Code", or any AI/assistant name to commit messages, PR bodies or files. Plain commit messages only.
-11. **Offline-first:** no external network at runtime except the optional Claude narrator (which has a template fallback).
+10a. **No tool attribution anywhere (user rule):** never add co-author trailers, generator footers, or the name of any development tool to commit messages, PR bodies, code, comments or docs. Plain commit messages only.
+11. **Offline-first:** no external network at runtime.
 12. **Numbers on slides come only from measured runs** (`lab/results/*.json`).
 12a. **This laptop is NOT a Docker host (user rule, 2026-10-12: the laptop hung).**
   - No docker build/compose/containers here; Docker runs only on the friend's laptop.
   - Locally run at most **3 workers + gateway + brain**, and kill every process right after each proof run.
   - Only one session runs a local stack at a time; ask the coordinator first.
-  - The laptop has 8 cores / 7.8 GB, and the Claude sessions themselves use most of the RAM.
+  - The laptop has 8 cores / 7.8 GB, and the dev sessions themselves use most of the RAM.
 12b. **The coordinator never runs git commands that change a live session's worktree** (checkout, merge, branch switch). It sends the session the exact commands instead. (Learned 2026-10-12: a branch switch landed T15b's commit on the wrong branch.) After every merge, the coordinator verifies `git log` shows the merge commit before announcing it.
 13. **Machine quirks:** Windows 11; PowerShell plus Git Bash. Docker Desktop must be running before any `docker compose` (it was found stopped on 2026-10-12). Use `127.0.0.1`, not `localhost`. Some peers run in "prompting" mode, so permission prompts may appear in their terminals. **Never rewrite UTF-8 files with Windows PowerShell 5 `Get-Content -Raw`/`Set-Content`**: it mis-decodes them and garbles `→ × ≥ §` (this happened on 2026-10-12). Use the Edit tool or Python with `encoding="utf-8"`.
 
@@ -88,7 +88,7 @@ Gate G1: in Docker, the lab runs 12 calm tenants plus a `whale` attack on tenant
 
 Gate G2: black-box bomb is missed by `industry` and rescued → named → proved → resolved by `tenantguard`, 3 runs in a row.
 
-**Wave 3: polish.** Genuineness/importance matrix, Claude narrator, Web PS3 convergence adapter (`brain/tenantguard_brain/handoff.py`, contract in `enhanced-prompts/convergence-web.md`), and the COULD list from FINAL-PLAN §3.
+**Wave 3: polish.** Genuineness/importance matrix, incident narrator, Web PS3 convergence adapter (`brain/tenantguard_brain/handoff.py`, contract in `enhanced-prompts/convergence-web.md`), and the COULD list from FINAL-PLAN §3.
 
 ## §5 Task briefs (Wave 1)
 
@@ -97,7 +97,7 @@ Each brief is copied into its worktree as `TASK-T<n>.md`. **Every TASK file also
 ### Common footer (part of every brief)
 > Read `README.md`, `docs/PLAN.md` (§2 is settled: follow it, don't relitigate it) and `docs/FINAL-PLAN.md`. Build the standard feature set for your domain, not the bare minimum.
 > **Done** means `pytest` passes in your directory AND you ran the real service and proved the behaviour with real HTTP calls; report the commands and output. Report what actually happened.
-> Your coordinator is the session named `codeastra-ea` (confirm with ListAgents). SendMessage it at exactly three moments: started, blocked, done. No chatter. Commit to your own branch; never commit to master. The coordinator merges.
+> Your coordinator is the session named `codeastra-b1` (confirm with ListAgents). SendMessage it at exactly three moments: started, blocked, done. No chatter. Commit to your own branch; never commit to master. The coordinator merges.
 
 ### T1: Gateway
 **You are TASK T1:** when this is finished, any tenant request entering on :8000 is identified, admitted against multi-dimensional quotas, fairly scheduled, routed to one of its barcode servers, measured, and controllable by the admin and the brain.
@@ -261,7 +261,7 @@ Build:
 5. `worker/tools/calibrate.py`: inside Docker (0.5 CPU), measure the mean/p95 handler CPU and latency of every endpoint at default params, and write `worker/calibration.json`. T5 uses it to size the personas to ~30% fleet CPU. Run it in Docker on this laptop if Docker is up; otherwise locally, and say which.
 6. Tests: black-box CPU never appears in tenant meters; the queue bound; child restart; FaultReq from contracts.
 
-Done = pytest passes + the measured black-box noisy-neighbor numbers + calibration.json committed. Same protocol: started / blocked / done to `codeastra-ea`; no AI attribution in commits.
+Done = pytest passes + the measured black-box noisy-neighbor numbers + calibration.json committed. Same protocol: started / blocked / done to `codeastra-b1`; no tool attribution in commits.
 
 ### T7: Gateway wave 2 (T1 session, same worktree)
 **You are TASK T7:** when this is finished, the gateway is fully adaptive. The queue lives at the gateway with a per-worker window that tracks real latency, retry storms are capped, cheap requests never wait behind whales, and background CPU is charged to the tenant who caused it.
@@ -401,7 +401,7 @@ Build:
 1. **README.md:** the one-line pitch; the problem in 3 lines; a Mermaid architecture diagram (data / control / management planes + 5 isolation layers); a component table with ports; a quick start (Docker host + local); how to run the demo (`tools/demo.py`); the "not just a rate limit" evidence (3-mode scorecard, black-box: `ingest` 0.07 ms visible vs 20.25 ms hidden CPU from `worker/calibration.json`); repo map.
 2. **docs/architecture.html + PDF:** rewrite the earlier version (it shows a FastAPI + Redis + Postgres stack that we didn't build). Show the real architecture, components and tech stack. Keep "Version 1 technical / Version 2 simple flow". Render the PDF with headless Edge like before (`msedge --headless=new --print-to-pdf`); check the page breaks.
 3. **docs/SETUP.md:** the two-laptop + Tailscale setup, Docker host steps (link DOCKER-HOST-SETUP.md), local dev, env vars, tokens, ports.
-4. **docs/SUBMISSION.md:** PS3 checklist → where implemented (file paths); AI-tool disclosure (state plainly that AI coding assistants were used in development; the product's Claude narrator is a feature); known limitations; roadmap.
+4. **docs/SUBMISSION.md:** PS3 checklist → where implemented (file paths); known limitations; roadmap.
 5. Numbers: only from committed result files (lab/results or calibration.json). Mark anything else "to be measured".
 
 No code changes. Done = files rendered and checked (open the PDF pages as images via a headless screenshot, as before).
@@ -429,44 +429,127 @@ Build:
 Proof: unit tests + a run against the Docker host (I'll add the compose service and run it there; send me the exact commands).
 
 ### T18: Incident narrator (T1 session, same worktree)
-**You are TASK T18:** when this is finished, every TenantGuard incident gets a plain-English incident report: an instant deterministic version, upgraded within seconds by an AI-written one that is checked fact-by-fact against the evidence. The AI never makes a decision.
+**You are TASK T18:** when this is finished, every TenantGuard incident gets an instant plain-English incident report, built deterministically from the evidence pack.
 
 You own a NEW dir `narrator/` (package `tenantguard_narrator`, FastAPI on :8700, Dockerfile, tests). Read-only consumer of the brain.
 
 Build:
-1. Subscribe to brain WS `/ws/events` (+ `/api/incidents` backfill). On `named`, `verdict` and `closed`, build an **evidence pack** (JSON): stages + timestamps, suspects + confidence, slow servers + peer ratios, actions + TTLs, affected tenants, verdict.
-2. **Template report:** a deterministic `IncidentReport {headline, timeline[], cause, evidence_points[], action_taken, operator_recommendation}` plus `CustomerMessage {message}` built from the *anonymised* pack (no other tenant named). Available instantly.
-3. **AI report:** the official `anthropic` Python SDK with structured output into the same Pydantic models. A stable system prompt first, with prompt caching. Run it asynchronously, never on the decision path. Read the SDK's current docs for the exact call shape and model id (planned: `claude-opus-5-5`, effort low). The key comes from env `ANTHROPIC_API_KEY`; with no key, or offline, use the template only.
-4. **Grounding check:** every tenant id, server id and number in the AI output must appear in the evidence pack. Otherwise, or on refusal/API error, keep the template. Record `source: template|ai` and a `grounded` flag.
-5. API: `GET /reports/{incident_id}`, `GET /reports`, and WS `/ws/reports` pushing the template and then the AI version. Propose a contract (`ReportView`) to the coordinator.
-6. Tests: template correctness, anonymisation, the grounding check (rejects an unknown tenant or number; accepts a valid one), with a stubbed SDK client; no-key mode.
-7. The AI-attribution rule applies to commits and docs only. Product code that calls the API is a feature and is fine.
+1. Subscribe to brain WS `/ws/events` (+ `/api/incidents` backfill). On `named`, `verdict` and `closed`, build an **evidence pack**.
+2. A deterministic `IncidentReport` plus a `CustomerMessage` from the *anonymised* pack (no other tenant named).
+3. API: `GET /reports`, `GET /reports/{incident_id}`, WS `/ws/reports`.
+4. Tests: report correctness and anonymisation.
 
-Proof: unit tests + a live run against brain + fake_gateway (ask for a slot). Use the real API only if a key is available; otherwise template mode.
+### T22: Prototype documentation pack (4 writers in parallel)
+**Goal:** a new folder `prototype-docs/` that fully documents what is BUILT on master (what we show as the prototype): architecture, SOLID/design, data models, sequence diagrams, risks + mitigations, unique features, and EVERY file and EVERY function with a detailed description.
+
+Common rules for every writer:
+- Describe only code that exists on `master` (read it; cite file paths and real function names). Mark unmerged work (T10 lab wave 2, T12 prover/verdicts/calibration, T17 billing) as "in progress", never as done.
+- Numbers only from committed files (`worker/calibration.json`, tests). Diagrams in Mermaid (` ```mermaid `).
+- No development-tool mentions (PLAN §2.10a). Plain English, but complete.
+- Function catalog format, per file: `### path/to/file.py`, a 2–4 line purpose paragraph, then a table `| Function / class | Signature | What it does | Called by |` covering EVERY function, method and class (private ones too), then "Key decisions" bullets.
+- Write ONLY your own files below. Commit on your branch with a plain message.
+
+| Writer | Files in `prototype-docs/` |
+|---|---|
+| T1 session (`codeastra-t1-32`, branch `task/T22a-docs`) | `00_INDEX.md` (map of all files + how to read), `01_OVERVIEW.md` (problem, what is built, status table, demo script), `02_ARCHITECTURE.md` (system, planes, 5 isolation layers, deployment two-laptop + Tailscale, component/port table: all Mermaid), `03_SOLID_AND_DESIGN.md` (SOLID principles with concrete code examples, patterns, refactoring done and possible), `06_RISKS_AND_MITIGATIONS.md`, `07_UNIQUE_FEATURES.md`, `09_CONFIG_REFERENCE.md` (every yaml key, env var, port, token), `10_TESTING.md` (suites, counts, mutation checks), `11_FILES_gateway.md`, `11_FILES_handoff.md`, `11_FILES_tools.md`, `11_FILES_narrator.md` |
+| T2 session (`codeastra-t2-9a`, branch `task/T22b-docs`) | `04_DATA_MODELS.md` (every contract model + field + unit, class diagrams, layout + yaml shapes, SQLite per-tenant schema), `11_FILES_common.md`, `11_FILES_worker.md` |
+| T4 session (`codeastra-t4-0e`, branch `task/T22c-docs`) | `05_SEQUENCE_DIAGRAMS.md` (request path, admission/429, DRR dispatch, detection→throttle ladder→recovery, health→rescue→decoder naming, host fault, operator/handoff decision, narrator report, UI live stream), `11_FILES_ui.md`, `11_FILES_lab.md` |
+| `codeastra-2b` (main dir, no branch; coordinator commits) | `11_FILES_brain.md` |
+
+### T24: Playwright end-to-end verification (T4 session, same worktree)
+**You are TASK T24:** when this is finished, one command proves the whole running system works from a user's point of view: dashboard, gateway, brain, lab, admin, handoff and narrator. Every failure is either fixed (UI) or reported with an exact repro (backend).
+
+You own `ui/**` (Playwright lives in `ui/e2e/` + `ui/playwright.config.ts`). New dev dependency approved: `@playwright/test`. Use the **system Edge** (`channel: "msedge"`), so no browser download is needed. Headless, 1 worker (this laptop has very little free RAM).
+
+Build:
+1. **Config:** targets come from env (`E2E_UI_URL`, `E2E_GATEWAY_URL`, `E2E_BRAIN_URL`, `E2E_LAB_URL`, `E2E_HANDOFF_URL`, `E2E_NARRATOR_URL`, `E2E_CONTROL_TOKEN`). The default is the mock server, so it runs anywhere.
+2. **API smoke** (Playwright `request`):
+   - gateway healthz; 401 without key; 401 on admin without token; a valid tenant request returns 200 + `X-TenantGuard-Cpu-Ms`
+   - brain `/api/state` validates its shape
+   - lab status
+   - optional services skip cleanly when unreachable
+3. **UI flows:**
+   - Control Room renders 12 tiles + the 3×3 grid
+   - status sentence
+   - mode toggle round-trip (verify via `GET /admin/mode`, restore at the end)
+   - attack launch → visible in running attacks → stop
+   - Tenants page quota PATCH + restore
+   - incident timeline → Case File route
+   - scorecard page
+   - flow view toggle
+   - cases column (bridge reachable or not)
+   - no console errors
+4. **Live scenario test** (tagged `@live`, host only): calm → whale on K → expect a K incident/level change within 60 s → stop → expect recovery within 90 s.
+5. Run the mock suite now. Run the host suite **only when the coordinator grants a host slot** (the host is busy with T12 acceptance first).
+6. Fix any UI bug you find. For backend bugs, send BLOCKED/finding messages with an exact repro; don't edit other dirs.
+
+Done = the mock suite green + the host suite results (pass/fail per test) + the list of fixed and reported issues.
+
+### T25: Scorecard runner (T2 session)
+**You are TASK T25:** when this is finished, one command runs the existing lab scenarios in all three modes (off / industry / tenantguard) and writes a summary table of MEASURED results that the dashboard Scorecard and the slides use.
+
+You own ONLY `lab/tenantguard_lab/scorecard.py` and `lab/tests/test_scorecard.py` (plus one CLI hook line in `lab/tenantguard_lab/__main__.py`). Base the branch on `task/T10-lab-crashtest` (it has the run phase marks): `git checkout -b task/T25-scorecard task/T10-lab-crashtest`.
+
+Build:
+1. Use ONLY the lab's existing HTTP API: `POST /lab/run` (RunReq) for scenarios already registered (flood, whale, hog, memory, retry_storm) and `GET /lab/run/{id}` / `GET /lab/results`. Write no new traffic or attack code. Unregistered scenarios are skipped with a clear message.
+2. `python -m tenantguard_lab scorecard --scenarios whale,flood --modes off,industry,tenantguard --runs N`: run sequentially, then write `lab/results/summary-<ts>.json`. Per scenario × mode: median/mean victim p99 (baseline/attack/after), time_to_detect, time_to_recover, attacker 429s, runs, plus brain incidents aligned to the run marks (culprit named correctly? innocents penalised?). Propose a `CrashSummary` contract to the coordinator.
+3. Tests with a mocked lab/brain transport.
+4. The real run happens on the Docker host via the coordinator. Send the exact command.
+
+### T27: Dashboard clarity fix (T4 session) - user not satisfied
+**You are TASK T27:** when this is finished, a person who has never seen TenantGuard can look at the Control Room for 10 seconds and say what is happening, who is affected, why, and whether the system is doing the right thing. Nothing jumps or overlaps at 1920×1080 or 1366×768.
+
+The user's screenshot (shared in the coordinator chat) shows:
+1. The status sentence renders as a huge red 6+ line paragraph that changes size each update, so the page jumps.
+2. The 3×3 server grid text overlaps itself and the panels below.
+3. The bottom panels (p95 chart, CPU stacked, launcher, timeline) are squashed and overlap.
+4. A, B and G show THROTTLE with no visible reason, and there's no indicator of whether an attack is running.
+
+Build:
+1. **Fixed-height status bar:**
+   - A one-line headline from structured data: `No attack · 12 tenants healthy` / `Attack: whale on K · 9 tenants protected` / `Server w4 slow · 4 tenants moved away · no tenant blamed`.
+   - A small second line of details, truncated; the full brain sentence in a tooltip.
+   - Normal text size.
+2. **Scenario badge** from lab `/lab/status`: Calm traffic / Attack: whale on K (0:42 left) / No traffic.
+3. **Why line on every non-normal tile:** a short reason from the latest IncidentEvent for that tenant, plus a link to its Case File. A badge never appears without a reason.
+4. **Layout:**
+   - Grid min-heights; fixed-size server tiles with clamped text; fixed chart heights (~220 px).
+   - Nothing overlaps at 1366×768 or 1920×1080 (scrolling is fine).
+   - Playwright screenshots at both sizes, plus an e2e assertion that the panels' bounding boxes don't overlap.
+5. **Legend line:** `p95 = slowest 5% response time · THROTTLE = its limits are reduced · fair share = its tier's portion`.
+6. Keep the T24 suites green; add tests for the headline builder and the scenario badge.
+
+Done = screenshots at both sizes from the REAL host (fixed brain), plus the tests.
 
 ## Task table
 
 | Task | Branch | Worktree | Session | Status |
 |---|---|---|---|---|
-| T1 Gateway | task/T1-gateway | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
-| T7 Gateway wave 2 | task/T7-gateway-adaptive | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
-| T11 Handoff bridge (Web PS3 convergence) | task/T11-handoff-bridge | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
-| T14 Demo driver (`tools/demo.py`) | task/T14-demo-runbook | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
-| T16 Submission docs | task/T16-submission-docs | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** (re-check after T10/T12) |
-| T18 Incident narrator service | task/T18-narrator | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | assigned |
-| T2 Workers | task/T2-workers | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged** (9cebaaf) |
-| T6 Workers wave 2 | task/T6-worker-blackbox | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged** |
-| T15 Worker calibration in-container | task/T15-worker-calib | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged**; host calibration committed (fa011b3) |
-| T20 Fixes: handoff bridge + demo driver (T19 review) | task/T20-handoff-demo-fixes | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | assigned (owns integrations/handoff + tools/ for this task) |
-| T17 Fair billing + "Why was I slow?" | task/T17-billing | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **done, merge pending** (tests need coord/layout-balance; merges together with T12) |
-| T3 Brain | task/T3-brain | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | **merged** |
-| T8 Brain integration + health/rescue/decoder | task/T8-brain-detect | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | **merged** |
-| T12 Brain prover + verdicts + calibration | task/T12-brain-prover | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | in progress (merges coord/layout-balance) |
-| T4 UI | task/T4-ui | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | **merged** |
-| T9 UI wave 2 | task/T9-ui-casefile | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | **merged** |
-| T13 UI wave 3 (story + Docker-host run) | task/T13-ui-story | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | **merged** (standby; screenshot retake at rehearsal) |
-| T5 Lab | task/T5-lab | D:\yashodeep\codeAstra-T5 | codeastra-t5-79 | **merged** |
-| T10 Lab wave 2 + crash-test | task/T10-lab-crashtest | D:\yashodeep\codeAstra-T5 | codeastra-t5-79 | in progress |
+| T1 Gateway | task/T1-gateway | D:\yashodeep\codeAstra-T1 | codeastra-t1-32 | **merged** |
+| T7 Gateway wave 2 | task/T7-gateway-adaptive | D:\yashodeep\codeAstra-T1 | codeastra-t1-32 | **merged** |
+| T11 Handoff bridge (Web PS3 convergence) | task/T11-handoff-bridge | D:\yashodeep\codeAstra-T1 | codeastra-t1-32 | **merged** |
+| T14 Demo driver (`tools/demo.py`) | task/T14-demo-runbook | D:\yashodeep\codeAstra-T1 | codeastra-t1-32 | **merged** |
+| T16 Submission docs | task/T16-submission-docs | D:\yashodeep\codeAstra-T1 | codeastra-t1-32 | **merged** (re-check after T10/T12) |
+| T24 Playwright e2e verification | task/T24-playwright | D:\yashodeep\codeAstra-T4 | codeastra-t4-0e | assigned |
+| T27 Dashboard clarity fix | task/T27-ui-clarity | D:\yashodeep\codeAstra-T4 | codeastra-t4-0e | assigned (top priority) |
+| T22 Prototype docs pack (`prototype-docs/`, 20 files, 6.7k lines) | T22a/b/c + 2b | 4 writers | T1, T2, T4, 2b | **merged** |
+| T23 Handoff tools token + telemetry counter bug + docstring | task/T23-handoff-token-tools | D:\yashodeep\codeAstra-T1 | codeastra-t1-32 | assigned |
+| T21 Narrator template-only (user decision) | task/T21-narrator-template-only | D:\yashodeep\codeAstra-T1 | codeastra-t1-32 | **merged** (with the coordinator scrub branch) |
+| T18 Incident narrator service | task/T18-narrator | D:\yashodeep\codeAstra-T1 | codeastra-t1-32 | **merged** (template-only per user) |
+| T2 Workers | task/T2-workers | D:\yashodeep\codeAstra-T2 | codeastra-t2-9a | **merged** (9cebaaf) |
+| T6 Workers wave 2 | task/T6-worker-blackbox | D:\yashodeep\codeAstra-T2 | codeastra-t2-9a | **merged** |
+| T15 Worker calibration in-container | task/T15-worker-calib | D:\yashodeep\codeAstra-T2 | codeastra-t2-9a | **merged**; host calibration committed (fa011b3) |
+| T20 Fixes: handoff bridge + demo driver (T19 review) | task/T20-handoff-demo-fixes | D:\yashodeep\codeAstra-T2 | codeastra-t2-9a | **merged** (ownership of integrations/handoff + tools/ returned to T1 session) |
+| T17 Fair billing + "Why was I slow?" | task/T17-billing | D:\yashodeep\codeAstra-T2 | codeastra-t2-9a | **done, merge pending** (tests need coord/layout-balance; merges together with T12) |
+| T3 Brain | task/T3-brain | D:\yashodeep\codeAstra-T3 | codeastra-t3-1b | **merged** |
+| T8 Brain integration + health/rescue/decoder | task/T8-brain-detect | D:\yashodeep\codeAstra-T3 | codeastra-t3-1b | **merged** |
+| T12 Brain prover + verdicts + calibration | task/T12-brain-prover | D:\yashodeep\codeAstra-T3 | codeastra-t3-1b | in progress (merges coord/layout-balance) |
+| T4 UI | task/T4-ui | D:\yashodeep\codeAstra-T4 | codeastra-t4-0e | **merged** |
+| T9 UI wave 2 | task/T9-ui-casefile | D:\yashodeep\codeAstra-T4 | codeastra-t4-0e | **merged** |
+| T13 UI wave 3 (story + Docker-host run) | task/T13-ui-story | D:\yashodeep\codeAstra-T4 | codeastra-t4-0e | **merged** (standby; screenshot retake at rehearsal) |
+| T5 Lab | task/T5-lab | D:\yashodeep\codeAstra-T5 | codeastra-t5-45 | **merged** |
+| T10 Lab wave 2 + crash-test | task/T10-lab-crashtest | D:\yashodeep\codeAstra-T5 | codeastra-t5-45 | **partial, done** (tiers, SLA, run marks); merges with T12. Wave 2 runners: user decision. Scorecard runner moved to T25 |
+| T25 Scorecard runner (OFF/Industry/TenantGuard summary) | task/T25-scorecard | D:\yashodeep\codeAstra-T2 | codeastra-t2-9a | **done** (9738181; merges in the T12 batch: it carries T10 + layout) |
 | Convergence samples | n/a (main dir, docs/convergence/) | main | codeastra-21 | assigned |
 | Review | n/a | main | codeastra-2b | standby |
 
@@ -486,7 +569,8 @@ Proof: unit tests + a live run against brain + fake_gateway (ask for a slot). Us
   - case status is `waiting_for_decision|in_progress|resolved|closed`; severity is `low|medium|high`; times are HH:MM:SS IST
   - evidence_link = `http://<ui-host>:5173/case/<incident_id>` (T4 adds the `/case/:id` route in Wave 2)
   - Case/handoff Pydantic models are added to `contracts.py` at the start of Wave 3.
-- 2026-10-12: The Docker host (friend's laptop, GitHub reki-shu) is set up per `docs/DOCKER-HOST-SETUP.md`. The coordinator drives it via the docker context `tg-host` over SSH (key `~/.ssh/tenantguard_ed25519`), building from the coordinator's files. This laptop has 8 cores / 7.8 GB RAM, too small to also host the full stack beside 7 Claude sessions.
+- 2026-10-12: The Docker host (friend's laptop, GitHub reki-shu) is set up per `docs/DOCKER-HOST-SETUP.md`. The coordinator drives it via the docker context `tg-host` over SSH (key `~/.ssh/tenantguard_ed25519`), building from the coordinator's files. This laptop has 8 cores / 7.8 GB RAM, too small to also host the full stack beside 7 dev sessions.
+- 2026-10-12 (user): **No tool mentions anywhere:** the narrator is template-only (no external model, no key), and no development tool is named or disclosed in any file or commit.
 - 2026-10-12 (user): **Project name is TenantGuard.** The old name was a mistake and must not appear anywhere.
   - Package `tenantguard_common`; config `tenantguard.yaml`; env prefix `TENANTGUARD_`; headers `X-TenantGuard-Tenant` / `-Class` / `-Cpu-Ms`; mode literal `tenantguard` (off | industry | tenantguard).
   - Service packages: `gateway/tenantguard_gateway`, `worker/app`, `brain/tenantguard_brain`, `lab/tenantguard_lab`.
@@ -494,7 +578,7 @@ Proof: unit tests + a live run against brain + fake_gateway (ask for a slot). Us
   - Repo: private GitHub `yashodeepchaudhari/tenantguard`, collaborator `reki-shu` (friend's laptop = Docker host).
 - 2026-10-12 (user): **Two-laptop setup.**
   - The friend's laptop = Docker host ("Laptop A"): gateway, workers, spare, quarantine and brain in compose. The brain must sit with docker.sock.
-  - This laptop = dev + traffic ("Laptop B"): all Claude sessions, the lab and the UI, pointing at `<friend-ip>`.
+  - This laptop = dev + traffic ("Laptop B"): all dev sessions, the lab and the UI, pointing at `<friend-ip>`.
   - Dev needs no Docker; Docker is only required at gate G1.
   - Code reaches Laptop A via a private GitHub remote (pending user OK).
   - Laptop A needs ≥ 8 cores / 16 GB; with fewer, lower `worker.cpus` or use the 6-worker layout.
@@ -561,4 +645,12 @@ Proof: unit tests + a live run against brain + fake_gateway (ask for a slot). Us
   - History and cases pruned.
   - Per-message exception isolation in the bridge.
   - Demo preflight for attacks the lab can't run; robust cleanup; config-based defaults.
+- 2026-10-12 (user): **Separate frozen DEMO stack** for the 8:30 PM mentoring checkpoint, isolated from development.
+  - Compose project `tgdemo` on the Docker host, host ports 9000 (gateway) / 9200 (brain) / 9300 (lab) / 9400 / 9600 / 9700, set via the `*_PORT` env vars now in compose.
+  - Deployed from git tag `demo-vN` into `C:\Users\preeti\tenantguard-demo`.
+  - Dev/test keeps project `codeastra` on 8000/8200/8300. No session ever touches `tgdemo`; only the coordinator deploys it, and only on a new tag.
+  - The brain must find ITS OWN spare: filter by label `com.docker.compose.project`, not only by service.
+- 2026-10-13: **T12 host acceptance.** Step 0 PASS (DockerProver). 1a idle PASS (0 incidents in 5 min). **1b calm FAIL:** in 270 s of calm traffic there were 78 srv detections across all 9 servers (ratio 0.6–19.3, e.g. 54 ms vs 5 ms), 20 named, 19 ladder level changes. Likely cause: CFS throttling tail spikes on 0.5-CPU cgroups against a 3 s p95 window. Back to T12 for calibration.
+- Session names change on every restart: always confirm with ListAgents. Coordinator is currently `codeastra-b1`.
+- 2026-10-13 (user: "A"): **the 5 Wave 2 attack runners are dropped** (blackbox_bomb, background_bomb, cache_flood, faulty_server, honest_spike). The demo and scorecard use the existing flood, whale, hog, memory and retry_storm. The faulty-server scene is triggered by the coordinator with `docker exec … /admin/fault` on the host. The UI attack launcher should not offer the dropped attacks; docs say "not included" rather than "in progress".
 - 2026-10-12: Cost bucket is debited with the worker-measured CPU (`X-TenantGuard-Cpu-Ms`) rather than an estimate, so it is a real resource quota, not a request count.

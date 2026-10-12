@@ -12,16 +12,18 @@
     "test": "vitest run",
     "preview": "vite preview",
     "mock-ws": "node scripts/mock-ws-server.mjs",
-    "screenshot": "node scripts/screenshot.mjs"
+    "screenshot": "node scripts/screenshot.mjs",
+    "e2e": "playwright test"
   },
   "dependencies": {
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "react-router-dom": "6.26.2",
-    "recharts": "2.12.7"
+    "recharts": "2.13.3"
   },
   "devDependencies": {
     "@eslint/js": "9.11.1",
+    "@playwright/test": "1.47.2",
     "@types/node": "20.16.10",
     "@types/react": "18.3.11",
     "@types/react-dom": "18.3.0",

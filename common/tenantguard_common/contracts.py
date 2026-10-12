@@ -382,6 +382,45 @@ class RunResult(BaseModel):
     file: str = ""
 
 
+class CellStats(BaseModel):
+    """One scenario x mode in a CrashSummary."""
+    scenario: AttackName
+    mode: Mode
+    runs: int
+    failed_runs: int = 0
+    victim_p99_ms_median: Optional[PhaseP99] = None
+    victim_p99_ms_mean: Optional[PhaseP99] = None
+    time_to_detect_s_median: Optional[float] = None
+    detected_runs: int = 0
+    time_to_recover_s_median: Optional[float] = None
+    recovered_runs: int = 0
+    attacker_429_median: float = 0.0
+    attacker_503_median: float = 0.0
+    brain_checked_runs: int = 0
+    culprit_named_runs: int = 0
+    innocents_penalised: List[str] = Field(default_factory=list)   # union over runs
+    innocents_penalised_runs: int = 0
+    run_files: List[str] = Field(default_factory=list)
+
+
+class CrashSummary(BaseModel):
+    """lab/results/summary-<ts>.json, written by `python -m tenantguard_lab scorecard`."""
+    created_at: float
+    lab_url: str
+    brain_url: str
+    scenarios: List[AttackName]
+    modes: List[Mode]
+    runs_per_cell: int
+    attacker: Optional[str] = None
+    intensity: float = 1.0
+    calm_s: float = 20
+    attack_s: float = 40
+    aggregate_only: bool = False
+    cells: List[CellStats]
+    skipped: List[str] = Field(default_factory=list)
+    file: str = ""
+
+
 # ---------- 6. Handoff cases (Web PS3 convergence; bridge integrations/handoff on :8400) ----------
 # Internal view served by the bridge (GET /cases, GET /cases/{case_id}). The partner's wire format
 # ("HH:MM:SS" `time`/`deadline`, strict) exists only inside the bridge, which converts at the edge.
@@ -511,7 +550,7 @@ class WhyView(BaseModel):
 
 # ---------- 8. Incident narrator (narrator :8700, read-only consumer of the brain) ----------
 class IncidentReport(BaseModel):
-    """Operator-facing report. Every tenant id, server id and number must come from the evidence pack."""
+    """Operator-facing report, built deterministically from the evidence pack."""
     headline: str
     timeline: List[str]               # "HH:MM:SS stage: what happened", oldest first
     cause: str
@@ -531,11 +570,6 @@ class ReportView(BaseModel):
     tenant: Optional[str] = None                  # primary/culprit tenant, if any
     trigger_stage: Stage                          # the stage that produced this version (named | verdict | closed)
     version: int                                  # +1 on every change for this incident
-    source: Literal["template", "ai"]
-    grounded: bool                                # template: always True; ai: passed the grounding check
-    ai_status: Literal["pending", "done", "disabled", "rejected", "error"]
-    ai_detail: str = ""                           # e.g. "ungrounded: number 37.5", "refusal", "no API key"
-    model: Optional[str] = None                   # AI model id when source == "ai"
     report: IncidentReport
     customer_message: CustomerMessage
     evidence: dict                                # the evidence pack this version was built from

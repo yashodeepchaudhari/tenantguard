@@ -86,8 +86,6 @@ class Telemetry:
 
     def cpu_missing(self, tenant: str, server: str) -> None:
         """Worker answered without a usable X-TenantGuard-Cpu-Ms: debited 0, counted here."""
-        self.c_retries: Dict[str, int] = defaultdict(int)
-        self.c_charged_ms: Dict[str, float] = defaultdict(float)
         self.c_cpu_missing[(tenant, server)] += 1
 
     def done(self, tenant: str, server: str, upstream_ms: float, e2e_ms: float, status: int,
