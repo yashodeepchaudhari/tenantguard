@@ -403,4 +403,10 @@ Proof: unit tests + a tiny live run of 1 scenario × 3 modes (ask for the stack 
   - Brain: time-based baseline (`baseline_half_life_s`, frozen while a neighbour over-uses), hold by `hold_ratio`, sends serialised per tenant, reconcile overrides on start.
   - The UI reads thresholds from `StateSnapshot.noisy_thresholds`.
   - Gateway fixes are T7 step 0; brain fixes T8; UI fixes T9; lab token T5.
+- 2026-10-12: **Docker host is live.**
+  - Friend's laptop `laptop-f8bqbdsi\preeti`: 20 logical CPUs, Docker VM 8 GB.
+  - Reached over **Tailscale 100.112.232.8** (stable across networks; Wi-Fi IP 10.228.100.60 is a fallback). SSH alias `tg-host` is in ~/.ssh/config.
+  - Docker context `tg-host`. Stack command: `docker --context tg-host compose -p codeastra up -d --build`, run from the main repo; it builds from the coordinator's files.
+  - The UI and lab on this laptop use `http://100.112.232.8:8000` (gateway) and `:8200` (brain).
+  - Only the coordinator drives the host; sessions ask the coordinator for host runs.
 - 2026-10-12: Cost bucket is debited with the worker-measured CPU (`X-TenantGuard-Cpu-Ms`) rather than an estimate, so it is a real resource quota, not a request count.
