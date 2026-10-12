@@ -61,10 +61,13 @@ def create_app(bridge: Optional[Bridge] = None, start: bool = True) -> FastAPI:
         return bridge.book.to_wire(case_id).model_dump()
 
     async def _update(request: Request):
-        if partner_token:
-            got = request.headers.get(PARTNER_TOKEN_HEADER, "").encode("utf-8")
-            if not hmac.compare_digest(got, partner_token.encode("utf-8")):
-                return JSONResponse({"ok": False, "detail": f"missing or wrong {PARTNER_TOKEN_HEADER}"}, status_code=401)
+        # Fail closed: an update can make the bridge send control commands with ITS control token.
+        if not partner_token:
+            return JSONResponse({"ok": False, "detail": "partner token not configured (HANDOFF_PARTNER_TOKEN)"},
+                                status_code=503)
+        got = request.headers.get(PARTNER_TOKEN_HEADER, "").encode("utf-8")
+        if not hmac.compare_digest(got, partner_token.encode("utf-8")):
+            return JSONResponse({"ok": False, "detail": f"missing or wrong {PARTNER_TOKEN_HEADER}"}, status_code=401)
         try:
             body = await request.json()
         except ValueError:

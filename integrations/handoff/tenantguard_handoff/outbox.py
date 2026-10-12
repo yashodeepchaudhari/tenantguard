@@ -45,6 +45,11 @@ class Outbox:
         self.pending[case_id] = (version, body)
         self.wake.set()
 
+    def forget(self, case_id: str) -> None:
+        """An evicted case: drop its delivery record (a still-pending last version is delivered first)."""
+        if case_id not in self.pending:
+            self.delivered.pop(case_id, None)
+
     def start(self) -> None:
         if self._task is None:
             self._task = asyncio.create_task(self._run())
