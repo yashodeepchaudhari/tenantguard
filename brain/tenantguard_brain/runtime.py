@@ -11,10 +11,11 @@ import httpx
 import websockets
 from pydantic import BaseModel
 
-from tenantguard_common.contracts import (H_CONTROL_TOKEN, Heartbeat, IncidentEvent, LimitsCmd, OverridesView,
+from tenantguard_common.contracts import (H_CONTROL_TOKEN, ChargeCmd, Heartbeat, IncidentEvent, LimitsCmd, OverridesView,
                                           TelemetryFrame, WorkerStats)
 
-from .core import Brain
+from .core import Brain, TickResult
+from .prover import HostCheck, HostProver, ProofRequest, Readings, make_prover
 from .settings import BrainSettings
 
 log = logging.getLogger("tenantguard.brain")
@@ -100,6 +101,8 @@ class Runtime:
         self.sent_count = 0
         self.heartbeats = 0
         self.adopted: Optional[bool] = None
+        self.jobs: Set[asyncio.Task] = set()
+        self.host_prover = HostProver(cfg.prover, cfg.verdicts)
 
     @property
     def ws_url(self) -> str:
@@ -117,16 +120,22 @@ class Runtime:
     async def start(self) -> None:
         self.client = httpx.AsyncClient(timeout=httpx.Timeout(1.0, connect=1.0),
                                         limits=httpx.Limits(max_connections=64, max_keepalive_connections=32))
+        try:
+            self.brain.s3.prover = await make_prover(self.cfg.prover_mode, self.cfg.prover, self.cfg.verdicts)
+        except Exception as e:
+            log.error("prover: %s; continuing without proofs", e)
+        log.info("prover: %s", type(self.brain.s3.prover).__name__)
         for coro in (self._adopt_once(), self._telemetry_loop(), self._stats_loop(), self._canary_loop(),
                      self._heartbeat_loop(), self._tick_loop(), self._snapshot_loop()):
             self.tasks.append(asyncio.create_task(coro))
         log.info("brain started: gateway=%s workers=%d", self.cfg.gateway_url, len(self.cfg.worker_urls))
 
     async def stop(self) -> None:
-        for t in self.tasks:
+        for t in list(self.tasks) + list(self.jobs):
             t.cancel()
-        await asyncio.gather(*self.tasks, return_exceptions=True)
+        await asyncio.gather(*self.tasks, *self.jobs, return_exceptions=True)
         self.tasks.clear()
+        self.jobs.clear()
         await self.sender.close()
         if self.client:
             await self.client.aclose()
@@ -162,6 +171,63 @@ class Runtime:
         if ok:
             self.sent_count += 1
             log.info("sent route weights for %s ttl=%gs", sorted(cmd.weights), cmd.ttl_s)
+
+    def _control_done(self, cmd: BaseModel, ok: bool) -> None:
+        if isinstance(cmd, ChargeCmd):
+            if not ok:
+                self.brain.charge_failed(cmd)
+            return
+        self.brain.control_done(cmd, ok, time.time())
+        if ok:
+            self.sent_count += 1
+            log.info("sent %s", cmd)
+
+    # ------------------------------------------------------------ async tests (prover.py)
+    def readings(self) -> Readings:
+        return self.brain.readings(time.time())
+
+    async def send(self, path: str, model: BaseModel) -> bool:
+        ok = await self._post(path, model)
+        if ok:
+            self.sent_count += 1
+            log.info("sent %s %s", path, model)
+        return ok
+
+    async def sleep(self, seconds: float) -> None:
+        await asyncio.sleep(seconds)
+
+    def _apply(self, res: TickResult) -> None:
+        self._publish(res.events)
+        for cmd in res.commands:
+            self.send_limits(cmd)
+        for rc in res.route_cmds:
+            self.sender.submit("routes", "/control/route_weights", rc, self._routes_done)
+        for key, path, cmd in res.control:
+            self.sender.submit(key, path, cmd, self._control_done)
+        for job in res.jobs:
+            self._start_job(job)
+
+    def _start_job(self, job) -> None:
+        task = asyncio.create_task(self._run_job(job))
+        self.jobs.add(task)
+        task.add_done_callback(self.jobs.discard)
+
+    async def _run_job(self, job) -> None:
+        try:
+            if isinstance(job, ProofRequest):
+                log.info("proving %s (incident %s)", job.tenant, job.incident_id)
+                result = await self.brain.s3.prover.prove(job, self)
+                self._apply(self.brain.on_proof(result, time.time()))
+            elif isinstance(job, HostCheck):
+                log.info("drain test for %s (incident %s)", job.server, job.incident_id)
+                result = await self.host_prover.check(job, self)
+                self._apply(self.brain.on_host(result, time.time()))
+            elif isinstance(job, tuple) and job and job[0] == "restore_spare":
+                await self.brain.s3.prover.restore_spare(job[1])
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("job %r failed", job)
 
     def send_limits(self, cmd: LimitsCmd) -> None:
         self.sender.submit(f"limits:{cmd.tenant}", "/control/limits", cmd, self._limits_done)
@@ -265,12 +331,7 @@ class Runtime:
         while True:
             t0 = time.monotonic()
             try:
-                res = self.brain.tick(time.time())
-                self._publish(res.events)
-                for cmd in res.commands:
-                    self.send_limits(cmd)
-                for rc in res.route_cmds:
-                    self.sender.submit("routes", "/control/route_weights", rc, self._routes_done)
+                self._apply(self.brain.tick(time.time()))
             except Exception:
                 log.exception("tick failed; skipping")
             await asyncio.sleep(max(0.01, self.cfg.tick_s - (time.monotonic() - t0)))
@@ -298,5 +359,7 @@ class Runtime:
             "heartbeats_sent": self.heartbeats,
             "commands_sent": self.sent_count,
             "sends_in_flight": len(self.sender.running),
+            "prover": type(self.brain.s3.prover).__name__,
+            "jobs_running": len(self.jobs),
             "ui_clients": len(self.hub.clients),
         }
