@@ -397,17 +397,19 @@ Build:
 |---|---|---|---|---|
 | T1 Gateway | task/T1-gateway | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
 | T7 Gateway wave 2 | task/T7-gateway-adaptive | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
-| T11 Handoff bridge (Web PS3 convergence) | task/T11-handoff-bridge | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | assigned |
+| T11 Handoff bridge (Web PS3 convergence) | task/T11-handoff-bridge | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
+| T14 Demo driver (`tools/demo.py`) | task/T14-demo-runbook | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | assigned |
 | T2 Workers | task/T2-workers | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged** (9cebaaf) |
-| T6 Workers wave 2 | task/T6-worker-blackbox | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | assigned |
+| T6 Workers wave 2 | task/T6-worker-blackbox | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged** |
+| T15 Worker calibration in-container | task/T15-worker-calib | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | assigned |
 | T3 Brain | task/T3-brain | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | **merged** |
 | T8 Brain integration + health/rescue/decoder | task/T8-brain-detect | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | **merged** |
-| T12 Brain prover + verdicts | task/T12-brain-prover | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | assigned |
+| T12 Brain prover + verdicts + calibration | task/T12-brain-prover | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | in progress (merges coord/layout-balance) |
 | T4 UI | task/T4-ui | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | **merged** |
 | T9 UI wave 2 | task/T9-ui-casefile | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | **merged** |
-| T13 UI wave 3 (story + Docker-host run) | task/T13-ui-story | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | assigned |
+| T13 UI wave 3 (story + Docker-host run) | task/T13-ui-story | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | in progress |
 | T5 Lab | task/T5-lab | D:\yashodeep\codeAstra-T5 | codeastra-t5-79 | **merged** |
-| T10 Lab wave 2 + crash-test | task/T10-lab-crashtest | D:\yashodeep\codeAstra-T5 | codeastra-t5-79 | assigned |
+| T10 Lab wave 2 + crash-test | task/T10-lab-crashtest | D:\yashodeep\codeAstra-T5 | codeastra-t5-79 | in progress |
 | Convergence samples | n/a (main dir, docs/convergence/) | main | codeastra-21 | assigned |
 | Review | n/a | main | codeastra-2b | standby |
 
