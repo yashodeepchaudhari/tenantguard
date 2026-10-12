@@ -34,22 +34,24 @@ flowchart TB
 |---|---|---|
 | `worker/app/__init__.py` | 1 | package marker |
 | `worker/app/__main__.py` | 38 | command line: `python -m app --port N` |
-| `worker/app/main.py` | 389 | FastAPI app, `Worker` state, `TenantMiddleware`, every endpoint |
-| `worker/app/config.py` | 90 | `WorkerConfig` from `tenantguard.yaml worker:` + env |
+| `worker/app/main.py` | 413 | FastAPI app, `Worker` state, `TenantMiddleware`, every endpoint |
+| `worker/app/config.py` | 96 | `WorkerConfig` from `tenantguard.yaml worker:` + env |
 | `worker/app/tenancy.py` | 43 | tenant and request context variables |
-| `worker/app/meter.py` | 62 | cumulative per-tenant and per-class meters |
-| `worker/app/store.py` | 157 | per-tenant SQLite repository |
+| `worker/app/meter.py` | 73 | cumulative per-tenant and per-class meters |
+| `worker/app/store.py` | 159 | per-tenant SQLite repository |
 | `worker/app/cache.py` | 91 | shared cache, namespaced per tenant |
 | `worker/app/jobs.py` | 101 | background jobs charged to the tenant that caused them |
-| `worker/app/memory.py` | 59 | per-tenant and worker-wide memory budget |
+| `worker/app/memory.py` | 64 | per-tenant and worker-wide memory budget |
+| `worker/app/malloc.py` | 111 | allocator tuning and trimming, so freed memory goes back to the OS |
 | `worker/app/blackbox.py` | 195 | the "vendor indexer" child process |
 | `worker/app/fault.py` | 66 | simulated faulty host |
-| `worker/app/stats.py` | 66 | process-tree CPU/memory and cgroup limits |
+| `worker/app/stats.py` | 80 | process-tree CPU/memory and cgroup limits |
 | `worker/app/cpuclock.py` | 50 | precise per-thread CPU clock |
 | `worker/app/work.py` | 44 | pure-CPU work kernels |
 | `worker/tools/noisy_demo.py` | 125 | measures the noisy-neighbour effect on real workers |
 | `worker/tools/calibrate.py` | 192 | measures every endpoint's cost → `calibration.json` |
-| `worker/tests/*.py` | 679 | 47 tests (see the end of this page) |
+| `worker/tools/memrepro.py` | 87 | reproduces the allocator memory retention without the web stack |
+| `worker/tests/*.py` | 799 | 54 tests (see the end of this page) |
 | `worker/Dockerfile`, `requirements.txt`, `pytest.ini`, `compose.dev.yml`, `.gitignore`, `README.md`, `calibration.json` | | build, run and data files |
 
 ---
@@ -115,13 +117,14 @@ Module constants: `SEARCH_MAX_N = 2_000_000`, `INDEX_MAX_ROUNDS = 20_000`, `INGE
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
 | `Worker` | `class Worker` | owns the config, `Meters`, `TenantStore`, `TenantCache`, `MemoryBudget`, `BackgroundJobs`, `FaultInjector`, `BlackBox` and `ProcessTree` | `create_app` |
-| `Worker.__init__` | `__init__(self, cfg: WorkerConfig) -> None` | builds every component; the allow-list `known_tenants` = configured ids; the memory budget gets the worker-wide cap `mem_limit_mb() − mem_baseline_mb`; finally deletes and re-seeds every tenant database | `create_app` |
+| `Worker.__init__` | `__init__(self, cfg: WorkerConfig) -> None` | first applies the allocator settings (`malloc.tune`) and starts the `malloc.Trimmer`; then builds every component (`Meters` with the per-tenant class cap); the allow-list `known_tenants` = configured ids; the memory budget gets the worker-wide cap `mem_limit_mb() − mem_baseline_mb`; finally deletes and re-seeds every tenant database | `create_app` |
 | `Worker.metered` | `metered(self, fn) -> Callable` | decorator for sync handlers: applies the injected fault latency (sleep, not CPU), then adds the handler thread's CPU (`cpuclock.thread_cpu`) to the request's `RequestMeter.cpu_ms` | every `/api/*` and `/canary*` handler in `create_app` |
 | `Worker.metered.wrapper` | `wrapper(*args, **kwargs) -> Any` | the wrapped handler call (runs in the thread pool) | FastAPI |
 | `Worker.cpu_limit_cores` | `cpu_limit_cores(self) -> float` | env `CPU_LIMIT_CORES`, else cgroup `cpu.max`, else `worker.cpus` | `Worker.stats` |
 | `Worker.mem_limit_mb` | `mem_limit_mb(self) -> float` | cgroup `memory.max`, else `worker.mem_limit_mb` | the worker-wide memory budget |
 | `Worker.stats` | `stats(self) -> WorkerStats` | snapshots the meters; one `TenantUsage` per configured or seen tenant (with cache counters and the current memory gauge); `ClassCost` rows; process-tree CPU and RSS; black-box CPU; active fault | `GET /stats` |
-| `Worker.close` | `close(self) -> None` | clears any fault, stops the black box, cancels queued background jobs and waits up to 5 s for running ones, then closes the databases | app lifespan shutdown |
+| `Worker.memory_report` | `memory_report(self) -> dict` | where the memory is: process-tree RSS, memory limit, cgroup `{current, anon, file}`, allocator `{heap, mmapped, in_use, free, trimmable, tuned}`, trims done, per-tenant held MB, cache MB | `GET /admin/memory`, `POST /admin/memory/trim` |
+| `Worker.close` | `close(self) -> None` | stops the trimmer, clears any fault, stops the black box, cancels queued background jobs and waits up to 5 s for running ones, then closes the databases | app lifespan shutdown |
 | `_error` | `_error(status, error, detail, tenant=None) -> JSONResponse` | the structured error body `{error, tenant, detail}` | middleware rejections, exception handlers |
 | `TenantMiddleware` | `class TenantMiddleware` | pure ASGI, so it runs in the same task as the endpoint and context variables flow into the thread pool | installed by `create_app` |
 | `TenantMiddleware.__init__` | `__init__(self, app: ASGIApp, worker: Worker) -> None` | stores the wrapped app and the `Worker` | Starlette middleware stack |
@@ -149,7 +152,9 @@ Module constants: `SEARCH_MAX_N = 2_000_000`, `INDEX_MAX_ROUNDS = 20_000`, `INGE
 | `canary_kind` | `GET /canary/{kind}` → `canary_kind(kind) -> dict` | one probe | brain, tests |
 | `healthz` | `GET /healthz` → `healthz() -> dict` | liveness plus background backlog (total and per tenant) and black-box status | Docker `HEALTHCHECK`, `tools/calibrate.py` |
 | `stats` | `GET /stats` → `stats() -> WorkerStats` | `Worker.stats` | brain poller (1 Hz), tools |
-| `check_admin` | `check_admin(token) -> None` | `X-Admin-Token` must equal `TENANTGUARD_ADMIN_TOKEN` (default `dev`), else 401 | the three fault routes |
+| `check_admin` | `check_admin(token) -> None` | `X-Admin-Token` must equal `TENANTGUARD_ADMIN_TOKEN` (default `dev`), else 401 | the fault and memory admin routes |
+| `memory_report` | `GET /admin/memory` → `memory_report(x_admin_token) -> dict` | `Worker.memory_report`. A large allocator `free_mb` with `trimmable_mb` 0 means memory is held inside the process | operators, coordinator diagnostics |
+| `memory_trim` | `POST /admin/memory/trim` → `memory_trim(x_admin_token) -> dict` | runs `malloc_trim(0)` now and returns the report with the RSS before | operators, tests |
 | `set_fault` | `POST /admin/fault` → `set_fault(req: FaultReq, x_admin_token) -> dict` | starts a fault (logged as a warning) | lab `faulty_server`, demo driver fallback, tests |
 | `get_fault` | `GET /admin/fault` → `get_fault(x_admin_token) -> dict` | current fault | tools, tests |
 | `clear_fault` | `DELETE /admin/fault` → `clear_fault(x_admin_token) -> dict` | clears it | lab, demo cleanup, tests |
@@ -166,6 +171,8 @@ Module constants: `SEARCH_MAX_N = 2_000_000`, `INDEX_MAX_ROUNDS = 20_000`, `INGE
   export. One tenant cannot exhaust the worker for everyone else.
 - The CPU header is present on every response, including rejections and 500s, so the gateway's cost
   accounting never sees a missing value.
+- Memory is observable and recoverable at runtime (`/admin/memory`, `/admin/memory/trim`), so a worker near its
+  container limit can be diagnosed without restarting it.
 
 ---
 
@@ -176,7 +183,7 @@ defaults for any key the file lacks, plus environment overrides for deployment.
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
 | `_DEFAULTS` (constant) | `dict` | fallback values for every `worker:` key (identical to the file on `master`) | `load_config` |
-| `WorkerConfig` | `@dataclass class WorkerConfig` | `server`, `data_dir`, `cpus`, `mem_limit_mb`, `body_limit_bytes`, `tenant_mem_budget_mb`, `cache_mb`, `cache_guaranteed_share`, `bg_threads`, `seed_rows`, `blackbox_cpu_ms_per_doc`, `blackbox_queue_max`, `max_request_s`, `bg_pending_per_tenant`, `bg_pending_total`, `mem_baseline_mb`, `admin_token`, `cors_origins`, `cpu_limit_env`, `tenants` (configured ids) | `Worker`, `create_app` |
+| `WorkerConfig` | `@dataclass class WorkerConfig` | `server`, `data_dir`, `cpus`, `mem_limit_mb`, `body_limit_bytes`, `tenant_mem_budget_mb`, `cache_mb`, `cache_guaranteed_share`, `bg_threads`, `seed_rows`, `blackbox_cpu_ms_per_doc`, `blackbox_queue_max`, `max_request_s`, `bg_pending_per_tenant`, `bg_pending_total`, `mem_baseline_mb`, `memory_trim_s`, `max_classes_per_tenant`, `admin_token`, `cors_origins`, `cpu_limit_env`, `tenants` (configured ids) | `Worker`, `create_app` |
 | `_default_data_dir` | `_default_data_dir(server: str) -> Path` | `./data/<server>` for local runs | `load_config` |
 | `load_config` | `load_config(settings=None, **overrides) -> WorkerConfig` | merges file and defaults; `SERVER_NAME` (default `w0`); `WORKER_DATA_DIR` (Docker: `/data`); `TENANTGUARD_ADMIN_TOKEN` (default `dev`); `TENANTGUARD_UI_ORIGINS` (CORS, comma list, default `http://127.0.0.1:5173`); `CPU_LIMIT_CORES`; tenant ids from `load_tenants()`. Keyword overrides replace any field (used by tests) | `create_app`, tests |
 
@@ -215,9 +222,10 @@ Cumulative meters, thread-safe behind one lock.
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
 | `Usage` | `@dataclass class Usage` | `requests`, `handler_cpu_ms`, `bg_cpu_ms`, `db_ms`, `bytes_in`, `bg_jobs` | `Meters`, `Worker.stats` |
+| `OTHER_CLASS` (constant) | `"other"` | class that collects a tenant's requests beyond its class cap | `record_request` |
 | `Meters` | `class Meters` | per-tenant `Usage` and per (tenant, class) `[count, cpu_ms]` | `Worker` |
-| `Meters.__init__` | `__init__(self) -> None` | empty tables and the lock | `Worker.__init__` |
-| `Meters.record_request` | `record_request(self, tenant, cls, cpu_ms, bytes_in) -> None` | one finished request: count, handler CPU, bytes, class count and CPU | `TenantMiddleware.__call__` |
+| `Meters.__init__` | `__init__(self, max_classes_per_tenant=256) -> None` | empty tables, the lock, distinct-class counts per tenant and the cap (`worker.max_classes_per_tenant`) | `Worker.__init__` |
+| `Meters.record_request` | `record_request(self, tenant, cls, cpu_ms, bytes_in) -> None` | one finished request: count, handler CPU, bytes, class count and CPU; a class beyond the tenant's cap is counted under `other`, so totals stay exact while the table stays bounded | `TenantMiddleware.__call__` |
 | `Meters.add_db` | `add_db(self, tenant, ms) -> None` | adds database wall time | `TenantStore._tx` |
 | `Meters.add_bg` | `add_bg(self, tenant, cpu_ms) -> None` | adds background CPU and counts the job | `BackgroundJobs._run` |
 | `Meters.tenants` | `tenants(self) -> List[str]` | tenants seen so far | available to callers; not used by the app on `master` |
@@ -226,6 +234,8 @@ Cumulative meters, thread-safe behind one lock.
 
 **Key decisions**
 - Counters only grow; consumers diff them. A missed poll loses nothing.
+- The class table is bounded per tenant: the gateway's class hash includes query keys, so a client inventing keys
+  could otherwise grow it forever.
 
 ---
 
@@ -241,7 +251,7 @@ public method takes the tenant from `tenant_var` only. Schema and seed rules are
 | `_SCHEMA` (constant) | `str` | `items`, `terms` and index `terms_term` | `_Db.__init__` |
 | `seed_value` | `seed_value(tenant, key, size=512) -> str` | deterministic value starting with the owner (`"<tenant>|<key>|..."`), so any leak is detectable | `_seed`, tests |
 | `_Db` | `class _Db` | one connection (`check_same_thread=False`, autocommit, WAL, `synchronous=NORMAL`) and its lock | `_db` |
-| `_Db.__init__` | `__init__(self, path: Path) -> None` | opens the file and applies the schema | `TenantStore._db` |
+| `_Db.__init__` | `__init__(self, path: Path) -> None` | opens the file (WAL, `synchronous=NORMAL`, a 1 MB page cache `cache_size=-1024`, WAL truncated to ≤ 4 MB after checkpoints `journal_size_limit`) and applies the schema | `TenantStore._db` |
 | `TenantStore` | `class TenantStore` | the repository | `Worker` |
 | `TenantStore.__init__` | `__init__(self, data_dir, meters, seed_rows=1000, allowed=None) -> None` | creates the directory; `allowed` = exact tenant allow-list (`None` only in unit tests) | `Worker.__init__` |
 | `TenantStore.path_for` | `path_for(self, tenant) -> Path` | validates the id (regex, allow-list; `_canary` reserved) and returns the file path | `reset_and_seed`, `_db` |
@@ -324,7 +334,7 @@ Memory budget: per tenant (held allocations + the tenant's cache bytes) and for 
 | `MemoryBudget` | `class MemoryBudget` | per-tenant held bytes behind a lock | `Worker` |
 | `MemoryBudget.__init__` | `__init__(self, budget_mb, cache_bytes, cache_total=..., worker_budget_mb=...) -> None` | tenant budget; callbacks for tenant cache bytes, total cache bytes, and the worker-wide budget | `Worker.__init__` |
 | `MemoryBudget.used_mb` | `used_mb(self, tenant) -> float` | held + cached, in MB | `Worker.stats` (the `mem_mb` gauge) |
-| `MemoryBudget.hold` | `hold(self, mb, hold_s) -> dict` | checks the tenant budget, then the worker-wide budget, then allocates a `bytearray`, touches one byte per page (so RSS really grows), holds it, releases it | `memory` |
+| `MemoryBudget.hold` | `hold(self, mb, hold_s) -> dict` | checks the tenant budget, then the worker-wide budget, then allocates an anonymous `mmap`, touches one byte per page (so RSS really grows), holds it and closes it, so the memory always goes back to the OS | `memory` |
 
 **Key decisions**
 - Two limits: a tenant cannot exceed its own budget, and all tenants together cannot push the process
@@ -391,18 +401,51 @@ Process-tree CPU and memory through `psutil`, and the container limits from cgro
 
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
-| `CGROUP_CPU_MAX`, `CGROUP_MEM_MAX` (constants) | `Path` | `/sys/fs/cgroup/cpu.max`, `/sys/fs/cgroup/memory.max` | the two functions below |
+| `CGROUP_CPU_MAX`, `CGROUP_MEM_MAX`, `CGROUP_MEM_CURRENT`, `CGROUP_MEM_STAT` (constants) | `Path` | `/sys/fs/cgroup/cpu.max`, `memory.max`, `memory.current`, `memory.stat` | the functions below |
 | `ProcessTree` | `class ProcessTree` | this process and its children | `Worker` |
 | `ProcessTree.__init__` | `__init__(self) -> None` | `started_at` = process create time | `Worker.__init__` |
 | `ProcessTree._tree` | `_tree(self)` | self + recursive children (ignoring races) | `cpu_total_ms`, `rss_mb` |
 | `ProcessTree.cpu_total_ms` | `cpu_total_ms(self) -> float` | user + system of the tree, plus CPU of already reaped children | `Worker.stats` |
 | `ProcessTree.rss_mb` | `rss_mb(self) -> float` | summed RSS | `Worker.stats` |
+| `cgroup_memory` | `cgroup_memory() -> Optional[dict]` | the container's memory in MB: `current`, and `anon` vs `file` (page cache) from `memory.stat`; `None` outside a cgroup v2 container | `Worker.memory_report` |
 | `cgroup_mem_limit_mb` | `cgroup_mem_limit_mb() -> Optional[float]` | `memory.max` in MB; `None` if unlimited or absent | `Worker.mem_limit_mb` |
 | `cgroup_cpu_limit` | `cgroup_cpu_limit() -> Optional[float]` | `quota / period` cores from `cpu.max`; `None` if `max` or absent. Read on every call, so it follows `docker update --cpus` live | `Worker.cpu_limit_cores` |
 
 **Key decisions**
 - The reported CPU limit comes from the container itself, so the spare (1.0 CPU) and quarantine
   (0.25 CPU) workers report their real limits without extra configuration.
+
+---
+
+### `worker/app/malloc.py`
+Makes memory freed by request threads go back to the operating system. With default glibc settings it did not:
+after the first large free, glibc raises its mmap threshold (up to 32 MB), so later large buffers come from
+per-thread arenas (up to 8 × cores of them), and freed arena memory stays in the process; `malloc_trim` cannot
+release it. Under the lab's memory attack (24 MB holds, up to 32 at once) the three workers in K's barcode
+ratcheted towards their 256 MiB container limit and stalled. Measured with the worker app on Linux (4 tenants ×
+16 MB holds + 24 heavy searches): **+111.5 MB** kept before the fix, **+0.6 MB** after. Everything here is a no-op
+off glibc.
+
+| Function / class | Signature | What it does | Called by |
+|---|---|---|---|
+| `M_MMAP_THRESHOLD`, `M_ARENA_MAX`, `MMAP_THRESHOLD_BYTES`, `ARENA_MAX` (constants) | | `mallopt` option ids and the values: 128 KB threshold, 2 arenas | `tune` |
+| `_MallInfo2` | `class _MallInfo2(ctypes.Structure)` | glibc `struct mallinfo2` (10 `size_t` fields) | `info` |
+| `_libc` | `_libc()` | `libc.so.6` on Linux, else `None` (also `None` on non-glibc libcs) | module import (`_LIBC`) |
+| `tune` | `tune() -> bool` | once per process: pins the mmap threshold (large buffers always come from mmap and return on free) and caps the arenas; True if glibc accepted both | `Worker.__init__` |
+| `trim` | `trim() -> bool` | `malloc_trim(0)`: return free heap pages to the OS; True if some were released | `Trimmer.run` |
+| `info` | `info() -> Optional[dict]` | allocator totals in MB from `mallinfo2` (glibc ≥ 2.33): heap, mmapped, in use, free, trimmable, and whether `tune` succeeded | `Worker.memory_report` |
+| `Trimmer` | `class Trimmer` | daemon thread that trims every `interval_s` | `Worker` |
+| `Trimmer.__init__` | `__init__(self, interval_s) -> None` | starts the thread when `interval_s > 0` on glibc (`worker.memory_trim_s`, 30 s) | `Worker.__init__` |
+| `Trimmer._loop` | `_loop(self) -> None` | waits `interval_s`, then `run`, until closed | trimmer thread |
+| `Trimmer.run` | `run(self) -> bool` | one trim; counts it | `_loop`, `POST /admin/memory/trim` |
+| `Trimmer.close` | `close(self) -> None` | stops and joins the thread | `Worker.close` |
+
+**Key decisions**
+- The settings are applied in code (`mallopt`) so they hold however the worker is started (CLI, uvicorn import
+  string, tests). The image also sets `MALLOC_ARENA_MAX=2` and `MALLOC_MMAP_THRESHOLD_=131072`, which covers the
+  black-box child process and allocations made before `tune` runs.
+- Root cause first: a periodic trim alone would not have helped. With the defaults, the retained memory sat in
+  arenas that `malloc_trim` cannot shrink (measured: +480 MB before and after a trim in the standalone repro).
 
 ---
 
@@ -480,11 +523,40 @@ The measured numbers on `master` are listed in
 
 ---
 
+### `worker/tools/memrepro.py`
+A standalone (stdlib-only, Linux) reproduction of the allocator retention, without the web stack. It runs the
+worker's real `work.search` and `/api/memory`-shaped holds on a thread pool, then prints RSS: baseline, after the
+load, and after `malloc_trim(0)`. It ships in the worker image, so it can run inside a real container. Compare by
+switching `--mode` or the `MALLOC_*` environment variables.
+
+| Function / class | Signature | What it does | Called by |
+|---|---|---|---|
+| `PAGE` (constant) | `4096` | page size used to touch buffers | `hold` |
+| `rss_mb` | `rss_mb() -> float` | `VmRSS` from `/proc/self/status` | `main` |
+| `trim` | `trim() -> bool` | `malloc_trim(0)` through ctypes | `main` |
+| `hold` | `hold(mb, mode, hold_s) -> int` | allocate `mb` as a `bytearray` (the old behaviour) or an anonymous `mmap`, touch every page, hold, free | `main` (thread pool) |
+| `main` | `main() -> None` | options `--threads` (16), `--rounds` (6), `--hold-mb` (30), `--searches` (40), `--n` (200 000), `--mode` (`bytearray`/`mmap`); runs the load and prints one result line | command line |
+
+Measured on Linux (glibc 2.39), 16 threads × 6 rounds × 30 MB:
+
+| Variant | RSS kept after the load | After `malloc_trim` |
+|---|---|---|
+| default glibc, `bytearray` holds | +480.5 MB | +480.5 MB |
+| `MALLOC_ARENA_MAX=2` | +210.4 MB | +0.3 MB |
+| `MALLOC_MMAP_THRESHOLD_=131072` | +0.7 MB | +0.7 MB |
+| both | +0.3 MB | +0.3 MB |
+| `mmap` holds | +0.4 MB | +0.4 MB |
+| heavy searches only (120 × n = 200 000) | +0.2 MB | +0.2 MB |
+
+Inside a 256 MiB container keep the load below the limit, e.g. `--threads 6 --rounds 4 --hold-mb 24`.
+
+---
+
 ### Build and data files
 
 | File | Purpose |
 |---|---|
-| `worker/Dockerfile` | `python:3.12-slim`; build context = repository root; installs `common/` first, then `requirements.txt`; copies `tenantguard.yaml`, `layouts/`, `worker/app` and `worker/tools`; `ENV TENANTGUARD_ROOT=/app`, `WORKER_DATA_DIR=/data`; `HEALTHCHECK` on `/healthz` every 10 s; `CMD python -m app --host 0.0.0.0 --port 8100` |
+| `worker/Dockerfile` | `python:3.12-slim`; build context = repository root; installs `common/` first, then `requirements.txt`; copies `tenantguard.yaml`, `layouts/`, `worker/app` and `worker/tools`; `ENV TENANTGUARD_ROOT=/app`, `WORKER_DATA_DIR=/data`, `MALLOC_ARENA_MAX=2`, `MALLOC_MMAP_THRESHOLD_=131072`; `HEALTHCHECK` on `/healthz` every 10 s; `CMD python -m app --host 0.0.0.0 --port 8100` |
 | `worker/requirements.txt` | `fastapi==0.104.1`, `uvicorn==0.24.0`, `psutil>=5.9` |
 | `worker/pytest.ini` | `testpaths = tests` |
 | `worker/compose.dev.yml` | overlay that publishes w0..w2 on host ports 18100..18102 for the tools |
@@ -494,7 +566,7 @@ The measured numbers on `master` are listed in
 
 ---
 
-### Tests (`worker/tests/`, 47 tests)
+### Tests (`worker/tests/`, 54 tests)
 
 `conftest.py` provides `hdr(tenant, cls=None)` (request headers), `make_client` (a `TestClient` over a
 fresh app per test with its own data directory and optional config overrides), `client` (50 seed rows)
@@ -505,6 +577,7 @@ and `worker` (the client's `Worker`).
 | `test_isolation.py` | `test_tenant_b_cannot_read_tenant_a_written_key`, `test_same_key_resolves_to_each_tenants_own_row_db_and_cache`, `test_one_sqlite_file_per_tenant`, `test_repository_takes_tenant_only_from_context`, `test_case_variant_of_a_tenant_cannot_reach_its_data`, `test_unknown_tenant_rejected_and_creates_no_file`, `test_store_refuses_unknown_tenant_even_in_context`, `test_bad_tenant_ids_rejected` (5 ids), `test_missing_tenant_is_400_with_cpu_header`, `test_cache_eviction_respects_guaranteed_share`, `test_flooder_evicting_others_is_ledgered`, `test_tenant_var_is_clean_after_request` | data isolation in the database and the cache; the exact allow-list; the fail-closed repository; the cache guaranteed share and eviction ledger |
 | `test_metering.py` | `test_background_job_charged_to_the_writing_tenant`, `test_concurrent_bg_jobs_split_by_tenant`, `test_meters_add_up`, `test_cpu_header_tracks_real_work`, `test_thread_cpu_clock_is_fine_grained`, `test_class_defaults_to_none`, `test_cpu_limit_from_env` | background CPU goes to the right tenant; the sum of CPU headers equals `handler_cpu_ms`; class sums equal request counts; attributed CPU ≤ process CPU; the clock is sub-tick |
 | `test_limits_fault.py` | `test_fault_adds_latency_and_clears`, `test_fault_latency_is_not_charged_as_cpu`, `test_fault_cpu_burn_shows_in_process_cpu_not_tenants`, `test_fault_duration_auto_clears`, `test_fault_requires_admin_token`, `test_body_limit_413`, `test_body_limit_without_content_length`, `test_memory_within_budget_then_507`, `test_memory_budget_is_per_tenant_and_gauged`, `test_endpoints_smoke`, `test_cors_preflight` | fault injection and its auth; body and memory limits; every endpoint; CORS |
+| `test_memory_return.py` | `test_rss_returns_near_baseline_after_heavy_load`, `test_memory_hold_is_released_immediately`, `test_class_meter_is_bounded_per_tenant`, `test_admin_memory_endpoints`, `test_allocator_tuning_platform_behaviour`, `test_sqlite_page_cache_and_wal_are_bounded`, `test_trimmer_thread_runs` (Linux only) | after 4 tenants × 4 × 16 MB concurrent holds and 24 heavy searches, RSS comes back to within 20 MB of baseline; a hold is released at once; the class cap folds into `other` without losing counts and applies per tenant; the admin memory endpoints and their token; tuning on glibc, no-ops elsewhere; the bounded SQLite cache and WAL; the trimmer thread |
 | `test_review_fixes.py` | `test_export_rejected_when_estimate_exceeds_max_request_s`, `test_bg_backlog_caps_per_tenant_and_total`, `test_worker_wide_memory_cap`, `test_unhandled_error_is_500_json_with_cpu_header`, `test_close_waits_for_running_jobs_and_store_rejects_after` | the review findings: bounded export, backlog caps (a 503 writes nothing), worker-wide memory cap, 500 with the CPU header, safe shutdown |
 | `test_blackbox.py` | `test_blackbox_cpu_never_in_tenant_meters`, `test_queue_is_bounded_and_drops_are_counted`, `test_child_is_restarted_after_it_dies`, `test_ingest_endpoint_reports_drops`, `test_fault_req_comes_from_contracts`, `test_config_reads_yaml_worker_keys` | black-box CPU appears only in `blackbox_cpu_ms` and the process tree; queue bound; restart with cumulative CPU; config wiring |
 | `test_calibrate.py` | `test_calibrate_cli_writes_json_to_stdout`, `test_calibrate_fails_cleanly_when_worker_is_down` | runs the real calibration CLI against an in-process worker; a down worker gives a non-zero exit and empty stdout |
@@ -514,6 +587,8 @@ Helpers inside the test files: `wait_for` and the `bb` fixture (`test_blackbox.p
 
 Each core behaviour was also checked by deliberately breaking it (mutation checks), which made the
 matching tests fail:
+- the old `bytearray` holds without allocator tuning, on Linux: RSS stayed 96.9 MB above baseline, with 98 MB of
+  allocator "free" memory and 0 MB trimmable (the RSS test failed);
 - an un-namespaced cache;
 - background CPU charged to the wrong tenant;
 - no fault latency;
@@ -524,3 +599,5 @@ matching tests fail:
   cannot be reached that way (restart of a killed child, closed store).
 - Waits poll with a deadline instead of sleeping a fixed time; the suite passed 10 consecutive full
   runs after this change.
+- The suite runs on Windows (development) and on Linux (54 passed under Python 3.12 / glibc 2.39). The memory test
+  is meaningful only on Linux, which is what the containers run.

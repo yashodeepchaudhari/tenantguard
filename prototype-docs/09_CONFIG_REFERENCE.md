@@ -62,6 +62,8 @@ flowchart LR
 | `max_request_s` | 30 | Any single request must finish within this |
 | `bg_pending.per_tenant` / `.total` | 200 / 1000 | Background backlog caps (503 `bg_backlog`) |
 | `mem_baseline_mb` | 80 | RSS reserved for the process; worker-wide memory cap = `mem_limit_mb` − this |
+| `memory_trim_s` | 30 | Interval of the background `malloc_trim(0)` that returns free heap pages to the OS (glibc only; 0 disables) |
+| `max_classes_per_tenant` | 256 | Distinct request classes metered per tenant; further classes are counted under `other`, so a client cannot grow the meter without bound |
 
 ### `brain`
 | Key | Value | Meaning |
@@ -129,7 +131,8 @@ flowchart LR
 | `SERVER_NAME` | worker (and `gateway/tools/stub_worker.py`) | `stub` / required | The worker's name (`w0`…, `spare`, `quarantine`) |
 | `WORKER_DATA_DIR` | worker | `./data/<server>` (`/data` in Docker) | Per-tenant SQLite directory |
 | `CPU_LIMIT_CORES` | worker | cgroup `cpu.max`, else yaml `worker.cpus` | CPU limit reported for `cpu_pct` |
-| `TENANTGUARD_ADMIN_TOKEN` | worker, `tools/demo.py` | `dev` | `X-Admin-Token` for worker `/admin/fault` (demo fault fallback) |
+| `MALLOC_ARENA_MAX` / `MALLOC_MMAP_THRESHOLD_` | worker image (glibc) | `2` / `131072` (set in `worker/Dockerfile`) | Allocator settings so memory freed by request threads goes back to the OS; the worker also applies them at start with `mallopt`, and the env covers the black-box child process |
+| `TENANTGUARD_ADMIN_TOKEN` | worker, `tools/demo.py` | `dev` | `X-Admin-Token` for worker `/admin/fault` (demo fault fallback) and `/admin/memory` |
 | `TENANTGUARD_LAB_PERSONAS` | lab | `lab/personas.yaml` | Persona file |
 | `TENANTGUARD_LAB_RATE_SCALE` | lab | 1.0 | Multiplies every persona's rate |
 | `TENANTGUARD_LAB_RESULTS` | lab | `lab/results` | Where measured run JSON files are written |
@@ -174,7 +177,7 @@ flowchart LR
 |---|---|---|---|
 | Control token (`TENANTGUARD_CONTROL_TOKEN`) | `X-TenantGuard-Control-Token` | gateway `/admin/*` and `/control/*`; brain `POST /api/operator` (constant-time compare; missing or wrong → 401) | `dev` |
 | Tenant API keys | `X-API-Key` | gateway only; stored as SHA-256; plaintext demo keys are in `layouts/ag23.json` (`tk_A_demo`…) | per layout |
-| Worker admin token (`TENANTGUARD_ADMIN_TOKEN`) | `X-Admin-Token` | worker `/admin/fault` (never reachable through the gateway's path guard) | `dev` |
+| Worker admin token (`TENANTGUARD_ADMIN_TOKEN`) | `X-Admin-Token` | worker `/admin/fault` and `/admin/memory` (never reachable through the gateway's path guard) | `dev` |
 | Partner token (`HANDOFF_PARTNER_TOKEN`) | `X-Handoff-Token` | handoff `POST /control/case-update` and `/cases/update` | unset → inbound updates refused (503) |
 
 Use non-default values for every token outside a closed demo network. Services talk plain HTTP; the design assumes a private network (Tailscale or LAN).
