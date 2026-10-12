@@ -52,7 +52,6 @@ services:
       TENANTGUARD_CONTROL_TOKEN: ${TENANTGUARD_CONTROL_TOKEN:-dev}
       TENANTGUARD_CORS_ORIGINS: ${TENANTGUARD_UI_ORIGINS:-http://127.0.0.1:5173}
       COMPOSE_PROJECT: codeastra
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on: [gateway]
@@ -80,7 +79,6 @@ services:
       TENANTGUARD_ROOT: /app
       TENANTGUARD_BRAIN_URL: http://brain:8200
       TENANTGUARD_CORS_ORIGINS: ${TENANTGUARD_UI_ORIGINS:-http://127.0.0.1:5173}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     depends_on: [brain]
     profiles: ["narrator"]
 

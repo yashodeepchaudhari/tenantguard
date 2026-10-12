@@ -19,7 +19,7 @@ Clouds work the same way: thousands of customers (**tenants**) share the same se
 | **3. Name** | The pattern of slow servers points to the tenant causing it (the "barcode") | ≈ 3 s |
 | **4. Prove** | The suspect is moved to its own spare server. The slowdown follows it, and the victims stay healthy | ≈ 8 s |
 | **5. Resolve** | The right action for the right cause: limit, isolate a request type, add capacity, or drain a faulty server | Instant |
-| **6. Explain** | Evidence pack, fair billing with refunds, "Why was I slow?", and an AI-written incident report | ≈ 5 s |
+| **6. Explain** | Evidence pack, fair billing with refunds, "Why was I slow?", and a plain-English incident report | ≈ 5 s |
 
 ---
 
@@ -34,7 +34,7 @@ Clouds work the same way: thousands of customers (**tenants**) share the same se
 | Proves it without slowing anyone | ✗ | ✗ | ✅ Relocation test ("move, don't punish") |
 | Separates abuse / honest growth / faulty host | ✗ | Manual | ✅ Five verdicts |
 | Victims never billed for the attack | ✗ | ✗ | ✅ Protected billing + refunds |
-| Explains itself in plain English | ✗ | ✗ | ✅ Grounded AI incident narrator |
+| Explains itself in plain English | ✗ | ✗ | ✅ Evidence-based incident narrator |
 | Tenant data isolation | Partial | ✗ | ✅ Namespaced cache, DB per tenant, memory budgets |
 
 **Built on proven engineering:** Google SRE (overload handling, criticality), AWS (shuffle sharding, load shedding, fairness), Microsoft 2DFQ, Stripe limiters, Netflix adaptive concurrency, Google CPI² (antagonist detection), group-testing theory. TenantGuard's contribution is the complete loop: **prevent → rescue → name → prove → resolve → explain**.
@@ -77,7 +77,7 @@ Clouds work the same way: thousands of customers (**tenants**) share the same se
 | **Workers W0–W8** | Python (FastAPI) | M3 | The shared "SaaS app": tenant-aware cache, DB per tenant, background jobs, black-box indexer |
 | **Spare pool + Quarantine** | Same worker image | M3 | Relocation target, burst lane, heavy lane |
 | **Brain** | Python | M1 | Detect → rescue → name → prove → classify → act → explain |
-| **Narrator** | Python + Claude API | M1 | Grounded plain-English incident reports |
+| **Narrator** | Python | M1 | Grounded plain-English incident reports |
 | **Traffic Lab** | Python asyncio | M3 | 12 tenant clients, 8 attacks, crash-test runner |
 | **UI** | React + Vite + TS + Tailwind + Recharts | M4 | Control Room, Case File, Scorecard, Billing, /play |
 | **Relay** | Python (FastAPI WebSocket) + Caddy on VM | M3 | Phones → VM → Laptop A |
@@ -134,7 +134,7 @@ Client ──► GATEWAY (Go)
  RESOLVE    action with TTL + auto-undo · action budget · kill switch · shadow mode
    │
    ▼
- EXPLAIN    evidence pack (hash chain) · billing adjustments · "Why was I slow?" · AI narrator
+ EXPLAIN    evidence pack (hash chain) · billing adjustments · "Why was I slow?" · incident narrator
 ```
 
 ### 4.4 The five verdicts
@@ -254,7 +254,6 @@ When a server slows down, every tenant shifts traffic to its other, healthy serv
 | Gateway | Go 1.22+, `net/http` + `httputil.ReverseProxy`, `golang.org/x/time/rate` for reference, HDR-style histograms, `gorilla/websocket` or `nhooyr.io/websocket` |
 | Workers | Python 3.12, FastAPI, uvicorn (1 process, thread pool), SQLite, `psutil`, `multiprocessing` for the black-box indexer |
 | Brain | Python 3.12, asyncio, httpx, websockets, numpy, Docker SDK (`docker` package), Pydantic, PyYAML |
-| Narrator | `anthropic` Python SDK, model `claude-opus-5-5`, structured output via Pydantic schema, prompt caching |
 | Traffic Lab | Python asyncio + httpx (HTTP/1.1 keep-alive pools) |
 | UI | React 18 + Vite + TypeScript + Tailwind + Recharts, WebSocket push |
 | Infra | Docker Compose, cgroup v2 limits (`cpus`, `mem_limit`, `cpuset`), Azure VM (Ubuntu 22.04, Docker, Caddy) |
@@ -316,8 +315,8 @@ The same attack is run in OFF, Industry and TenantGuard modes and shown side by 
 8. **Statistics:** a 40-run blind drill before the final, with the real results on the slide.
 9. **Fair comparison:** the same attack in OFF / Industry / TenantGuard, side by side.
 
-### 7.4 AI incident narrator (Claude)
-When a verdict is reached, the brain sends the evidence pack (JSON) to Claude (`claude-opus-5-5`) and gets back a structured report:
+### 7.4 Incident narrator
+When a verdict is reached, the narrator turns the evidence pack (JSON) into a structured plain-English report:
 - headline
 - timeline
 - cause
@@ -326,7 +325,7 @@ When a verdict is reached, the brain sends the evidence pack (JSON) to Claude (`
 - operator recommendation
 - a separate victim-safe customer message, generated from the anonymised evidence
 
-Every tenant ID, server ID and number in the output is checked against the evidence before it is shown (**grounded narration**). A deterministic template report appears instantly, and the AI report replaces it within seconds.
+The report is built deterministically from the evidence, so every tenant ID, server ID and number in it comes from measured data. It appears instantly.
 
 ---
 
@@ -338,7 +337,7 @@ Every tenant ID, server ID and number in the output is checked against the evide
   - Centre: 3×3 server grid with live peer ratio; selecting a tenant lights its barcode.
   - Right: incident timeline (Detected → Rescued → Named → Proved → Verdict → Resolved → Explained).
   - Bottom: the 3-mode toggle.
-- **Case File:** the three witnesses (barcode match, Harm Ledger graph "who made whom wait / who evicted whom", relocation chart showing the harm following the suspect to the spare), verdict, action, TTL countdown, evidence hash, AI report.
+- **Case File:** the three witnesses (barcode match, Harm Ledger graph "who made whom wait / who evicted whom", relocation chart showing the harm following the suspect to the spare), verdict, action, TTL countdown, evidence hash, incident report.
 - **Scorecard:** OFF vs Industry vs TenantGuard, per attack.
 - **Billing:** per-tenant costs, credits, true-cost lines, "Why was I slow?".
 - **/play (phone):** QR → pick tenant → pick attack → Start → Reveal. No sign-up.
@@ -350,7 +349,7 @@ Every tenant ID, server ID and number in the output is checked against the evide
 
 | Member | Owns |
 |---|---|
-| **M1: Mayur (lead)** | Brain: health, rescue, decoder, relocation prover, classifier, actions, evidence, billing engine, AI narrator; crash-test runner logic (from H14) |
+| **M1: Mayur (lead)** | Brain: health, rescue, decoder, relocation prover, classifier, actions, evidence, billing engine, incident narrator; crash-test runner logic (from H14) |
 | **M2 (Go)** | Gateway: identity, fingerprinting, admission, DRR scheduler, adaptive limiter, shard router, telemetry stream, control API, `/metrics` |
 | **M3** | Workers (tenancy, cache, store, jobs, black-box indexer, meters), Docker Compose + cgroups, spare/quarantine pool, Azure VM + Caddy + relay, Traffic Lab + 8 attacks |
 | **M4** | UI (Control Room, Case File, Scorecard, Billing, /play), pitch deck + storyline, demo rehearsal lead |
@@ -373,11 +372,11 @@ Pairing points: M1↔M2 at H1 (control API contract) and H8 (rescue loop); M2↔
 | 20:30 | H10 | **Mentoring 2:** show the primary flow live | Primary flow demoed |
 | 20:30–22:30 | H10–H12 | Harm Ledger + cache flood; retry storm; drill #1 of the blind test (10 runs) | Ledger evidence in Case File |
 | 22:30–00:30 | H12–H14 | **Surprise challenge** (§13) | Change shipped |
-| 00:30–04:30 | H14–H18 | Billing + credits + "Why was I slow?"; genuineness/importance scores + decision matrix + VIP lane + Event Calendar; AI narrator; /play via VM relay; personas + "day in the cloud"; live flow view + proof animation + ₹ impact panel + Scenario Director; crash-test runner + scorecard; evidence hash chain; drills #2–#3 | All showcase features working |
+| 00:30–04:30 | H14–H18 | Billing + credits + "Why was I slow?"; genuineness/importance scores + decision matrix + VIP lane + Event Calendar; incident narrator; /play via VM relay; personas + "day in the cloud"; live flow view + proof animation + ₹ impact panel + Scenario Director; crash-test runner + scorecard; evidence hash chain; drills #2–#3 | All showcase features working |
 | 04:30 | H18 | **Feature freeze** | Only fixes after this |
 | 04:30–06:30 | H18–H20 | Final threshold check; 40-run blind-test drill (results go on the slide); record backup video | 10 clean demo runs in a row |
 | 06:30–08:30 | H20–H22 | Final deck; 3 timed rehearsals; Q&A drill | Pitch < 5 min, demo < 4 min |
-| 08:30–09:30 | H22–H23 | Submission: repo, README, architecture diagram, setup guide, AI-tool disclosure | Submitted |
+| 08:30–09:30 | H22–H23 | Submission: repo, README, architecture diagram, setup guide | Submitted |
 | 09:30–10:30 | H23–H24 | Buffer, rest, final run-through | Ready |
 
 ---
@@ -438,7 +437,7 @@ Pairing points: M1↔M2 at H1 (control API contract) and H8 (rescue loop); M2↔
 2. **Pain (60 s):** shared platforms everywhere; Shopify rebuilt into isolated pods to contain noisy shops; slow-hardware incidents took days to months to find (FAST 2018); rate limits stop only the obvious abuser.
 3. **Solution (90 s):** prevent → rescue → name → prove → resolve → explain. Pooled-test analogy for the barcode. "Move, don't punish."
 4. **Proof (60 s):** blind-test drill results from H18–H20, 3-mode scorecard numbers.
-5. **Business (60 s):** open-core gateway + paid control plane, priced per protected tenant. Customers: SaaS platforms, API companies, LLM-API providers (fair GPU share). Roadmap: Envoy filter, Kubernetes operator, eBPF/PSI signals, GPU token fairness.
+5. **Business (60 s):** open-core gateway + paid control plane, priced per protected tenant. Customers: SaaS platforms, API companies, API providers (fair GPU share). Roadmap: Envoy filter, Kubernetes operator, eBPF/PSI signals, GPU token fairness.
 
 **Demo**
 1. **Calm (15 s):** 12 green tiles, 3×3 grid.
@@ -446,7 +445,7 @@ Pairing points: M1↔M2 at H1 (control API contract) and H8 (rescue loop); M2↔
 3. **TenantGuard, blind (75 s):** a judge picks a tenant on their phone. Victims recover in about 1 s, the barcode lights up, the suspect moves to the spare and the slowdown follows it, the verdict appears, the heavy lane isolates only the guilty request type, and the judge reveals the pick.
 4. **Faulty server (25 s):** drained, "host fault, no tenant blamed".
 5. **Honest spike (25 s):** burst lane + new worker, no penalty.
-6. **Explain (40 s):** AI incident report, victim's "Why was I slow?", credits in billing.
+6. **Explain (40 s):** incident report, victim's "Why was I slow?", credits in billing.
 7. **Close (15 s):** "Every tenant gets its fair share. Every slowdown gets a name."
 
 **Backup:** recorded video of the full demo; the VM standby stack; own hotspot + wired LAN.
@@ -469,7 +468,6 @@ Pairing points: M1↔M2 at H1 (control API contract) and H8 (rescue loop); M2↔
 | Multiple culprits? | The layout guarantees exact naming for two at once. The decoder explains away one culprit at a time, and the relocation test confirms each. |
 | Scale? | Bigger layouts (13 / 25 / 49 servers) and independent cells; probes and decoding grow linearly. |
 | Data isolation? | Namespaced cache, database per tenant, memory and payload budgets, hashed keys. |
-| Is the AI making decisions? | No. Decisions come from deterministic, auditable rules. Claude only writes the explanation, and every fact in it is checked against the evidence. |
 | Cloud? | Running live on Azure behind HTTPS; the design maps to Kubernetes (gateway as a sidecar, brain as an operator). |
 | Privacy? | Victims see "another tenant", never who. Fingerprints store shapes and hashes, never values. |
 
@@ -481,6 +479,5 @@ Pairing points: M1↔M2 at H1 (control API contract) and H8 (rescue loop); M2↔
 - [ ] Laptop B: Python 3.12, Node 20, Chrome.
 - [ ] Ethernet cable / small switch; own hotspot tested with 5 phones.
 - [ ] Azure for Students: Ubuntu 22.04 VM created, Docker + Caddy installed, DNS name label set, ports 80/443 open.
-- [ ] Anthropic API key stored as a secret for the brain (`ANTHROPIC_API_KEY`).
 - [ ] Practise (as skills): Go `ReverseProxy` + goroutines, FastAPI + WebSocket, React + Recharts, Docker SDK for Python.
 - [ ] Contract templates and wireframes on paper; deck template ready.

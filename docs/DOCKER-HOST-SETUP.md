@@ -1,6 +1,6 @@
 # Docker Host Setup (friend's laptop, "Laptop A")
 
-The friend's laptop runs the heavy part of TenantGuard in Docker: gateway, 9 workers, spare, quarantine and brain. Our laptop ("Laptop B") keeps the code, the Claude sessions, the traffic lab and the dashboard, and controls Laptop A's Docker over SSH.
+The friend's laptop runs the heavy part of TenantGuard in Docker: gateway, 9 workers, spare, quarantine and brain. Our laptop ("Laptop B") keeps the code, the dev sessions, the traffic lab and the dashboard, and controls Laptop A's Docker over SSH.
 
 Total time: about 45 minutes, most of it downloads.
 

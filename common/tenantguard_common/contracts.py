@@ -511,7 +511,7 @@ class WhyView(BaseModel):
 
 # ---------- 8. Incident narrator (narrator :8700, read-only consumer of the brain) ----------
 class IncidentReport(BaseModel):
-    """Operator-facing report. Every tenant id, server id and number must come from the evidence pack."""
+    """Operator-facing report, built deterministically from the evidence pack."""
     headline: str
     timeline: List[str]               # "HH:MM:SS stage: what happened", oldest first
     cause: str
@@ -531,11 +531,6 @@ class ReportView(BaseModel):
     tenant: Optional[str] = None                  # primary/culprit tenant, if any
     trigger_stage: Stage                          # the stage that produced this version (named | verdict | closed)
     version: int                                  # +1 on every change for this incident
-    source: Literal["template", "ai"]
-    grounded: bool                                # template: always True; ai: passed the grounding check
-    ai_status: Literal["pending", "done", "disabled", "rejected", "error"]
-    ai_detail: str = ""                           # e.g. "ungrounded: number 37.5", "refusal", "no API key"
-    model: Optional[str] = None                   # AI model id when source == "ai"
     report: IncidentReport
     customer_message: CustomerMessage
     evidence: dict                                # the evidence pack this version was built from

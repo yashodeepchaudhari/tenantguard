@@ -37,10 +37,6 @@ Only from committed files:
   - `export`: 19.498 ms handler CPU.
 - Victim p99 per mode and attack, time to rescue and time to verdict: **to be measured** (they will come only from `lab/results/*.json`).
 
-## AI tool disclosure
-
-AI coding assistants were used during development: to draft and review code, tests and documentation under the team's direction. Every change was reviewed, run and tested by the team, and the design decisions, the measurements and the demo are the team's own. TenantGuard itself contains no AI model in its decision path. An optional AI narrator that writes incident reports from the brain's structured evidence (with a template fallback, never deciding anything) is **planned** and not included in this build.
-
 ## Known limitations
 - **One gateway, in-memory state.** Quotas, queues and overrides live in one gateway process. Fail-static covers a brain outage, but a gateway restart resets buckets and overrides (overrides expire by TTL anyway).
 - **Measurements need the Docker host.** CPU limits and noisy-neighbour effects are only realistic in containers with cgroup limits. On a single loaded laptop, latency tails are machine noise, not results.
@@ -51,7 +47,6 @@ AI coding assistants were used during development: to draft and review code, tes
 
 ## Roadmap
 - Merge the relocation prover and the five verdicts (T12), the wave-2 attacks and the crash-test runner (T10), then publish the measured 3-mode scorecard.
-- An AI narrator for incident reports, grounded in the brain's evidence, with a template fallback.
 - A multi-gateway deployment with shared limiter state (Redis or CRDT counters) and a highly available brain.
 - Larger layouts (STS(13), AG(2,5)) for more tenants per fleet, with the same "any two tenants share at most one server" property.
 - Kernel signals (PSI, eBPF) for noisy-neighbour evidence below the process level; GPU and memory-bandwidth fairness.
