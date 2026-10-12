@@ -33,18 +33,18 @@ mix: {light: 0.45, read: 0.30, search: 0.15, write: 0.10}
 
 # id -> persona. Names and tiers come from the layout; these add behaviour and profile.
 personas:
-  A: {rps: 14, sla_p95_ms: 50,  end_users: 2000000, note: "hospital records, steady reads"}
+  A: {rps: 10, sla_p95_ms: 80,  end_users: 900000,  note: "hospital records, steady reads"}
   B: {rps: 10, sla_p95_ms: 80,  end_users: 900000,  mix: {light: 0.35, read: 0.30, search: 0.25, write: 0.10}, note: "catalogue search heavy"}
   C: {rps: 5,  sla_p95_ms: 150, end_users: 40000,   note: "image studio, small free plan"}
   D: {rps: 14, sla_p95_ms: 40,  end_users: 3000000, mix: {light: 0.50, read: 0.25, search: 0.05, write: 0.20}, note: "payments, write heavy"}
   E: {rps: 10, sla_p95_ms: 80,  end_users: 600000,  note: "online classes"}
-  F: {rps: 5,  sla_p95_ms: 150, end_users: 30000,   note: "fitness tracker"}
-  G: {rps: 14, sla_p95_ms: 50,  end_users: 1500000, note: "ride hailing"}
+  F: {rps: 14, sla_p95_ms: 50,  end_users: 1800000, note: "fitness platform, gyms and wearables"}
+  G: {rps: 5,  sla_p95_ms: 150, end_users: 40000,   note: "ride hailing, one-city pilot"}
   H: {rps: 10, sla_p95_ms: 80,  end_users: 300000,  mix: {light: 0.40, read: 0.25, search: 0.10, write: 0.25}, note: "accounting, write heavy"}
   I: {rps: 5,  sla_p95_ms: 150, end_users: 50000,   note: "food delivery"}
   J: {rps: 14, sla_p95_ms: 50,  end_users: 5000000, note: "e-commerce, sale days"}
   K: {rps: 10, sla_p95_ms: 80,  end_users: 250000,  note: "task marketplace, usual culprit in demos"}
-  L: {rps: 5,  sla_p95_ms: 150, end_users: 80000,   mix: {light: 0.40, read: 0.50, search: 0.05, write: 0.05}, note: "news, read heavy"}
+  L: {rps: 14, sla_p95_ms: 50,  end_users: 2500000, mix: {light: 0.40, read: 0.50, search: 0.05, write: 0.05}, note: "news, read heavy"}
 
 # Attack profiles at intensity 1.0 (AttackReq.intensity multiplies the rate / concurrency).
 attacks:
