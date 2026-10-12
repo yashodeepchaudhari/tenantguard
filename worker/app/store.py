@@ -43,6 +43,8 @@ class _Db:
         self.conn = sqlite3.connect(str(path), check_same_thread=False, isolation_level=None)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
+        self.conn.execute("PRAGMA cache_size=-1024")             # 1 MB page cache per tenant connection
+        self.conn.execute("PRAGMA journal_size_limit=4194304")   # truncate the WAL to <= 4 MB after checkpoints
         self.conn.executescript(_SCHEMA)
         self.lock = threading.Lock()
 

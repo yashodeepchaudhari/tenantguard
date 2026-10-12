@@ -36,7 +36,8 @@ from .jobs import BackgroundJobs
 from .jobs import BgBacklog
 from .memory import MB, MemoryBudget, OverBudget
 from .meter import Meters, Usage
-from .stats import ProcessTree, cgroup_cpu_limit, cgroup_mem_limit_mb
+from . import malloc
+from .stats import ProcessTree, cgroup_cpu_limit, cgroup_mem_limit_mb, cgroup_memory
 from .store import TenantStore
 from .tenancy import NO_CLASS, RequestMeter, request_var, tenant_var, valid_tenant
 
@@ -52,7 +53,9 @@ class Worker:
 
     def __init__(self, cfg: WorkerConfig) -> None:
         self.cfg = cfg
-        self.meters = Meters()
+        malloc.tune()                # before any request thread allocates (see malloc.py)
+        self.trimmer = malloc.Trimmer(cfg.memory_trim_s)
+        self.meters = Meters(cfg.max_classes_per_tenant)
         self.known_tenants = frozenset(cfg.tenants)
         self.store = TenantStore(cfg.data_dir, self.meters, cfg.seed_rows, self.known_tenants)
         self.cache = TenantCache(int(cfg.cache_mb * MB), cfg.cache_guaranteed_share)
@@ -101,7 +104,16 @@ class Worker:
             cpu_limit_cores=self.cpu_limit_cores(), mem_mb=round(self.tree.rss_mb(), 2),
             fault=self.fault.current(), tenants=rows, classes=classes)
 
+    def memory_report(self) -> dict:
+        """Where the worker's memory is: process tree RSS, container cgroup, allocator, black box."""
+        return {"server": self.cfg.server, "rss_mb": round(self.tree.rss_mb(), 2),
+                "mem_limit_mb": self.mem_limit_mb(), "cgroup": cgroup_memory(), "allocator": malloc.info(),
+                "trims": self.trimmer.trims, "tenants_held_mb": {t: round(self.memory.used_mb(t), 2)
+                                                                for t in self.cfg.tenants if self.memory.used_mb(t)},
+                "cache_mb": round(self.cache.total_bytes() / MB, 2)}
+
     def close(self) -> None:
+        self.trimmer.close()
         self.fault.clear()
         self.blackbox.close()
         self.jobs.shutdown(timeout=5)  # cancel queued jobs, wait for running ones
@@ -362,6 +374,18 @@ def create_app(cfg: Optional[WorkerConfig] = None) -> FastAPI:
         check_admin(x_admin_token)
         log.warning("fault injected on %s: %s", cfg.server, req)
         return {"server": cfg.server, "fault": w.fault.set(req)}
+
+    @app.get("/admin/memory")
+    def memory_report(x_admin_token: Optional[str] = Header(None)) -> dict:
+        check_admin(x_admin_token)
+        return w.memory_report()
+
+    @app.post("/admin/memory/trim")
+    def memory_trim(x_admin_token: Optional[str] = Header(None)) -> dict:
+        check_admin(x_admin_token)
+        before = w.tree.rss_mb()
+        released = w.trimmer.run()
+        return {"released": released, "rss_before_mb": round(before, 2), **w.memory_report()}
 
     @app.get("/admin/fault")
     def get_fault(x_admin_token: Optional[str] = Header(None)) -> dict:
