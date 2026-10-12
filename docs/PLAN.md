@@ -352,6 +352,45 @@ Build:
 
 Proof: run the mock web + bridge against a recorded event stream (use `brain/tools/fake_gateway.py` + the brain, after asking for the slot) and show a case created → owner change → approve → control command sent.
 
+### T12: Brain prover + verdicts (T3 session, same worktree)
+**You are TASK T12:** when this is finished, TenantGuard doesn't just suspect a culprit, it **proves** it. It moves the suspect to the spare server and checks that the slowdown follows it, then picks the right verdict and the right action.
+
+You own `brain/**`.
+
+Build:
+1. **Prover:** a DockerProver implementing your prover interface.
+   - Size the spare to `spare_sizing × footprint` via the Docker SDK (`container.update(cpu_quota=…)`; containers are named `codeastra-spare-1` etc., use env COMPOSE_PROJECT).
+   - Relocate the suspect (RelocateCmd target spare), wait `prove_settle_s`, measure `prove_window_s`.
+   - R = 1 − post/pre slowdown on its original servers. Confirm when R ≥ recovery_R AND the harm followed (spare p95/peer ratio or cpu rose).
+   - Stage `proving` → `verdict`. NullProver stays the default when Docker is unavailable (env/yaml switch).
+2. **Verdicts:**
+   - costly_pattern: paid share < `paid_share_costly`, or black-box/eviction evidence. Then run a class-level relocation to find the guilty request class and send it to the quarantine (heavy lane) via RelocateCmd with cls.
+   - honest_growth: paid work explains the load → keep it on the spare as a burst lane; no penalty.
+   - over_plan: from admission rejections.
+   - host_fault: from your host suspects, confirmed by drain + idle re-measure (DrainCmd, ≤1 drained server, peers <75% busy).
+   - mitigated_no_blame: below the confidence bar.
+
+   Actions carry TTLs, honour the action budget, and use the repeat-offender memory.
+3. **Fix T9's observation:** tenant L, with all its servers down (fast 502s), was flagged at warn on 16% of dispatch slots with 0% CPU. Failed or 5xx requests must not count as slot usage for the noisy score.
+4. **Bg CPU charge:** each second, send `ChargeCmd` per tenant for its bg_cpu_ms delta (the gateway debits it; tenantguard mode only). charge_id = `<tenant>-<ts>`.
+5. Move decoder weights and health.min_requests/canary_s into yaml: send me exact keys.
+6. Tests: the prover with a fake Docker client (confirm, not-confirm, the culprit pausing mid-test), each verdict, the L false-flag regression, charge.
+
+Proof: unit tests here. The live prover proof runs on the Docker host. When ready, send me the exact commands to run there and I'll run them via the `tg-host` docker context and send you the output.
+
+### T13: UI wave 3, story features (T4 session, same worktree)
+**You are TASK T13:** when this is finished, the dashboard tells the judges the story at a glance: money and customers protected, requests visibly flowing away from a slow server, and the proof animation. It also runs against the real Docker host.
+
+You own `ui/**`.
+
+Build:
+1. **Docker host run:** the full stack is now running on the friend's laptop. Gateway `http://100.112.232.8:8000`, brain `http://100.112.232.8:8200` (Tailscale), control token `dev`. Point `ui/.env` there and run your e2e + screenshots. Only Vite + Edge run on this laptop; no slot needed (CPU-light). Report mismatches.
+2. **₹ impact panel:** revenue protected (victims' `monthly_revenue_rs` × SLO-violation time avoided), customers shielded, innocents penalised (must be 0). Derive it client-side from snapshots/incidents and the layout tenant data (propose a contract field if the brain should own it).
+3. **Live flow view** (canvas): dots travel tenant → server, sampled from snapshot rps. Slow servers turn red and dots visibly shift during the rescue (route weights from gateway `/admin/overrides`).
+4. **Proof animation** in the Case File during the `proving` stage: red "smoke" moves from the suspect's servers to the spare.
+5. **Handoff:** a Cases column showing the bridge's `CaseView` (GET :8400/cases) with owner + pending actions, when the bridge is reachable.
+6. Keep the Control Room on one 1080p screen (a toggle between tiles and the flow view is fine). Tests, e2e, screenshots.
+
 ## Task table
 
 | Task | Branch | Worktree | Session | Status |
@@ -362,9 +401,11 @@ Proof: run the mock web + bridge against a recorded event stream (use `brain/too
 | T2 Workers | task/T2-workers | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged** (9cebaaf) |
 | T6 Workers wave 2 | task/T6-worker-blackbox | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | assigned |
 | T3 Brain | task/T3-brain | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | **merged** |
-| T8 Brain integration + health/rescue/decoder | task/T8-brain-detect | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | in progress |
+| T8 Brain integration + health/rescue/decoder | task/T8-brain-detect | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | **merged** |
+| T12 Brain prover + verdicts | task/T12-brain-prover | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | assigned |
 | T4 UI | task/T4-ui | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | **merged** |
-| T9 UI wave 2 | task/T9-ui-casefile | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | in progress |
+| T9 UI wave 2 | task/T9-ui-casefile | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | **merged** |
+| T13 UI wave 3 (story + Docker-host run) | task/T13-ui-story | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | assigned |
 | T5 Lab | task/T5-lab | D:\yashodeep\codeAstra-T5 | codeastra-t5-79 | **merged** |
 | T10 Lab wave 2 + crash-test | task/T10-lab-crashtest | D:\yashodeep\codeAstra-T5 | codeastra-t5-79 | assigned |
 | Convergence samples | n/a (main dir, docs/convergence/) | main | codeastra-21 | assigned |
@@ -435,4 +476,10 @@ Proof: run the mock web + bridge against a recorded event stream (use `brain/too
   - The bridge assigns `INC-NNNN` case IDs (persisted) next to incident_id.
   - Human release/extend go to the brain as `OperatorCmd` (`POST /api/operator`, T8 adds it) so humans and the ladder never fight. Quarantine approve → gateway BlockCmd, TTL-bound.
   - Severity: warn low, throttle/deprioritize medium, quarantine/blocked high. Default verdict over_plan until the brain emits verdicts.
+- 2026-10-12 (T8, merged):
+  - Server health = median over its tenants of cell p95 (a whale's own slow requests don't count). Canary fallback.
+  - Rescue never moves a named culprit; rescue comes first, and the ladder acts only if harm persists.
+  - `srv-*` incidents for server-level detection.
+  - `POST /api/operator` is live.
+- 2026-10-12 (T9, merged): the brain ends incidents with `closed`, which the UI treats as resolved. TenantView.p95_ms = 0 is shown as "no traffic".
 - 2026-10-12: Cost bucket is debited with the worker-measured CPU (`X-TenantGuard-Cpu-Ms`) rather than an estimate, so it is a real resource quota, not a request count.
