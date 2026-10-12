@@ -31,7 +31,7 @@ Product/design background: `docs/FINAL-PLAN.md` (scope tiers, demo), `enhanced-p
    - brain `8200`, lab `8300`, UI `5173`
 
    Inside Docker every worker listens on `8100`; compose sets `PADOSI_WORKER_URLS`.
-6. **Install the shared package:** `pip install -e <worktree>/common`. Every service also runs without Docker (`uvicorn ... --port N`), because Docker is the deployment, not the only dev path.
+6. **Shared package:** `padosi_common` is installed editable from the main repo (`D:\yashodeep\codeAstra\common`) into the global Python 3.10. Task sessions do not reinstall it. Every service also runs without Docker (`uvicorn ... --port N`), because Docker is the deployment, not the only dev path.
 7. **Tenant identity** comes only from `X-API-Key` at the gateway. Workers trust only `X-Padosi-Tenant` (set by the gateway). Workers report handler CPU per request in the `X-Padosi-Cpu-Ms` response header, and the gateway debits the cost bucket with it.
 8. **Modes:**
    - `off`: FIFO, no limits, static routing.
