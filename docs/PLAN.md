@@ -445,7 +445,7 @@ Build:
 Common rules for every writer:
 - Describe only code that exists on `master` (read it; cite file paths and real function names). Mark unmerged work (T10 lab wave 2, T12 prover/verdicts/calibration, T17 billing) as "in progress", never as done.
 - Numbers only from committed files (`worker/calibration.json`, tests). Diagrams in Mermaid (` ```mermaid `).
-- No mention of any AI, assistant or development tool (PLAN §2.10a). Plain English, but complete.
+- No development-tool mentions (PLAN §2.10a). Plain English, but complete.
 - Function catalog format, per file: `### path/to/file.py`, a 2–4 line purpose paragraph, then a table `| Function / class | Signature | What it does | Called by |` covering EVERY function, method and class (private ones too), then "Key decisions" bullets.
 - Write ONLY your own files below. Commit on your branch with a plain message.
 
@@ -467,7 +467,7 @@ Common rules for every writer:
 | T16 Submission docs | task/T16-submission-docs | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** (re-check after T10/T12) |
 | T22 Prototype docs pack (`prototype-docs/`, 20 files, 6.7k lines) | T22a/b/c + 2b | 4 writers | T1, T2, T4, 2b | **merged** |
 | T23 Handoff tools token + telemetry counter bug + docstring | task/T23-handoff-token-tools | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | assigned |
-| T21 Narrator template-only (user: no AI) | task/T21-narrator-template-only | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** (with coord/no-ai) |
+| T21 Narrator template-only (user decision) | task/T21-narrator-template-only | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** (with coord/no-ai) |
 | T18 Incident narrator service | task/T18-narrator | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** (template-only per user) |
 | T2 Workers | task/T2-workers | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged** (9cebaaf) |
 | T6 Workers wave 2 | task/T6-worker-blackbox | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged** |
