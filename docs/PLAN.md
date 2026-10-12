@@ -457,6 +457,7 @@ Proof: unit tests + a live run against brain + fake_gateway (ask for a slot). Us
 | T2 Workers | task/T2-workers | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged** (9cebaaf) |
 | T6 Workers wave 2 | task/T6-worker-blackbox | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged** |
 | T15 Worker calibration in-container | task/T15-worker-calib | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged**; host calibration committed (fa011b3) |
+| T20 Fixes: handoff bridge + demo driver (T19 review) | task/T20-handoff-demo-fixes | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | assigned (owns integrations/handoff + tools/ for this task) |
 | T17 Fair billing + "Why was I slow?" | task/T17-billing | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **done, merge pending** (tests need coord/layout-balance; merges together with T12) |
 | T3 Brain | task/T3-brain | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | **merged** |
 | T8 Brain integration + health/rescue/decoder | task/T8-brain-detect | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | **merged** |
@@ -554,4 +555,10 @@ Proof: unit tests + a live run against brain + fake_gateway (ask for a slot). Us
     - It breaks one tuned brain test, so T12 merges the branch and adapts the test. The lab personas' rps must follow the new tiers (T10).
   - Cause 2: peer ratios are noisy at low per-tick counts. T12 calibrates on the host.
 - 2026-10-12 (T6, T11 merged): worker isolation allow-list + black-box vendor indexer; handoff bridge (`integrations/handoff`, :8400, compose profile `handoff`).
+- 2026-10-12 (T19 review of handoff + demo): fixed in T20 by the T2 session, which owns `integrations/handoff/` + `tools/` for this task (the T1 session is on T18, in `narrator/`).
+  - Partner updates fail closed: no token configured → 503. Compose keeps an empty default, because a `:?` would break every `compose up`.
+  - Hold actions are deduplicated.
+  - History and cases pruned.
+  - Per-message exception isolation in the bridge.
+  - Demo preflight for attacks the lab can't run; robust cleanup; config-based defaults.
 - 2026-10-12: Cost bucket is debited with the worker-measured CPU (`X-TenantGuard-Cpu-Ms`) rather than an estimate, so it is a real resource quota, not a request count.
