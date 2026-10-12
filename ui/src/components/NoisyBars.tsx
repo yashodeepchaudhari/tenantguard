@@ -34,7 +34,7 @@ export function NoisyBars({ tenants, thresholds }: { tenants: TenantView[]; thre
           )
         })}
       </div>
-      <div className="mt-1 flex gap-3 pl-7 text-xs text-ink-300">
+      <div className="mt-1 flex gap-3 truncate whitespace-nowrap pl-7 text-xs text-ink-300">
         {marks.map((m) => (
           <span key={m.label}>
             <span className="mr-1 inline-block h-2.5 w-px align-middle" style={{ background: m.colour }} />

@@ -7,15 +7,14 @@ import { ImpactPanel } from '../components/ImpactPanel.tsx'
 import { IncidentTimeline } from '../components/IncidentTimeline.tsx'
 import { NoisyBars } from '../components/NoisyBars.tsx'
 import { ServerGrid } from '../components/ServerGrid.tsx'
-import { StatusDot } from '../components/StatusDot.tsx'
+import { StatusBar } from '../components/StatusBar.tsx'
 import { TenantTiles } from '../components/TenantTiles.tsx'
 import { config } from '../config.ts'
 import { useLive } from '../lib/liveContext.ts'
+import { latestByTenant } from '../lib/reason.ts'
 import { noisyThresholds } from '../lib/thresholds.ts'
 import { useBarcodes } from '../lib/useBarcodes.ts'
-import { fairnessStatus, tenantStatus, utilizationStatus, worst } from '../lib/status.ts'
-
-const SENTENCE: Record<string, string> = { ok: 'text-ink-100', warn: 'text-warn', bad: 'text-bad', idle: 'text-ink-300' }
+import { fairnessStatus, utilizationStatus } from '../lib/status.ts'
 
 type View = 'tiles' | 'flow'
 const VIEW_KEY = 'tenantguard.controlRoom.view'
@@ -76,21 +75,21 @@ export function ControlRoom() {
   }
 
   const tenants = snapshot.tenants
-  const overall = worst(tenants.map((t) => tenantStatus(t, config)))
+  const latest = latestByTenant(incidents)
   // Highlight the picked tenant's barcode; otherwise follow the noisiest flagged tenant.
   const flagged = [...tenants].filter((t) => t.level !== 'normal').sort((a, b) => b.noisy_score - a.noisy_score)[0]
   const focus = picked ?? flagged?.tenant ?? null
   const focusName = tenants.find((t) => t.tenant === focus)?.name
 
+  // Fixed panel heights and normal page scroll: nothing is squeezed to fit the window, so nothing
+  // can collapse or overlap whatever the window size (1366x768 and 1920x1080 are tested).
   return (
-    <div className="grid flex-1 grid-cols-12 gap-3 [grid-template-rows:auto_auto_minmax(260px,1fr)_minmax(250px,1fr)] xl:min-h-0 xl:[grid-template-rows:auto_auto_minmax(0,1fr)_minmax(0,1fr)]">
-      {/* status sentence + gauges */}
-      <section className="panel col-span-12 flex items-center gap-6 py-1">
-        <StatusDot status={overall} className="h-5 w-5" />
-        <h1 className={`flex-1 text-3xl font-bold leading-tight ${SENTENCE[overall]}`} data-testid="status-sentence">
-          {snapshot.status_sentence || '—'}
-        </h1>
+    <div className="flex flex-col gap-3" data-testid="control-room">
+      <section className="panel flex h-[92px] shrink-0 items-center gap-4 py-1" data-panel="status">
+        <StatusBar snapshot={snapshot} />
         <ImpactPanel />
+        {/* below 1536 px the gauges' numbers stay readable in the status details line */}
+        <div className="hidden shrink-0 items-center gap-4 2xl:flex" data-testid="gauges">
         <Gauge
           label="Fairness (Jain)"
           value={snapshot.fairness}
@@ -106,50 +105,59 @@ export function ControlRoom() {
           status={utilizationStatus(snapshot.utilization)}
           hint="Share of the w0..w8 CPU limit in use"
         />
+        </div>
         <ViewToggle view={view} onChange={setView} />
       </section>
 
       {view === 'flow' ? (
-        <>
-          <section className="panel col-span-12 row-span-2 min-h-[480px] xl:col-span-9 xl:min-h-0">
+        <div className="grid grid-cols-12 gap-3">
+          <section className="panel col-span-12 h-[560px] xl:col-span-9" data-panel="flow">
             <FlowView snapshot={snapshot} overrides={overrides} barcodes={barcodes} />
           </section>
-          <section className="panel col-span-12 row-span-2 xl:col-span-3">
+          <section className="panel col-span-12 h-[560px] xl:col-span-3" data-panel="noisy">
             <NoisyBars tenants={tenants} thresholds={noisyThresholds(snapshot)} />
           </section>
-        </>
+        </div>
       ) : (
         <>
-          <section className="col-span-12">
-            <TenantTiles tenants={tenants} selected={picked} onSelect={(id) => setPicked((p) => (p === id ? null : id))} />
+          <section data-panel="tiles">
+            <TenantTiles tenants={tenants} latest={latest} selected={picked} onSelect={(id) => setPicked((p) => (p === id ? null : id))} />
+            <p className="mt-1 truncate text-xs text-ink-300" data-testid="legend">
+              <b>p95</b> = the slowest 5 % of responses · <b>THROTTLE</b> = its limits are reduced · <b>fair share</b> = its tier&apos;s portion of the
+              servers it shares · click a tile to see its 3 servers
+            </p>
           </section>
 
-          <section className="panel col-span-12 xl:col-span-5">
-            <P95Chart history={history} tenants={tenants} />
-          </section>
-          <section className="panel col-span-6 xl:col-span-4">
-            <ServerGrid
-              servers={snapshot.servers}
-              highlight={focus ? (barcodes[focus] ?? []) : []}
-              highlightLabel={focus ? `${focus}${focusName ? ` ${focusName}` : ''} · barcode ${(barcodes[focus] ?? []).join(' ')}` : undefined}
-              compact
-            />
-          </section>
-          <section className="panel col-span-6 xl:col-span-3">
-            <NoisyBars tenants={tenants} thresholds={noisyThresholds(snapshot)} />
-          </section>
+          <div className="grid grid-cols-12 gap-3">
+            <section className="panel col-span-12 h-[270px] xl:col-span-5" data-panel="p95">
+              <P95Chart history={history} tenants={tenants} />
+            </section>
+            <section className="panel col-span-6 h-[270px] xl:col-span-4" data-panel="servers">
+              <ServerGrid
+                servers={snapshot.servers}
+                highlight={focus ? (barcodes[focus] ?? []) : []}
+                highlightLabel={focus ? `${focus}${focusName ? ` ${focusName}` : ''} · barcode ${(barcodes[focus] ?? []).join(' ')}` : undefined}
+                compact
+              />
+            </section>
+            <section className="panel col-span-6 h-[270px] xl:col-span-3" data-panel="noisy">
+              <NoisyBars tenants={tenants} thresholds={noisyThresholds(snapshot)} />
+            </section>
+          </div>
         </>
       )}
 
-      <section className="panel col-span-12 min-h-0 xl:col-span-5">
-        <IncidentTimeline events={incidents} />
-      </section>
-      <section className="panel col-span-6 min-h-0 xl:col-span-3">
-        <CpuShareChart history={history} tenants={tenants} />
-      </section>
-      <section className="panel col-span-6 min-h-0 xl:col-span-4">
-        <AttackLauncher />
-      </section>
+      <div className="grid grid-cols-12 gap-3">
+        <section className="panel col-span-12 h-[300px] xl:col-span-5" data-panel="timeline">
+          <IncidentTimeline events={incidents} />
+        </section>
+        <section className="panel col-span-6 h-[300px] xl:col-span-3" data-panel="cpu">
+          <CpuShareChart history={history} tenants={tenants} />
+        </section>
+        <section className="panel col-span-6 h-[300px] xl:col-span-4" data-panel="launcher">
+          <AttackLauncher />
+        </section>
+      </div>
     </div>
   )
 }

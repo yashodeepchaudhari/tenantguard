@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
-import { useBackend, useLive, useNow } from '../lib/liveContext.ts'
-import { DURATION_MAX_S, LAUNCHABLE_ATTACKS, INTENSITY_MAX, INTENSITY_MIN, type AttackName, type AttackReq, type LabStatus } from '../types.ts'
+import { useCallback, useState } from 'react'
+import { useBackend, useLive, useNow, useStore } from '../lib/liveContext.ts'
+import { DURATION_MAX_S, LAUNCHABLE_ATTACKS, INTENSITY_MAX, INTENSITY_MIN, type AttackName, type AttackReq } from '../types.ts'
 
 const FALLBACK_TENANTS = 'ABCDEFGHIJKL'.split('')
 
@@ -14,32 +14,26 @@ const ABOUT: Partial<Record<AttackName, string>> = {
 
 export function AttackLauncher() {
   const backend = useBackend()
-  const { snapshot } = useLive()
+  const store = useStore()
+  const { snapshot, lab, labReachable } = useLive()
   const now = useNow()
   const tenants = snapshot?.tenants.map((t) => t.tenant) ?? FALLBACK_TENANTS
   const [attack, setAttack] = useState<AttackName>('whale')
   const [tenant, setTenant] = useState('K')
   const [intensity, setIntensity] = useState(2)
   const [duration, setDuration] = useState(60)
-  const [lab, setLab] = useState<LabStatus | null>(null)
-  const [labError, setLabError] = useState<string | null>(null)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [busy, setBusy] = useState(false)
 
+  // LiveProvider polls the lab every 2 s; refresh at once after our own launch / stop
   const refresh = useCallback(async () => {
     try {
-      setLab(await backend.labStatus())
-      setLabError(null)
-    } catch (e) {
-      setLabError(e instanceof Error ? e.message : String(e))
+      store.setLab(await backend.labStatus())
+    } catch {
+      store.setLab(null)
     }
-  }, [backend])
-
-  useEffect(() => {
-    refresh()
-    const id = setInterval(refresh, 2000)
-    return () => clearInterval(id)
-  }, [refresh])
+  }, [backend, store])
+  const labError = labReachable === false
 
   const intensityOk = intensity >= INTENSITY_MIN && intensity <= INTENSITY_MAX
   const durationOk = duration > 0 && duration <= DURATION_MAX_S

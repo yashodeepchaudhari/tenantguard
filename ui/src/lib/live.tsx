@@ -33,15 +33,24 @@ export function LiveProvider({ children }: { children: ReactNode }) {
         .overrides()
         .then((o) => !cancelled && store.setOverrides(o))
         .catch(() => !cancelled && store.setOverrides(null))
+    // lab status feeds the scenario badge, the headline and the attack launcher
+    const loadLab = () =>
+      backend
+        .labStatus()
+        .then((l) => !cancelled && store.setLab(l))
+        .catch(() => !cancelled && store.setLab(null))
     loadTenants()
     loadOverrides()
+    loadLab()
     const t1 = setInterval(loadTenants, 30000)
     const t2 = setInterval(loadOverrides, 2000)
+    const t3 = setInterval(loadLab, 2000)
     return () => {
       cancelled = true
       unsub()
       clearInterval(t1)
       clearInterval(t2)
+      clearInterval(t3)
     }
   }, [value])
 
