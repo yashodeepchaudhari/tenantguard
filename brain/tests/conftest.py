@@ -1,8 +1,14 @@
-import pytest
+import os
+from pathlib import Path
 
-from tenantguard_brain import settings
-from tenantguard_brain.core import Brain
-from tenantguard_brain.sim import Simulator
+# test what this checkout contains (yaml + layout), not the main repo the shared package was installed from
+os.environ["TENANTGUARD_ROOT"] = str(Path(__file__).resolve().parents[2])
+
+import pytest  # noqa: E402
+
+from tenantguard_brain import settings  # noqa: E402
+from tenantguard_brain.core import Brain  # noqa: E402
+from tenantguard_brain.sim import Simulator  # noqa: E402
 
 T0 = 1_000_000.0
 
