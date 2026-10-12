@@ -1,18 +1,24 @@
+import { useState } from 'react'
 import { AttackLauncher } from '../components/AttackLauncher.tsx'
 import { CpuShareChart, P95Chart } from '../components/Charts.tsx'
 import { Gauge } from '../components/Gauge.tsx'
 import { IncidentTimeline } from '../components/IncidentTimeline.tsx'
 import { NoisyBars } from '../components/NoisyBars.tsx'
+import { ServerGrid } from '../components/ServerGrid.tsx'
 import { StatusDot } from '../components/StatusDot.tsx'
 import { TenantTiles } from '../components/TenantTiles.tsx'
 import { config } from '../config.ts'
 import { useLive } from '../lib/liveContext.ts'
+import { noisyThresholds } from '../lib/thresholds.ts'
+import { useBarcodes } from '../lib/useBarcodes.ts'
 import { fairnessStatus, tenantStatus, utilizationStatus, worst } from '../lib/status.ts'
 
 const SENTENCE: Record<string, string> = { ok: 'text-ink-100', warn: 'text-warn', bad: 'text-bad', idle: 'text-ink-300' }
 
 export function ControlRoom() {
   const { snapshot, history, incidents, conn } = useLive()
+  const barcodes = useBarcodes()
+  const [picked, setPicked] = useState<string | null>(null)
 
   if (!snapshot) {
     return (
@@ -28,6 +34,10 @@ export function ControlRoom() {
 
   const tenants = snapshot.tenants
   const overall = worst(tenants.map((t) => tenantStatus(t, config)))
+  // Highlight the picked tenant's barcode; otherwise follow the noisiest flagged tenant.
+  const flagged = [...tenants].filter((t) => t.level !== 'normal').sort((a, b) => b.noisy_score - a.noisy_score)[0]
+  const focus = picked ?? flagged?.tenant ?? null
+  const focusName = tenants.find((t) => t.tenant === focus)?.name
 
   return (
     <div className="grid flex-1 grid-cols-12 gap-3 [grid-template-rows:auto_auto_minmax(260px,1fr)_minmax(250px,1fr)] xl:min-h-0 xl:[grid-template-rows:auto_auto_minmax(0,1fr)_minmax(0,1fr)]">
@@ -55,23 +65,31 @@ export function ControlRoom() {
       </section>
 
       <section className="col-span-12">
-        <TenantTiles tenants={tenants} />
+        <TenantTiles tenants={tenants} selected={picked} onSelect={(id) => setPicked((p) => (p === id ? null : id))} />
       </section>
 
-      <section className="panel col-span-12 xl:col-span-6">
+      <section className="panel col-span-12 xl:col-span-5">
         <P95Chart history={history} tenants={tenants} />
       </section>
-      <section className="panel col-span-6 xl:col-span-3">
-        <CpuShareChart history={history} tenants={tenants} />
+      <section className="panel col-span-6 xl:col-span-4">
+        <ServerGrid
+          servers={snapshot.servers}
+          highlight={focus ? (barcodes[focus] ?? []) : []}
+          highlightLabel={focus ? `${focus}${focusName ? ` ${focusName}` : ''} · barcode ${(barcodes[focus] ?? []).join(' ')}` : undefined}
+          compact
+        />
       </section>
       <section className="panel col-span-6 xl:col-span-3">
-        <NoisyBars tenants={tenants} />
+        <NoisyBars tenants={tenants} thresholds={noisyThresholds(snapshot)} />
       </section>
 
-      <section className="panel col-span-12 min-h-0 xl:col-span-8">
+      <section className="panel col-span-12 min-h-0 xl:col-span-5">
         <IncidentTimeline events={incidents} />
       </section>
-      <section className="panel col-span-12 min-h-0 xl:col-span-4">
+      <section className="panel col-span-6 min-h-0 xl:col-span-3">
+        <CpuShareChart history={history} tenants={tenants} />
+      </section>
+      <section className="panel col-span-6 min-h-0 xl:col-span-4">
         <AttackLauncher />
       </section>
     </div>

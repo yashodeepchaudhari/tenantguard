@@ -1,13 +1,13 @@
-import { config } from '../config.ts'
+import type { NoisyThresholds } from '../lib/thresholds.ts'
 import { levelStatus, STATUS_HEX } from '../lib/status.ts'
 import type { TenantView } from '../types.ts'
 
 /** Bars use noisy_norm (0..1); the raw score is printed as text. Bar colour = level status. */
-export function NoisyBars({ tenants }: { tenants: TenantView[] }) {
-  const q = config.noisy.quarantine
+export function NoisyBars({ tenants, thresholds }: { tenants: TenantView[]; thresholds: NoisyThresholds }) {
+  const q = thresholds.quarantine
   const marks = [
-    { at: config.noisy.warn / q, label: `warn ${config.noisy.warn}×`, colour: STATUS_HEX.warn },
-    { at: config.noisy.throttle / q, label: `throttle ${config.noisy.throttle}×`, colour: STATUS_HEX.bad },
+    { at: thresholds.warn / q, label: `warn ${thresholds.warn}×`, colour: STATUS_HEX.warn },
+    { at: thresholds.throttle / q, label: `throttle ${thresholds.throttle}×`, colour: STATUS_HEX.bad },
   ]
   const sorted = [...tenants].sort((a, b) => b.noisy_norm - a.noisy_norm || a.tenant.localeCompare(b.tenant))
   return (

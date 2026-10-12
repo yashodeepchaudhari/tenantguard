@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fairnessStatus, levelStatus, tenantStatus, utilizationStatus, worst } from './status.ts'
+import { fairnessStatus, levelStatus, serverStatus, tenantStatus, utilizationStatus, worst } from './status.ts'
 
 const th = { p95WarnMs: 150, p95BadMs: 400 }
 
@@ -22,6 +22,15 @@ describe('status colours', () => {
 
   it('no traffic is idle (grey), not green', () => {
     expect(tenantStatus({ level: 'normal', p95_ms: 0, rps: 0 }, th)).toBe('idle')
+  })
+
+  it('server cells: slow red, hot amber, drained grey', () => {
+    const sv = { server: 'w1', p95_ms: 10, peer_ratio: 1, cpu_pct: 40, status: 'healthy' as const }
+    expect(serverStatus(sv)).toBe('ok')
+    expect(serverStatus({ ...sv, cpu_pct: 90 })).toBe('warn')
+    expect(serverStatus({ ...sv, status: 'slow' })).toBe('bad')
+    expect(serverStatus({ ...sv, status: 'drained' })).toBe('idle')
+    expect(serverStatus(undefined)).toBe('idle')
   })
 
   it('worst / gauges', () => {

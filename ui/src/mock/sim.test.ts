@@ -40,6 +40,23 @@ describe('mock platform', () => {
     expect(last.tenants.find((x) => x.tenant === 'K')!.factor).toBe(1)
   })
 
+  it('tells the case story once, in order, ending with an explained report', () => {
+    const p = new MockPlatform()
+    let t = 1000
+    const stages: string[] = []
+    let report: Record<string, unknown> | null | undefined = null
+    for (let i = 0; i < 200; i++) {
+      t += 0.5
+      if (i === 20) p.startAttack({ attack: 'whale', tenant: 'K', intensity: 2, duration_s: 40 }, t)
+      for (const e of p.tick(t).incidents) {
+        if (e.stage !== 'level_change') stages.push(e.stage)
+        if (e.stage === 'explained') report = e.report
+      }
+    }
+    expect(stages).toEqual(['detected', 'named', 'proving', 'verdict', 'resolved', 'explained'])
+    expect(report).toMatchObject({ verdict: 'costly_pattern', attacker: 'K' })
+  })
+
   it('never flags an innocent tenant', () => {
     const { p } = run('off')
     for (const [id, s] of p.tenants) if (id !== 'K') expect(s.incident).toBeNull()

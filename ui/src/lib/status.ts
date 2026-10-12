@@ -1,5 +1,5 @@
 // Colour means status. These rules are the only place that decide green / amber / red.
-import type { Level, Mode, TenantView } from '../types.ts'
+import type { Level, Mode, ServerView, TenantView } from '../types.ts'
 
 export type Status = 'ok' | 'warn' | 'bad' | 'idle'
 
@@ -29,6 +29,15 @@ const rank = (s: Status) => RANK[s]
 
 export function worst(statuses: Status[]): Status {
   return statuses.reduce<Status>((a, b) => (rank(b) > rank(a) ? b : a), 'idle')
+}
+
+export const FLEET = ['w0', 'w1', 'w2', 'w3', 'w4', 'w5', 'w6', 'w7', 'w8']
+
+/** Server cell: slow = red, CPU >= 85 % = amber, drained = grey (hatched in the grid). */
+export function serverStatus(s: ServerView | undefined): Status {
+  if (!s || s.status === 'drained') return 'idle'
+  if (s.status === 'slow') return 'bad'
+  return s.cpu_pct >= 85 ? 'warn' : 'ok'
 }
 
 /** Jain fairness: >= 0.9 good, >= 0.75 fair, else bad. */

@@ -2,6 +2,7 @@
 // Enabled with VITE_MOCK=1 (npm run dev:mock) or ?mock=1.
 import { ApiError, type Backend, type ConnState } from '../lib/backend.ts'
 import type { BrainMessage, IncidentEvent } from '../types.ts'
+import { RESULTS_FIXTURE } from './results.ts'
 import { MockPlatform, SimError } from './sim.ts'
 
 const TICK_MS = 500 // brain broadcasts StateSnapshot at 2 Hz
@@ -60,6 +61,8 @@ export function createMockBackend(opts: { script?: boolean } = {}): Backend {
       }
     },
     incidents: () => call(() => history.slice()),
+    incident: (id) => call(() => history.filter((e) => e.incident_id === id).sort((a, b) => a.ts - b.ts)),
+    results: () => call(() => RESULTS_FIXTURE),
     getMode: () => call(() => sim.mode),
     setMode: (mode) => call(() => sim.setMode(mode).mode),
     tenants: () => call(() => sim.tenantsAdmin()),

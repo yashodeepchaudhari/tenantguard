@@ -7,6 +7,7 @@
 // Then point ui/.env at it: VITE_BRAIN_URL=http://127.0.0.1:18200 etc. Requires Node >= 23.6.
 import http from 'node:http'
 import { WebSocketServer } from 'ws'
+import { RESULTS_FIXTURE } from '../src/mock/results.ts'
 import { MockPlatform, SimError } from '../src/mock/sim.ts'
 
 const arg = (name, def) => {
@@ -27,7 +28,7 @@ function send(res, status, body) {
     'Content-Type': 'application/json',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type, X-TenantGuard-Control-Token',
   })
   res.end(body === undefined ? '' : JSON.stringify(body))
 }
@@ -46,17 +47,22 @@ function readJson(req) {
   })
 }
 
-function serve(name, port, routes) {
+const CONTROL_TOKEN = process.env.TENANTGUARD_CONTROL_TOKEN || 'dev'
+
+function serve(name, port, routes, { needsToken = false } = {}) {
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x')
     console.log(`${name} ${req.method} ${url.pathname}`)
     if (req.method === 'OPTIONS') return send(res, 204)
+    if (needsToken && req.headers['x-tenantguard-control-token'] !== CONTROL_TOKEN) {
+      return send(res, 401, { detail: 'missing or wrong X-TenantGuard-Control-Token' })
+    }
     for (const [method, re, fn] of routes) {
       const m = req.method === method && url.pathname.match(re)
       if (!m) continue
       try {
         const body = method === 'GET' || method === 'DELETE' ? undefined : await readJson(req)
-        return send(res, 200, await fn(m, body))
+        return send(res, 200, await fn(m, body, url))
       } catch (e) {
         if (e instanceof SimError) return send(res, e.status, { detail: e.message })
         console.error(e)
@@ -72,7 +78,16 @@ function serve(name, port, routes) {
 // ---- brain ----
 const brain = serve('brain', PORTS.brain, [
   ['GET', /^\/api\/state$/, () => latest],
-  ['GET', /^\/api\/incidents$/, () => incidents.slice(-200)],
+  [
+    'GET',
+    /^\/api\/incidents$/,
+    (_m, _b, url) => {
+      const id = url.searchParams.get('incident_id')
+      const tenant = url.searchParams.get('tenant')
+      const limit = Number(url.searchParams.get('limit') || 200)
+      return incidents.filter((e) => (!id || e.incident_id === id) && (!tenant || e.tenant === tenant)).slice(-limit)
+    },
+  ],
   ['GET', /^\/healthz$/, () => ({ ok: true })],
 ])
 const wss = new WebSocketServer({ server: brain, path: '/ws/events' })
@@ -89,13 +104,14 @@ serve('gateway', PORTS.gateway, [
   ['GET', /^\/admin\/tenants\/([^/]+)$/, (m) => sim.adminView(decodeURIComponent(m[1]))],
   ['PATCH', /^\/admin\/tenants\/([^/]+)\/quota$/, (m, b) => sim.patchQuota(decodeURIComponent(m[1]), b)],
   ['GET', /^\/admin\/overrides$/, () => sim.overrides(now())],
-])
+], { needsToken: true })
 
 // ---- lab ----
 serve('lab', PORTS.lab, [
   ['GET', /^\/lab\/status$/, () => sim.labStatus(now())],
   ['POST', /^\/lab\/attack$/, (_m, b) => sim.startAttack(b, now())],
   ['DELETE', /^\/lab\/attack\/([^/]+)$/, (m) => sim.stopAttack(decodeURIComponent(m[1]), now())],
+  ['GET', /^\/lab\/results$/, () => RESULTS_FIXTURE],
 ])
 
 // ---- 2 Hz tick ----
