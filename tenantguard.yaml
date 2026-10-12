@@ -49,6 +49,7 @@ worker:
   cache_guaranteed_share: 0.125   # per-tenant guaranteed slice of the cache
   bg_threads: 4
   seed_rows: 1000
+  blackbox: {cpu_ms_per_doc: 2.0, queue_max: 5000}   # "vendor indexer": CPU not attributed to any tenant
 
 brain:
   tick_ms: 250
