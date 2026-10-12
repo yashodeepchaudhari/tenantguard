@@ -32,6 +32,8 @@ class Fake:
             body = json.loads(req.content)
             if body["attack"] in self.unavailable:
                 return httpx.Response(501, json={"detail": "ships in Wave 2"})
+            if body.get("tenant") == demo.PROBE:                     # like the real lab: unknown tenant
+                return httpx.Response(404, json={"detail": "unknown tenant"})
             if self.attack_status != 200:
                 return httpx.Response(self.attack_status, text="boom")
             self.n += 1
@@ -59,7 +61,8 @@ class Fake:
                 out.append(("mode", json.loads(r.content)["mode"]))
             elif r.url.path == "/lab/attack":
                 b = json.loads(r.content)
-                out.append(("attack", b["attack"], b["duration_s"]))
+                if b.get("tenant") != demo.PROBE:                     # preflight probes are not attacks
+                    out.append(("attack", b["attack"], b["duration_s"]))
             elif r.method == "DELETE":
                 out.append(("stop",))
         return out
@@ -122,8 +125,9 @@ def test_unshipped_attack_falls_back_to_whale():
     fake = Fake(unavailable={"blackbox_bomb"})
     d, _, lines = make(fake)
     d.run([s for s in demo.plan() if s.key in ("calm", "tenantguard")])
-    assert [x[1] for x in fake.seq() if x[0] == "attack"] == ["blackbox_bomb", "whale"]
-    assert any("using whale" in l for l in lines)
+    # the preflight already knows: no failed launch, straight to the fallback
+    assert [x[1] for x in fake.seq() if x[0] == "attack"] == ["whale"]
+    assert any("uses whale" in l for l in lines)
 
 
 def test_failed_attack_does_not_abort_the_demo():
@@ -186,6 +190,9 @@ def test_main_only_and_speed_in_dry_run(capsys):
     assert demo.main(["--dry-run", "--only", "faulty", "--speed", "0.5"]) == 0
     out = capsys.readouterr().out
     assert "[1/2] Calm (8 s)" in out and "[2/2] Faulty server (10 s)" in out
-    assert "100.112.232.8" in out
+    from tenantguard_common.config import load_settings
+    svc = load_settings()["services"]
+    assert svc["gateway"] in out and svc["lab"] in out
+    assert "100.112.232.8" not in open(demo.__file__, encoding="utf-8").read()
     with pytest.raises(SystemExit):
         demo.main(["--dry-run", "--only", "nope"])

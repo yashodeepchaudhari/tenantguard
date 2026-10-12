@@ -23,6 +23,7 @@ log = logging.getLogger("tenantguard.handoff")
 
 RECONNECT_START_S = 0.5
 RECONNECT_MAX_S = 10.0
+STABLE_CONNECTION_S = 10.0     # backoff resets only after a connection lived this long
 
 
 class Bridge:
@@ -37,6 +38,9 @@ class Bridge:
         self.mode: Optional[str] = None
         self.brain_connected = False
         self.events_seen = 0
+        self.bad_messages = 0
+        self.last_bad: Optional[str] = None
+        self.reconnects = 0
         self.last_event_at: Optional[float] = None
         self._tasks: List[asyncio.Task] = []
 
@@ -80,6 +84,16 @@ class Bridge:
     def push(self, case_id: str) -> None:
         self.outbox.put(case_id, self.book.version(case_id), self.book.to_wire(case_id).model_dump())
 
+    def ingest_safe(self, raw) -> Optional[str]:
+        """One raw WS frame. Never raises: a bad or poison message is counted and skipped, the stream stays up."""
+        try:
+            return self.ingest(json.loads(raw))
+        except Exception as e:              # noqa: BLE001 - isolation is the point
+            self.bad_messages += 1
+            self.last_bad = f"{type(e).__name__}: {str(e)[:160]}"
+            log.warning("skipped brain message: %s", self.last_bad)
+            return None
+
     def ingest(self, msg: dict, now: Optional[float] = None) -> Optional[str]:
         """One brain message (IncidentEvent or StateSnapshot). Never raises on bad input."""
         now = time.time() if now is None else now
@@ -108,28 +122,35 @@ class Bridge:
         url = self.s.brain_url.replace("http", "ws", 1).rstrip("/") + "/ws/events"
         backoff = RECONNECT_START_S
         while True:
+            connected_at = None
             try:
                 async with websockets.connect(url, open_timeout=5, ping_interval=20) as ws:
                     self.brain_connected = True
-                    backoff = RECONNECT_START_S
+                    connected_at = time.monotonic()
                     async for raw in ws:
-                        try:
-                            self.ingest(json.loads(raw))
-                        except ValueError:
-                            continue
+                        self.ingest_safe(raw)
             except asyncio.CancelledError:
                 raise
             except Exception as e:          # brain down / restarting: keep trying, never crash
                 log.info("brain stream unavailable (%s); retrying in %.1fs", type(e).__name__, backoff)
             self.brain_connected = False
+            self.reconnects += 1
+            backoff = next_backoff(backoff, connected_at, time.monotonic())
             await asyncio.sleep(backoff)
-            backoff = min(RECONNECT_MAX_S, backoff * 2)
 
     async def _ticker(self) -> None:
         while True:
             await asyncio.sleep(1.0)
-            for cid in self.book.expire(time.time()):
-                self.push(cid)
+            self.tick(time.time())
+
+    def tick(self, now: float) -> None:
+        for cid in self.book.expire(now):
+            self.push(cid)
+        gone = self.book.evict(now)
+        for cid in gone:
+            self.outbox.forget(cid)
+        if gone:
+            self._save_ids()
 
     # ----- inbound -----
     async def case_update(self, body: dict) -> dict:
@@ -170,7 +191,16 @@ class Bridge:
 
     def health(self) -> dict:
         return {"ok": True, "brain_connected": self.brain_connected, "mode": self.mode,
-                "events_seen": self.events_seen, "cases": len(self.book.cases),
+                "events_seen": self.events_seen, "bad_messages": self.bad_messages, "last_bad": self.last_bad,
+                "reconnects": self.reconnects, "cases": len(self.book.cases),
                 "outbox": {**self.outbox.stats, "pending": len(self.outbox.pending),
                            "last_error": self.outbox.last_error},
                 "web_url": self.s.web_url}
+
+
+def next_backoff(backoff: float, connected_at: Optional[float], now: float) -> float:
+    """Reconnect delay. A connection that lived STABLE_CONNECTION_S resets it; a short one (connect, then a
+    crash or close) keeps doubling it, so a poison stream cannot turn into a reconnect storm."""
+    if connected_at is not None and now - connected_at >= STABLE_CONNECTION_S:
+        return RECONNECT_START_S
+    return min(RECONNECT_MAX_S, backoff * 2)

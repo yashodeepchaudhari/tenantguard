@@ -24,6 +24,10 @@ class HandoffSettings:
     ttl_throttle_s: float = 60.0
     ttl_quarantine_s: float = 120.0
     confidence_to_name: float = 0.6
+    retention_s: float = 3600.0          # closed/resolved cases are evicted this long after they close
+    history_wire_max: int = 50           # history items sent to the partner per case (+ "N earlier events")
+    history_keep: int = 500              # history items kept per case in memory
+    id_map_max: int = 2000               # incident_id -> case_id entries kept (and persisted)
     cors_origins: list = field(default_factory=lambda: ["http://127.0.0.1:5173", "http://localhost:5173"])
 
     @classmethod
@@ -49,5 +53,7 @@ class HandoffSettings:
             ttl_throttle_s=float(ttl.get("throttle", 60)),
             ttl_quarantine_s=float(ttl.get("quarantine", 120)),
             confidence_to_name=float((s.get("brain") or {}).get("confidence_to_prove", 0.6)),
+            retention_s=float(h.get("retention_s", 3600)),
+            history_wire_max=int(h.get("history_wire_max", 50)),
             cors_origins=[o.strip() for o in cors.split(",") if o.strip()],
         )

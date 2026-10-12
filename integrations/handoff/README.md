@@ -26,7 +26,7 @@ Env:
 - `TENANTGUARD_CONTROL_TOKEN`: sent on every control call.
 - `TENANTGUARD_UI_URL`: used for `evidence_link`; default `http://127.0.0.1:5173`.
 - `HANDOFF_STATE_PATH`: case-id persistence; default `data/handoff-state.json`.
-- `HANDOFF_PARTNER_TOKEN`: if set, inbound updates need `X-Handoff-Token`.
+- `HANDOFF_PARTNER_TOKEN`: REQUIRED for inbound updates. Without it every `/control/case-update` and `/cases/update` returns 503 (fail closed: an update can make the bridge send control commands); a missing or wrong `X-Handoff-Token` returns 401.
 
 Yaml `handoff`: `decision_window_s`, `block_s`, `extend_s`, `push_timeout_s`. The bridge also reads `brain.ttl_s` and `gateway.ttl_max_s`.
 
@@ -39,6 +39,7 @@ Yaml `handoff`: `decision_window_s`, `block_s`, `extend_s`, `push_timeout_s`. Th
 | Brain event | Case |
 |---|---|
 | any stage | history line `"<Stage>: <detail>"`; `summary` = latest detail; replays (WS reconnect backfill) are ignored |
+| hold level again (renewal, recovery step, operator echo) | refreshes a pending hold; a new hold/block request appears only when the tenant escalates (enters a hold level, or a higher one) |
 | first event | new case: title, verdict `over_plan` (until the brain sends one), `affected` = barcode neighbours (tenants sharing a server) |
 | level throttle / deprioritize / quarantine | severity medium / medium / high (never lowered). Pending **hold** action: "auto-reverts at HH:MM:SS: extend or release?", deadline = `brain.ttl_s` |
 | level quarantine | an extra pending **block** action: "approve blocking for `block_s`", deadline = `decision_window_s` |
@@ -71,3 +72,8 @@ Yaml `handoff`: `decision_window_s`, `block_s`, `extend_s`, `push_timeout_s`. Th
 
 ## API
 `GET /healthz`, `GET /cases`, `GET /cases/{id}` (`CaseView`), `GET /cases/{id}/wire` (exactly what the Web app receives), `POST /control/case-update` (alias `POST /cases/update`).
+
+## Limits
+- Partner payload: the last `handoff.history_wire_max` (50) history items plus one "N earlier events" line; memory keeps 500 per case.
+- Closed/resolved cases are evicted `handoff.retention_s` (3600 s) after they close; their incidents are retired, so a WS backfill cannot resurrect them. The incident -> case id map is capped (2000).
+- A brain message that fails to parse or apply is skipped and counted (`/healthz` `bad_messages`, `last_bad`); the stream stays up. Reconnect backoff (0.5 -> 10 s) resets only after a connection lived 10 s.

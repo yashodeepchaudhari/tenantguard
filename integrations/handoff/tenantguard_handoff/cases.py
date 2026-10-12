@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -23,6 +24,7 @@ SEVERITY = {"normal": "low", "warn": "low", "throttle": "medium", "deprioritize"
 SEV_RANK = {"low": 0, "medium": 1, "high": 2}
 VERDICTS = set(wire.Verdict.__args__)  # type: ignore[attr-defined]
 HOLD_LEVELS = ("throttle", "deprioritize", "quarantine", "blocked")
+HOLD_RANK = {lvl: i for i, lvl in enumerate(HOLD_LEVELS)}
 STAGE_TEXT = {"detected": "Detected", "level_change": "Level", "rescued": "Victims rescued", "named": "Named",
               "proving": "Proving", "verdict": "Verdict", "resolved": "Resolved", "explained": "Explained",
               "closed": "Closed"}
@@ -50,6 +52,8 @@ class _Case:
     level: str = "normal"
     block_applied: bool = False
     seen: set = field(default_factory=set)                   # (stage, ts) of events already applied
+    closed_at: Optional[float] = None                        # first resolved/closed time (eviction clock)
+    dropped: int = 0                                          # history items dropped from memory (history_keep)
 
 
 class DecisionError(Exception):
@@ -64,8 +68,9 @@ class CaseBook:
         self.s = settings
         self.tenants = {t.id: t for t in tenants}
         self.next_seq = next_seq
-        self.by_incident: Dict[str, str] = dict(id_map or {})
+        self.by_incident: "OrderedDict[str, str]" = OrderedDict(id_map or {})
         self.cases: Dict[str, _Case] = {}
+        self.retired: "OrderedDict[str, None]" = OrderedDict()  # evicted incidents: replays are ignored
 
     # ----- helpers -----
     def _name(self, tenant: Optional[str]) -> str:
@@ -81,7 +86,12 @@ class CaseBook:
         return sorted(t.id for t in self.tenants.values() if t.id != me.id and mine & set(t.servers))
 
     def _history(self, c: _Case, now: float, text: str) -> None:
-        c.view.history.append(CaseHistoryItem(at=now, time_ist=ist(now), event=text))
+        h = c.view.history
+        h.append(CaseHistoryItem(at=now, time_ist=ist(now), event=text))
+        extra = len(h) - self.s.history_keep
+        if extra > 0:
+            del h[:extra]
+            c.dropped += extra
 
     def _touch(self, c: _Case, now: float) -> None:
         v = c.view
@@ -100,6 +110,24 @@ class CaseBook:
     def _pending(self, c: _Case, kind: str) -> Optional[CaseAction]:
         return next((a for a in c.view.actions if a.state == "pending" and c.kinds.get(a.action_id) == kind), None)
 
+    def _active_hold(self, c: _Case) -> Optional[CaseAction]:
+        """A hold the on-call still has to decide (pending) or already put in force (extended)."""
+        return next((a for a in c.view.actions
+                     if c.kinds.get(a.action_id) == "hold" and a.state in ("pending", "extended")), None)
+
+    @staticmethod
+    def _escalated(prev: str, level: str) -> bool:
+        """Entering a hold level, or going up between hold levels (renewals and recovery steps are not)."""
+        return prev not in HOLD_RANK or HOLD_RANK[level] > HOLD_RANK[prev]
+
+    def _cap_id_map(self) -> None:
+        live = set(self.cases)
+        for iid in list(self.by_incident):
+            if len(self.by_incident) <= self.s.id_map_max:
+                break
+            if self.by_incident[iid] not in live:
+                del self.by_incident[iid]
+
     def get(self, case_id: str) -> Optional[CaseView]:
         c = self.cases.get(case_id)
         return c.view if c else None
@@ -110,6 +138,8 @@ class CaseBook:
     # ----- brain -> case -----
     def on_event(self, ev: IncidentEvent, now: float) -> Optional[str]:
         """Apply one incident event; returns the case_id if the case changed."""
+        if ev.incident_id in self.retired:
+            return None                                   # evicted case: a WS backfill must not resurrect it
         case_id = self.by_incident.get(ev.incident_id)
         c = self.cases.get(case_id) if case_id else None
         if c is None:
@@ -117,6 +147,7 @@ class CaseBook:
                 case_id = f"INC-{self.next_seq:04d}"
                 self.next_seq += 1
                 self.by_incident[ev.incident_id] = case_id
+                self._cap_id_map()
             name = self._name(ev.tenant)
             server_incident = not ev.tenant
             title = (f"Servers slower than their peers: {_first_sentence(ev.detail)}" if server_incident
@@ -149,22 +180,26 @@ class CaseBook:
             self._on_named(c, ev, now)
 
         if ev.level:
-            c.level = ev.level
+            prev, c.level = c.level, ev.level
             sev = SEVERITY.get(ev.level, "low")
             if SEV_RANK[sev] > SEV_RANK[v.severity]:
                 v.severity = sev
-            self._on_level(c, ev.level, name, now)
+            self._on_level(c, ev.level, prev, name, now)
 
         if ev.stage == "resolved":
             self._expire_all(c, now, "incident resolved by TenantGuard")
             v.status = "resolved"
+            c.closed_at = c.closed_at or now
         elif ev.stage == "closed":
             self._expire_all(c, now, "incident closed")
             v.status = "closed"
+            c.closed_at = c.closed_at or now
         self._touch(c, now)
         return case_id
 
-    def _on_level(self, c: _Case, level: str, name: str, now: float) -> None:
+    def _on_level(self, c: _Case, level: str, prev: str, name: str, now: float) -> None:
+        """New decision requests only when the tenant escalates. The brain re-emits the current level on every
+        ladder step, recovery step and operator echo; those only refresh a pending hold, never add one."""
         hold = self._pending(c, "hold")
         if level in HOLD_LEVELS:
             ttl = self.s.ttl_quarantine_s if level in ("quarantine", "blocked") else self.s.ttl_throttle_s
@@ -173,9 +208,10 @@ class CaseBook:
                     f"renewed. Extend (hold it {self.s.extend_s:.0f} s longer) or release (back to its full plan)?")
             if hold:
                 hold.text, hold.deadline_at, hold.deadline_ist = text, deadline, ist(deadline)
-            else:
+            elif self._active_hold(c) is None and self._escalated(prev, level):
                 self._new_action(c, "hold", text, deadline)
-            if level == "quarantine" and not self._pending(c, "block") and not c.block_applied:
+            if (level == "quarantine" and prev != "quarantine" and not self._pending(c, "block")
+                    and not c.block_applied):
                 d = now + self.s.decision_window_s
                 self._new_action(c, "block", f"Approve blocking {name} entirely for {self.s.block_s:.0f} s "
                                              f"(TTL-bound, auto-undo). Reject keeps the quarantine limits only.", d)
@@ -207,6 +243,21 @@ class CaseBook:
             if a.state == "pending":
                 a.state = "expired"
                 self._history(c, now, f"{a.action_id} closed without a decision: {why}")
+
+    # ----- retention -----
+    def evict(self, now: float) -> List[str]:
+        """Drop cases closed/resolved more than retention_s ago; their incidents are retired (replays ignored)."""
+        gone = [cid for cid, c in self.cases.items()
+                if c.closed_at is not None and c.view.status in ("resolved", "closed")
+                and now - c.closed_at >= self.s.retention_s]
+        for cid in gone:
+            c = self.cases.pop(cid)
+            self.retired[c.view.incident_id] = None
+            while len(self.retired) > self.s.id_map_max:
+                self.retired.popitem(last=False)
+        if gone:
+            self._cap_id_map()
+        return gone
 
     # ----- deadlines -----
     def expire(self, now: float) -> List[str]:
@@ -330,7 +381,13 @@ class CaseBook:
 
     # ----- internal -> wire -----
     def to_wire(self, case_id: str) -> wire.Case:
-        v = self.cases[case_id].view
+        c = self.cases[case_id]
+        v = c.view
+        keep = max(1, self.s.history_wire_max)
+        hidden = c.dropped + max(0, len(v.history) - keep)
+        history = [wire.HistoryItem(time=h.time_ist, event=h.event) for h in v.history[-keep:]]
+        if hidden:
+            history.insert(0, wire.HistoryItem(time=ist(v.created_at), event=f"{hidden} earlier events"))
         return wire.Case(
             case_id=v.case_id, title=v.title, severity=v.severity, status=v.status,
             context=wire.CaseContext(
@@ -339,7 +396,7 @@ class CaseBook:
                 evidence_link=v.context.evidence_link, summary=v.context.summary),
             pending_actions=[wire.PendingAction(action_id=a.action_id, text=a.text, deadline=a.deadline_ist)
                              for a in v.actions if a.state == "pending"],
-            history=[wire.HistoryItem(time=h.time_ist, event=h.event) for h in v.history])
+            history=history)
 
     # ----- persistence of ids (cases themselves are rebuilt from the brain stream) -----
     def id_state(self) -> dict:

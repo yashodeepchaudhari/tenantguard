@@ -5,11 +5,14 @@
     python tools/demo.py --step                    # wait for Enter before each step (live narration)
     python tools/demo.py --only tenantguard        # run a single step (after calm)
 
-Targets come from env: TENANTGUARD_GATEWAY_URL, TENANTGUARD_BRAIN_URL, TENANTGUARD_LAB_URL
-(default http://100.112.232.8:{8000,8200,8300}), TENANTGUARD_CONTROL_TOKEN (default "dev").
+Targets come from env TENANTGUARD_GATEWAY_URL, TENANTGUARD_BRAIN_URL, TENANTGUARD_LAB_URL, else tenantguard.yaml
+`services`; workers from TENANTGUARD_WORKER_URLS / `workers`. TENANTGUARD_CONTROL_TOKEN (default "dev"),
+TENANTGUARD_ADMIN_TOKEN (worker fault fallback, default "dev").
 Only HTTP APIs are used: gateway POST /admin/mode, lab /lab/calm/start, /lab/attack, /lab/attacks, /lab/metrics,
-/lab/results, brain /api/state, /api/incidents. On exit (normal, error or Ctrl-C) every attack is stopped and the
-mode is set back to tenantguard.
+/lab/results, brain /api/state, /api/incidents, and (fallback only) worker /admin/fault.
+Before the show a preflight asks the lab which attacks it can run (without starting any); a step whose attack is
+not available is announced with a banner and skipped. On exit (normal, error or Ctrl-C) every attack and fault is
+stopped and the mode is set back to tenantguard.
 """
 from __future__ import annotations
 
@@ -22,8 +25,11 @@ from typing import Callable, Dict, List, Optional
 
 import httpx
 
-HOST = "100.112.232.8"
-H_CONTROL_TOKEN = "X-TenantGuard-Control-Token"     # same value as tenantguard_common.contracts.H_CONTROL_TOKEN
+from tenantguard_common.config import load_settings, worker_urls
+from tenantguard_common.contracts import H_CONTROL_TOKEN
+
+PROBE = "__probe__"                 # an id no lab knows: the lab answers 501 (not shipped) or 4xx, never starts it
+FAULT = {"latency_ms": 150.0, "cpu_burn_pct": 30.0}   # worker /admin/fault fallback for faulty_server
 
 
 @dataclass
@@ -92,13 +98,19 @@ class Demo:
     def __init__(self, gateway: str, brain: str, lab: str, token: str, client: Optional[httpx.Client] = None,
                  sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
                  out: Callable[[str], None] = print, tick_s: float = 5.0, dry_run: bool = False,
-                 wait_enter: Optional[Callable[[str], None]] = None):
+                 wait_enter: Optional[Callable[[str], None]] = None, workers: Optional[Dict[str, str]] = None,
+                 admin_token: str = "dev"):
         self.gw, self.brain, self.lab = gateway.rstrip("/"), brain.rstrip("/"), lab.rstrip("/")
-        self.token = token
+        self.token, self.admin_token = token, admin_token
+        self.workers = {k: v.rstrip("/") for k, v in (workers or {}).items()}
         self.http = client or httpx.Client(timeout=5.0)
         self.sleep, self.clock, self.out = sleep, clock, out
         self.tick_s, self.dry_run, self.wait_enter = tick_s, dry_run, wait_enter
         self.started: List[str] = []           # attack ids we launched (stopped on exit)
+        self.faults: List[str] = []            # worker URLs we put a fault on (cleared on exit)
+        self.available: Dict[str, bool] = {}   # attack -> the lab can run it (preflight)
+        self.fault_urls: Dict[str, str] = {}   # server -> reachable worker URL (faulty_server fallback)
+        self.skipped: Dict[str, str] = {}      # step key -> why it is skipped
         self.seen_incident_keys: set = set()
 
     # ----- HTTP (every call goes through here, so --dry-run can print instead) -----
@@ -118,9 +130,63 @@ class Demo:
         if r is not None and r.status_code != 200:
             self.out(f"      ! mode {mode}: HTTP {r.status_code}")
 
+    # ----- preflight: what can this lab (and this network) actually run? -----
+    def probe(self, attack: str) -> bool:
+        """Ask the lab whether it can run `attack` without starting it: an unknown tenant/server makes a shipped
+        attack fail validation (4xx) while an unshipped one answers 501. Unknown (lab down, dry run) = assume yes."""
+        if attack in self.available:
+            return self.available[attack]
+        r = self.call("POST", f"{self.lab}/lab/attack",
+                      json={"attack": attack, "tenant": PROBE, "server": PROBE, "intensity": 1.0, "duration_s": 1})
+        ok = r is None or r.status_code != 501
+        if r is not None and 200 <= r.status_code < 300:      # a lab that started it anyway: stop it now
+            aid = r.json().get("attack_id")
+            if aid:
+                self.call("DELETE", f"{self.lab}/lab/attack/{aid}")
+        self.available[attack] = ok
+        return ok
+
+    def worker_reachable(self, server: Optional[str]) -> Optional[str]:
+        url = self.workers.get(server or "")
+        if not url or self.dry_run:
+            return None
+        r = self.call("GET", f"{url}/healthz", timeout=1.0)
+        return url if r is not None and r.status_code == 200 else None
+
+    def preflight(self, steps: List["Step"]) -> None:
+        self.out("  preflight:")
+        for st in steps:
+            for a in st.attacks:
+                if self.probe(a.attack):
+                    continue
+                if a.fallback and self.probe(a.fallback):
+                    self.out(f"    {a.attack}: not on this lab, step '{st.key}' uses {a.fallback}")
+                    continue
+                if a.attack == "faulty_server":
+                    url = self.worker_reachable(a.server)
+                    if url:
+                        self.fault_urls[a.server] = url
+                        self.out(f"    {a.attack}: not on this lab, step '{st.key}' injects the fault directly "
+                                 f"on {a.server} ({url}/admin/fault)")
+                        continue
+                    why = (f"{a.attack} is not available on this lab and worker {a.server} is not reachable "
+                           f"from here")
+                else:
+                    why = f"{a.attack} is not available on this lab"
+                self.skipped[st.key] = why
+                self.out(f"    [NOT AVAILABLE] step '{st.key}' will be skipped: {why}")
+        if not self.skipped:
+            self.out("    every step can run")
+
     def launch(self, a: Attack, seconds: float) -> None:
-        r = self.call("POST", f"{self.lab}/lab/attack", json=a.body(seconds))
-        if r is not None and r.status_code == 501 and a.fallback:
+        name = a.attack
+        if self.available.get(name) is False:
+            if a.attack == "faulty_server" and a.server in self.fault_urls:
+                return self.inject_fault(a.server, seconds)
+            if a.fallback and self.available.get(a.fallback, True):
+                name = a.fallback
+        r = self.call("POST", f"{self.lab}/lab/attack", json=a.body(seconds, name))
+        if r is not None and r.status_code == 501 and a.fallback and name != a.fallback:
             self.out(f"      {a.attack} not available on this lab (501): using {a.fallback}")
             r = self.call("POST", f"{self.lab}/lab/attack", json=a.body(seconds, a.fallback))
         if r is None:
@@ -130,9 +196,44 @@ class Demo:
         else:
             self.out(f"      ! attack {a.attack}: HTTP {r.status_code} {r.text[:120]} (step continues)")
 
-    def stop_all(self) -> None:
-        self.call("DELETE", f"{self.lab}/lab/attacks")
-        self.started.clear()
+    def inject_fault(self, server: str, seconds: float) -> None:
+        url = self.fault_urls[server]
+        r = self.call("POST", f"{url}/admin/fault", json={**FAULT, "duration_s": seconds},
+                      headers={"X-Admin-Token": self.admin_token})
+        if r is not None and r.status_code == 200:
+            self.faults.append(url)
+            self.out(f"      fault injected on {server}: +{FAULT['latency_ms']:.0f} ms, {FAULT['cpu_burn_pct']:.0f}% "
+                     f"CPU burn for {seconds:.0f} s")
+        elif r is not None:
+            self.out(f"      ! fault on {server}: HTTP {r.status_code} (step continues)")
+
+    def stop_all(self) -> bool:
+        """Stop every lab attack. Retries once, then stops our own attacks one by one; says loudly what is left."""
+        for _ in range(2):
+            r = self.call("DELETE", f"{self.lab}/lab/attacks")
+            if self.dry_run or (r is not None and r.status_code < 300):
+                self.started.clear()
+                return True
+        left = []
+        for aid in self.started:
+            r = self.call("DELETE", f"{self.lab}/lab/attack/{aid}")
+            if r is None or r.status_code >= 300 and r.status_code != 404:
+                left.append(aid)
+        self.started = left
+        if left:
+            self.out(f"      ! could not stop attacks {', '.join(left)}: they end on their own when their "
+                     f"duration runs out")
+        return not left
+
+    def clear_faults(self) -> None:
+        left = []
+        for url in self.faults:
+            r = self.call("DELETE", f"{url}/admin/fault", headers={"X-Admin-Token": self.admin_token})
+            if r is None or r.status_code >= 300:
+                left.append(url)
+        if left:
+            self.out(f"      ! could not clear the fault on {', '.join(left)}: it auto-clears after its duration")
+        self.faults = left
 
     # ----- live numbers -----
     def live(self, step: Step) -> None:
@@ -210,9 +311,13 @@ class Demo:
             self.out(f"  gateway {self.gw}  brain {self.brain}  lab {self.lab}")
             self.call("POST", f"{self.lab}/lab/calm/start")
             self.stop_all()
-            total = sum(s.seconds for s in steps)
+            self.preflight(steps)
+            total = sum(s.seconds for s in steps if s.key not in self.skipped)
             self.out(f"  {len(steps)} steps, {total:.0f} s")
             for i, st in enumerate(steps, 1):
+                if st.key in self.skipped:
+                    self.out(f"\n[{i}/{len(steps)}] [NOT AVAILABLE] {st.title}: skipped ({self.skipped[st.key]})")
+                    continue
                 if self.wait_enter and not self.dry_run:
                     self.wait_enter(f"\n[Enter] step {i}: {st.title} ")
                 self.out(f"\n[{i}/{len(steps)}] {st.title} ({st.seconds:.0f} s): {st.narration}")
@@ -226,9 +331,18 @@ class Demo:
                     self.scorecard()
                 self._hold(st)
         finally:
-            self.out("\ncleanup: stopping attacks, mode back to tenantguard")
-            self.stop_all()
-            self.set_mode("tenantguard")
+            self.cleanup()
+
+    def cleanup(self) -> None:
+        """Stop attacks, clear faults, mode back to tenantguard. A second Ctrl-C cannot abort it half-way."""
+        self.out("\ncleanup: stopping attacks, clearing faults, mode back to tenantguard")
+        for task in (self.stop_all, self.clear_faults, lambda: self.set_mode("tenantguard")):
+            for _ in range(2):
+                try:
+                    task()
+                    break
+                except KeyboardInterrupt:
+                    self.out("      (Ctrl-C ignored: cleanup is still running)")
 
     def _hold(self, st: Step) -> None:
         if self.dry_run:
@@ -256,6 +370,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--speed", type=float, default=1.0, help="scale every step duration (e.g. 0.5 for rehearsal)")
     a = p.parse_args(argv)
     env = os.environ.get
+    settings = load_settings()
+    svc = settings.get("services") or {}
     steps = plan(a.attacker, a.bomb, a.faulty_server, a.spiker)
     if a.only:
         keys = [s.key for s in steps]
@@ -264,9 +380,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         steps = [s for s in steps if s.key in ("calm", a.only)]
     for s in steps:
         s.seconds *= a.speed
-    demo = Demo(env("TENANTGUARD_GATEWAY_URL", f"http://{HOST}:8000"), env("TENANTGUARD_BRAIN_URL", f"http://{HOST}:8200"),
-                env("TENANTGUARD_LAB_URL", f"http://{HOST}:8300"), env("TENANTGUARD_CONTROL_TOKEN", "dev"),
-                tick_s=a.tick, dry_run=a.dry_run, wait_enter=(lambda msg: input(msg)) if a.step else None)
+    demo = Demo(env("TENANTGUARD_GATEWAY_URL", svc.get("gateway", "http://127.0.0.1:8000")),
+                env("TENANTGUARD_BRAIN_URL", svc.get("brain", "http://127.0.0.1:8200")),
+                env("TENANTGUARD_LAB_URL", svc.get("lab", "http://127.0.0.1:8300")),
+                env("TENANTGUARD_CONTROL_TOKEN", "dev"), tick_s=a.tick, dry_run=a.dry_run,
+                wait_enter=(lambda msg: input(msg)) if a.step else None,
+                workers=worker_urls(settings), admin_token=env("TENANTGUARD_ADMIN_TOKEN", "dev"))
     try:
         demo.run(steps)
     except KeyboardInterrupt:
