@@ -67,7 +67,7 @@ FastAPI wiring. It builds the `Bridge` (unless one is injected for tests), runs 
 
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
-| `PARTNER_TOKEN_HEADER` | constant `"X-Handoff-Token"` | Header the partner must send on updates | `_update` |
+| `PARTNER_TOKEN_HEADER` | re-exported from `wire` (`"X-Handoff-Token"`) | Header the partner must send on updates | `_update` |
 | `create_app` | `create_app(bridge: Optional[Bridge] = None, start: bool = True) -> FastAPI` | Builds the app. Without a bridge it loads yaml + layout and creates one. Reads `HANDOFF_PARTNER_TOKEN` once. Adds CORS for the UI origins. Registers the routes below. | module level (`app = create_app()`); tests |
 | `create_app.lifespan` | `async lifespan(_: FastAPI)` | Async context manager: on startup calls `bridge.start()` if `start`; on shutdown always awaits `bridge.stop()` | FastAPI lifespan |
 | `create_app.healthz` | `async healthz()` → `GET /healthz` | Returns `bridge.health()`: brain connection, mode, counters, outbox stats | monitoring, Docker healthcheck |
@@ -186,7 +186,7 @@ Bridge configuration from `tenantguard.yaml` (`handoff`, `brain.ttl_s`, `brain.c
 | `HandoffSettings.from_dict` | classmethod `from_dict(s: Dict[str, Any]) -> HandoffSettings` | Reads yaml sections with env overrides: `WEB_URL`, `TENANTGUARD_BRAIN_URL`, `TENANTGUARD_GATEWAY_URL`, `TENANTGUARD_UI_URL`, `TENANTGUARD_CONTROL_TOKEN`, `HANDOFF_STATE_PATH`, `TENANTGUARD_CORS_ORIGINS` | `__main__.main`, `app.create_app` |
 
 Key decisions:
-- `history_keep` (500) and `id_map_max` (2000) are dataclass defaults only; `from_dict` reads `retention_s` and `history_wire_max` from yaml but not these two.
+- Every cap is read from yaml `handoff` (`retention_s`, `history_wire_max`, `history_keep`, `id_map_max`); the dataclass defaults (3600, 50, 500, 2000) apply only when a key is missing.
 
 ### integrations/handoff/tenantguard_handoff/timefmt.py
 The only place the bridge converts between epoch seconds and the partner's `"HH:MM:SS"` IST strings (UTC+05:30, no daylight saving).
@@ -205,6 +205,7 @@ The partner's agreed wire format (from `docs/convergence/`), kept only in the br
 
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
+| `PARTNER_TOKEN_HEADER` | constant `"X-Handoff-Token"` | The header carrying `HANDOFF_PARTNER_TOKEN` on partner updates; defined here (a protocol detail) so tools can import it without building the app | `app._update`, `tools/mock_web.partner_headers` |
 | `HHMMSS`, `CASE_ID` | regex strings | Validate `"HH:MM:SS"` and `INC-NNNN` | model fields |
 | `TenantId`, `TENANT_IDS` | `Literal["A".."L"]`, set | Tenant ids the partner accepts | `CaseContext`, `CaseBook.to_wire` |
 | `Verdict`, `Severity`, `CaseStatus`, `Decision` | `Literal` types | Allowed values agreed with the partner | models, `cases.VERDICTS` |
@@ -227,17 +228,18 @@ A stand-in for the partner app, used for demos without the Web team. It receives
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
 | `HANDOFF_URL`, `MOCK_URL` | env-derived constants | Bridge URL for updates (default `:8400`); this mock's URL (default `:8500`) | `main` |
+| `partner_headers` | `partner_headers() -> Dict[str, str]` | Returns `{X-Handoff-Token: $HANDOFF_PARTNER_TOKEN}`; exits with a clear message if the variable is not set | `main` (`owner`, `decide`); `prove_handoff.update` / `main`; tests |
 | `make_app` | `make_app()` | Builds the mock FastAPI app with in-memory `cases` and a `down` switch | `main` (`serve`) |
 | `make_app.receive` | `async receive(request)` → `POST /cases` | 503 if "down"; validates the body as a strict `wire.Case` (422 if invalid); stores it; prints `NEW`/`UPD`, severity, status, pending deadlines and the last history line | the bridge's outbox |
 | `make_app.list_cases` | `async list_cases()` → `GET /cases` | All received cases | `prove_handoff.py` |
 | `make_app.down` | `async down()` → `POST /admin/down` | Makes `POST /cases` answer 503 | `main down` |
 | `make_app.up` | `async up()` → `POST /admin/up` | Recovers from the simulated outage | `main up` |
 | `make_app.health` | `async health()` → `GET /healthz` | Down flag, received count, number of cases | operators |
-| `main` | `main() -> None` | CLI: `serve [--host --port]`, `owner <case> <name>` (sends the current IST time), `decide <case> <action> <decision> <by>`, `down`, `up`; updates go to `{HANDOFF_URL}/control/case-update` | command line |
+| `main` | `main() -> None` | CLI: `serve [--host --port]`, `owner <case> <name>` (sends the current IST time), `decide <case> <action> <decision> <by>`, `down`, `up`; updates go to `{HANDOFF_URL}/control/case-update` with the partner token header | command line |
 
 Key decisions:
 - It validates exactly the agreed wire format, so a contract mismatch shows up immediately in demos.
-- The `owner` and `decide` commands send no `X-Handoff-Token` header. With the T20 fail-closed rule, the bridge answers them 503 (no partner token configured) or 401 until the commands are given the header.
+- The `owner` and `decide` commands send `X-Handoff-Token` from `HANDOFF_PARTNER_TOKEN`, exactly as the real partner app must, and refuse to send anything if it is unset (the bridge is fail-closed: 503 without a configured token, 401 with a wrong one).
 
 ### integrations/handoff/tools/prove_handoff.py
 An end-to-end proof script against a running fake gateway, brain, bridge and mock web app. It waits for a case with a pending action, acknowledges it, approves/extends/releases/resolves, checks a bogus case id, and prints what the gateway received and the final case at both ends.
@@ -248,12 +250,12 @@ An end-to-end proof script against a running fake gateway, brain, bridge and moc
 | `show` | `show(title, obj)` | Prints a titled section (JSON pretty-printed) | `main` |
 | `wait_for` | `wait_for(pred, timeout_s, every=1.0)` | Polls `pred()` until truthy or timeout; returns the value or `None` | `main` |
 | `case_with_pending` | `case_with_pending()` | The first bridge case with a pending action | `main` |
-| `update` | `update(body)` | POSTs a partner update to the bridge; returns status + JSON | `main` |
-| `main` | `main()` | Runs the proof sequence (steps 1–9) and prints each result | command line |
+| `update` | `update(body)` | POSTs a partner update to the bridge with the partner token header; returns status + JSON | `main` |
+| `main` | `main()` | Checks the partner token first (fails fast), then runs the proof sequence (steps 1–9) and prints each result | command line |
 | `main.block_pending` | closure `block_pending()` | The pending "blocking" action of the chosen case, if any | `wait_for` inside `main` |
 
 Key decisions:
-- Like `mock_web.py`, its updates carry no `X-Handoff-Token`, so on current `master` they are refused (503/401) unless that header is added.
+- It reuses `mock_web.partner_headers`, so both tools behave like the real partner: updates carry `X-Handoff-Token`.
 
 ### integrations/handoff/tests/test_bridge_api.py
 API and I/O tests using fake partner and control endpoints (`httpx.MockTransport`).
@@ -295,6 +297,19 @@ Tests for the T20 review fixes: fail-closed auth, no duplicate decision requests
 | `test_poison_message_is_skipped_and_counted` (+ inner `on_event`) | | Bad JSON and a crashing event are skipped and counted; the next good message creates the case | pytest |
 | `test_stream_survives_poison_and_backoff_only_resets_after_a_stable_connection` (+ inner `FakeWS`, `fake_connect`, `fake_sleep`) | | Frames after a poison frame are still applied; short-lived connections keep doubling the backoff (1, 2, 4, 8 s) | pytest |
 | `test_next_backoff` | | Backoff doubles until the cap and resets after a stable connection | pytest |
+
+### integrations/handoff/tests/test_t23_tools.py
+Tests for the partner tools' token handling and the yaml-driven caps (T23).
+
+| Function / class | Signature | What it does / proves | Called by |
+|---|---|---|---|
+| `Capture` | class (callable) | Records `httpx.post` calls (url, json, headers) and returns a 200 stand-in | tests |
+| `test_partner_headers_require_the_token` | | Unset `HANDOFF_PARTNER_TOKEN` → exit with a clear message; set → `{X-Handoff-Token: value}` | pytest |
+| `test_mock_web_decide_and_owner_send_the_token` | | `decide` and `owner` both POST to `/control/case-update` with the token header | pytest |
+| `test_mock_web_without_token_fails_before_sending` | | Without the token nothing is sent | pytest |
+| `test_prove_handoff_update_sends_the_token` | | The proof script's updates carry the header | pytest |
+| `test_tool_headers_are_accepted_by_the_real_bridge` | | The tool's headers get 200 from the real bridge app; the same body without them gets 401 | pytest |
+| `test_history_keep_and_id_map_max_from_yaml` | | `history_keep` / `id_map_max` come from yaml, with defaults 500 / 2000 | pytest |
 
 ### integrations/handoff/tests/test_wire_cases.py
 Wire-format round trips against the agreed samples, and the pure event → case and decision → command mappings.

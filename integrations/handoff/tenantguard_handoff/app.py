@@ -16,8 +16,8 @@ from tenantguard_common.contracts import CaseView
 from .bridge import Bridge
 from .cases import DecisionError
 from .settings import HandoffSettings
+from .wire import PARTNER_TOKEN_HEADER
 
-PARTNER_TOKEN_HEADER = "X-Handoff-Token"
 
 
 def create_app(bridge: Optional[Bridge] = None, start: bool = True) -> FastAPI:

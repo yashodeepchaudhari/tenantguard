@@ -5,7 +5,8 @@
   python tools/mock_web.py decide INC-0001 A1 approve Rahul  send a decision (approve|reject|extend|release|resolve)
   python tools/mock_web.py down|up                           make the mock answer 503 (simulate an outage) / recover
 
-The bridge URL for updates comes from env HANDOFF_URL (default http://127.0.0.1:8400).
+The bridge URL for updates comes from env HANDOFF_URL (default http://127.0.0.1:8400). Updates carry the
+partner token from env HANDOFF_PARTNER_TOKEN as X-Handoff-Token (the bridge refuses updates without it).
 """
 from __future__ import annotations
 
@@ -26,6 +27,15 @@ from tenantguard_handoff.timefmt import ist  # noqa: E402
 
 HANDOFF_URL = os.environ.get("HANDOFF_URL", "http://127.0.0.1:8400")
 MOCK_URL = os.environ.get("WEB_URL", "http://127.0.0.1:8500")
+
+
+def partner_headers() -> Dict[str, str]:
+    """The partner token header for updates sent to the bridge; exits with a clear message if it is not set."""
+    token = os.environ.get("HANDOFF_PARTNER_TOKEN", "")
+    if not token:
+        raise SystemExit("HANDOFF_PARTNER_TOKEN is not set: the bridge refuses partner updates without it. "
+                         "Set it to the same value the bridge uses.")
+    return {wire.PARTNER_TOKEN_HEADER: token}
 
 
 def make_app():
@@ -96,12 +106,13 @@ def main() -> None:
     if a.cmd in ("down", "up"):
         print(httpx.post(f"{MOCK_URL}/admin/{a.cmd}").json())
         return
+    headers = partner_headers()
     if a.cmd == "owner":
         body = {"case_id": a.case_id, "type": "owner", "owner": a.owner, "time": ist(time.time())}
     else:
         body = {"case_id": a.case_id, "type": "decision", "action_id": a.action_id, "decision": a.decision,
                 "by": a.by}
-    r = httpx.post(f"{HANDOFF_URL}/control/case-update", json=body, timeout=10)
+    r = httpx.post(f"{HANDOFF_URL}/control/case-update", json=body, headers=headers, timeout=10)
     print(r.status_code, r.text)
 
 
