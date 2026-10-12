@@ -1,19 +1,4 @@
-# Every tunable lives here. Never hard-code these in services.
-layout: layouts/ag23.json
-
-# Server name -> base URL. Local dev defaults; docker-compose overrides via TENANTGUARD_WORKER_URLS.
-workers:
-  w0: http://127.0.0.1:8100
-  w1: http://127.0.0.1:8101
-  w2: http://127.0.0.1:8102
-  w3: http://127.0.0.1:8103
-  w4: http://127.0.0.1:8104
-  w5: http://127.0.0.1:8105
-  w6: http://127.0.0.1:8106
-  w7: http://127.0.0.1:8107
-  w8: http://127.0.0.1:8108
-  spare: http://127.0.0.1:8109
-  quarantine: http://127.0.0.1:8110
+# Every tunable lives here. Never hard-code these in services. (v2: pool -> projects -> tenants)
 
 services:
   gateway: http://127.0.0.1:8000
@@ -23,33 +8,63 @@ services:
   billing: http://127.0.0.1:8600
   narrator: http://127.0.0.1:8700
 
+# What the admin gives TenantGuard: real cores and MB (no credits). Seed value; PUT /admin/pool changes it.
+# 5.75 cores / 2688 MB = the v1 compose totals (9 x 0.5 + 1.0 + 0.25 cores; 9 x 256 + 256 + 128 MB).
+pool: {cpu_total: 5.75, mem_total_mb: 2688, headroom_ratio: 0.10}   # headroom: estimate
+
+# Tier = project weight (surplus split) + per-tenant request quota.
 tiers:
   enterprise:
     weight: 4
-    quota: {rate_rps: 100, burst: 200, cost_ms_per_s: 600, concurrency: 16}
+    quota: {rate_rps: 100, burst: 200, concurrency: 16}
   pro:
     weight: 2
-    quota: {rate_rps: 50, burst: 100, cost_ms_per_s: 300, concurrency: 8}
+    quota: {rate_rps: 50, burst: 100, concurrency: 8}
   free:
     weight: 1
-    quota: {rate_rps: 20, burst: 40, cost_ms_per_s: 150, concurrency: 4}
+    quota: {rate_rps: 20, burst: 40, concurrency: 4}
+
+# Seed projects (the admin API adds more; persisted in the brain's registry file). Sum of floors <= usable CPU.
+projects:
+  - {id: health,   name: Health,   tier: enterprise, floor_cpu: 1.25, cap_cpu: 3.0, warm_min: 1}
+  - {id: commerce, name: Commerce, tier: enterprise, floor_cpu: 1.25, cap_cpu: 3.0, warm_min: 1}
+  - {id: mobility, name: Mobility, tier: pro,        floor_cpu: 0.75, cap_cpu: 2.0, warm_min: 1}
+  - {id: media,    name: Media,    tier: pro,        floor_cpu: 0.75, cap_cpu: 2.0, warm_min: 1}
+  - {id: free,     name: Free,     tier: free,       floor_cpu: 0.5,  cap_cpu: 1.0, warm_min: 1}
+
+# Seed tenants: demo API keys only. A tenant belongs to exactly one project.
+tenants:
+  - {id: A, name: Aarogya Health,    project: health,   api_key: tk_A_demo, monthly_revenue_rs: 900000,  protected: true, sla_p95_ms: 50}
+  - {id: D, name: DhanSetu Payments, project: health,   api_key: tk_D_demo, monthly_revenue_rs: 1200000, protected: true, sla_p95_ms: 40}
+  - {id: J, name: JhatpatMart,       project: commerce, api_key: tk_J_demo, monthly_revenue_rs: 1500000, sla_p95_ms: 50}
+  - {id: B, name: BazaarKart,        project: commerce, api_key: tk_B_demo, monthly_revenue_rs: 250000,  sla_p95_ms: 50}
+  - {id: G, name: GaadiGo,           project: mobility, api_key: tk_G_demo, monthly_revenue_rs: 800000,  sla_p95_ms: 80}
+  - {id: K, name: KaamKaro,          project: mobility, api_key: tk_K_demo, monthly_revenue_rs: 180000,  sla_p95_ms: 80}
+  - {id: E, name: Ekalavya Learn,    project: mobility, api_key: tk_E_demo, monthly_revenue_rs: 200000,  sla_p95_ms: 80}
+  - {id: H, name: HisaabBooks,       project: media,    api_key: tk_H_demo, monthly_revenue_rs: 150000,  sla_p95_ms: 80}
+  - {id: L, name: LokVani News,      project: media,    api_key: tk_L_demo, monthly_revenue_rs: 0,       sla_p95_ms: 80}
+  - {id: C, name: Chitra Studio,     project: free,     api_key: tk_C_demo, monthly_revenue_rs: 0,       sla_p95_ms: 150}
+  - {id: F, name: FitZone,           project: free,     api_key: tk_F_demo, monthly_revenue_rs: 0,       sla_p95_ms: 150}
+  - {id: I, name: IdliExpress,       project: free,     api_key: tk_I_demo, monthly_revenue_rs: 0,       sla_p95_ms: 150}
 
 gateway:
   default_mode: tenantguard
   tick_ms: 250
   max_queue_wait_ms: {interactive: 1000, batch: 5000}
-  cost_bucket_s: 2              # cost bucket capacity = cost_ms_per_s * this
+  cold_wait_ms: 5000            # estimate: how long a request waits for a sleeping project to start
+  wake_debounce_s: 2
   express_cost_ms: 5            # classes cheaper than this skip ahead
-  fail_static_after_s: 2
+  fail_static_after_s: 2        # no snapshot for this long = fail-static (keep serving the last one)
   batch_routes: ["/api/export"]
+  size_params: [n, limit, pages]   # numeric query params bucketed (log2) into the request class
+  cost_seed: worker/calibration.json
   upstream_timeout_s: 30
-  ttl_max_s: 3600               # control overrides: 0 < ttl_s <= this and finite, else 400
-  quota_max: {rate_rps: 10000, burst: 20000, cost_ms_per_s: 100000, concurrency: 1024}   # PATCH/POST bounds (finite, >0, <= these)
+  ttl_max_s: 3600               # override TTLs must be finite and in (0, this]
   retry_budget: {ratio: 0.1, window_s: 10, min_allowed: 3}   # retries allowed <= max(min_allowed, ratio * first attempts in window); else 429 retry_budget
   limiter: {min_window: 2, max_window: 64, initial_window: 8}
 
 worker:
-  cpus: 0.5
+  cpus: 0.5                     # CPU of a replica when the brain has not set one (local runs)
   mem_limit_mb: 256
   body_limit_bytes: 1048576
   tenant_mem_budget_mb: 32
@@ -57,17 +72,17 @@ worker:
   cache_guaranteed_share: 0.125   # per-tenant guaranteed slice of the cache
   bg_threads: 4
   seed_rows: 1000
-  blackbox: {cpu_ms_per_doc: 2.0, queue_max: 5000}
+  blackbox: {cpu_ms_per_doc: 2.0, queue_max: 5000}   # "vendor indexer": CPU not attributed to any tenant
   max_request_s: 30             # any single request (e.g. /api/export) must finish within this
   bg_pending: {per_tenant: 200, total: 1000}   # background-job backlog caps (503 bg_backlog)
-  mem_baseline_mb: 80           # RSS reserved for the process; worker-wide memory cap = mem_limit_mb - this   # "vendor indexer": CPU not attributed to any tenant
-  memory_trim_s: 30            # periodic malloc_trim on glibc
+  mem_baseline_mb: 80           # RSS reserved for the process; worker-wide memory cap = mem_limit_mb - this
+  memory_trim_s: 30             # periodic malloc_trim on glibc
   max_classes_per_tenant: 256   # per-tenant class meters; overflow folds into "other"
 
 brain:
-  tick_ms: 250
+  tick_ms: 250                  # telemetry / ladder tick
   stats_poll_s: 1.0
-  # Stage 2: usage-share detector + throttle ladder
+  # Usage-share detector + throttle ladder, scoped to a tenant's own project
   noisy:
     warn: 1.5
     throttle: 2.0
@@ -76,31 +91,48 @@ brain:
     hold_s: {warn: 2, throttle: 2, deprioritize: 4, quarantine: 6, recover: 10}
     throttle_factor: 0.5        # AIMD multiplicative decrease
     recover_step: 0.1           # additive increase per recovery tick
-    min_victim_impact: 0.2      # neighbours must be hurt at least this much before anyone is flagged
-    baseline_alpha: 0.05        # (legacy, per-frame) superseded by baseline_half_life_s
-    baseline_half_life_s: 60    # time-based EWMA for the calm baseline p95; frozen while a neighbour over-uses
+    min_victim_impact: 0.2      # project peers must be hurt at least this much before anyone is flagged
+    slow_abs_ms: 8              # baseline floor: sub-ms jitter never reads as a slowdown
+    baseline_half_life_s: 60    # time-based EWMA for the calm baseline p95
     hold_ratio: 0.8             # a level holds if >= this share of ticks in the hold window are above threshold
     recover_tick_s: 1.0
     throttle_floor: 0.25        # lowest factor reached by AIMD before deprioritize
     deprioritize_weight: 0.25
     quarantine_factor: 0.1
     quarantine_weight: 0.1
-  # Stage 3: TenantGuard (calibrated at H3-H4)
-  health:
-    probe_window_ticks: 8
-    slow_peer_ratio: 1.6
-    slow_abs_ms: 8
-    open_after_ticks: 4
-  rescue_capacity_guard: 0.7
-  confidence_to_prove: 0.6
-  spare_sizing: 1.25
-  prove_settle_s: 2
-  prove_window_s: 6
-  recovery_R: 0.5
-  paid_share_costly: 0.35
-  host_idle_ratio: 1.5
-  ttl_s: {relocate: 120, quarantine: 120, throttle: 60, probation: 300}
-  action_budget: {relocations_per_min: 6, quarantine_every_s: 30, max_drained: 1}
+  ttl_s: {quarantine: 120, throttle: 60}
+
+# v2 control loop: allocation, scaling, replicas. Values marked estimate must be measured on the host.
+control:
+  tick_s: 1.0
+  demand_alpha: 0.5             # estimate
+  backend: docker               # docker | process (local runs without Docker)
+  docker_url: unix:///var/run/docker.sock
+  docker_api: v1.41
+  worker_image: tenantguard-worker:latest
+  docker_network: ""            # compose network the replicas join (empty = default bridge)
+  cgroup_parent: ""             # optional pool cgroup; empty = none
+  process_base_port: 8100       # backend=process: replica ports start here
+  per_replica_max_cpu: 1.0      # estimate: one Python process (GIL)
+  target_util: 0.8              # estimate
+  busy_cpu: 0.5                 # estimate: demand above this = busy (min 2 replicas)
+  busy_min_replicas: 2
+  scale_up_ticks: 2             # estimate
+  scale_down_ticks: 30          # estimate
+  zero_after_ticks: 300         # estimate
+  drain_timeout_s: 2            # estimate
+  start_timeout_s: 30
+  replica_mem: {baseline_mb: 80, cache_mb: 8, per_tenant_mb: 32, round_mb: 32}
+  telemetry_stale_s: 2
+  registry_path: brain/.state/registry.json
+  events_path: brain/.state/events.jsonl
+
+# v2 detector (inside a project)
+detector:
+  unattributed_ratio: 0.25      # estimate: unexplained share of a project's CPU that triggers a split test
+  unattributed_hold_s: 10       # estimate
+  split: {settle_s: 2, sample_s: 6}       # from the v1 prover's settle/window values
+  contention: {ratio: 1.6, open_s: 4}     # no-blame external contention: all projects slow while CPU is within allocation
 
 handoff:
   decision_window_s: 120      # deadline given to the on-call for a pending action

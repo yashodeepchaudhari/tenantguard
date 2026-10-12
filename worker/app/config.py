@@ -58,6 +58,14 @@ def _default_data_dir(server: str) -> Path:
     return Path("data") / server
 
 
+def _tenants(settings: Dict[str, Any]) -> List[str]:
+    """The tenants this replica serves: TENANTGUARD_TENANTS (set by the brain per project), else every seed tenant."""
+    env = os.environ.get("TENANTGUARD_TENANTS")
+    if env is not None:
+        return [t for t in (x.strip() for x in env.split(",")) if t]
+    return [t.id for t in load_tenants(settings)]
+
+
 def load_config(settings: Optional[Dict[str, Any]] = None, **overrides: Any) -> WorkerConfig:
     settings = settings or load_settings()
     w = {**_DEFAULTS, **(settings.get("worker") or {})}
@@ -89,7 +97,7 @@ def load_config(settings: Optional[Dict[str, Any]] = None, **overrides: Any) -> 
         admin_token=os.environ.get("TENANTGUARD_ADMIN_TOKEN", "dev"),
         cors_origins=[o.strip() for o in origins.split(",") if o.strip()],
         cpu_limit_env=float(cpu_env) if cpu_env else None,
-        tenants=[t.id for t in load_tenants(settings)],
+        tenants=_tenants(settings),
     )
     for k, v in overrides.items():
         setattr(cfg, k, v)

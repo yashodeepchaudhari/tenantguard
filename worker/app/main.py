@@ -39,7 +39,7 @@ from .meter import Meters, Usage
 from . import malloc
 from .stats import ProcessTree, cgroup_cpu_limit, cgroup_mem_limit_mb, cgroup_memory
 from .store import TenantStore
-from .tenancy import NO_CLASS, RequestMeter, request_var, tenant_var, valid_tenant
+from .tenancy import NO_CLASS, RequestMeter, current_tenant, request_var, tenant_var, valid_tenant
 
 log = logging.getLogger("worker")
 
@@ -102,7 +102,8 @@ class Worker:
             server=self.cfg.server, ts=time.time(), started_at=self.tree.started_at,
             cpu_total_ms=round(self.tree.cpu_total_ms(), 3), blackbox_cpu_ms=round(self.blackbox.cpu_ms(), 3),
             cpu_limit_cores=self.cpu_limit_cores(), mem_mb=round(self.tree.rss_mb(), 2),
-            fault=self.fault.current(), tenants=rows, classes=classes)
+            fault=self.fault.current(), tenants=rows, classes=classes,
+            docs_by_tenant=dict(self.blackbox.docs_by_tenant))
 
     def memory_report(self) -> dict:
         """Where the worker's memory is: process tree RSS, container cgroup, allocator, black box."""
@@ -291,7 +292,7 @@ def create_app(cfg: Optional[WorkerConfig] = None) -> FastAPI:
     @m
     def ingest(req: IngestReq = Body(IngestReq())) -> dict:
         """Hand docs to the vendor indexer (black box). Cheap here; the CPU is spent in the child."""
-        return {**w.blackbox.submit(req.docs), "server": cfg.server}
+        return {**w.blackbox.submit(req.docs, current_tenant()), "server": cfg.server}
 
     @app.get("/api/memory")
     @m
