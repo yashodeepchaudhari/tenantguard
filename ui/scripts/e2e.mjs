@@ -1,8 +1,8 @@
 // End-to-end check of the operator actions against whatever backend the UI points at
 // (mock-ws-server or the real services). Drives the installed Edge with puppeteer-core.
 //
-//   node scripts/e2e.mjs [uiUrl] [gatewayUrl] [labUrl] [brainUrl]
-//   default: http://127.0.0.1:5174  http://127.0.0.1:18000  http://127.0.0.1:18300  http://127.0.0.1:18200
+//   node scripts/e2e.mjs [uiUrl] [gatewayUrl] [labUrl] [brainUrl] [handoffUrl]
+//   default: http://127.0.0.1:5174  http://127.0.0.1:18000  http://127.0.0.1:18300  http://127.0.0.1:18200  http://127.0.0.1:18400
 // Gateway calls send X-TenantGuard-Control-Token (env TENANTGUARD_CONTROL_TOKEN, default dev).
 //
 // Verifies through the backend's own API (not the UI) that each click had its effect:
@@ -16,6 +16,7 @@ const UI = process.argv[2] || 'http://127.0.0.1:5174'
 const GW = process.argv[3] || 'http://127.0.0.1:18000'
 const LAB = process.argv[4] || 'http://127.0.0.1:18300'
 const BRAIN = process.argv[5] || 'http://127.0.0.1:18200'
+const HANDOFF = process.argv[6] || 'http://127.0.0.1:18400'
 const edge = [
   process.env.EDGE_PATH,
   'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
@@ -56,6 +57,26 @@ try {
   check('12 tenant tiles from the brain stream', tiles === 12, `tiles=${tiles}`)
   check('status sentence rendered', !!sentence && sentence.length > 5, sentence)
 
+  // 1a. impact panel: present, and TenantGuard never penalises an innocent
+  const innocents = await page.$eval('[data-testid="impact-innocents"]', (el) => el.textContent.trim()).catch(() => null)
+  const revenue = await page.$eval('[data-testid="impact-revenue"]', (el) => el.textContent.trim()).catch(() => null)
+  check('impact panel shows revenue protected', !!revenue && revenue.startsWith('₹'), revenue)
+  check('innocents penalised = 0', innocents === '0', `innocents=${innocents}`)
+
+  // 1a'. flow view: toggle, the canvas really draws, toggle back (the choice is remembered)
+  await page.click('[data-testid="view-flow"]')
+  await page.waitForSelector('[data-testid="flow-view"] canvas')
+  await sleep(1500)
+  const painted = await page.$eval('[data-testid="flow-view"] canvas', (c) => {
+    const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data
+    let n = 0
+    for (let i = 3; i < d.length; i += 16) if (d[i] > 0) n++
+    return n
+  })
+  check('flow view canvas paints tenants, gateway and servers', painted > 1000, `painted samples=${painted}`)
+  await page.click('[data-testid="view-tiles"]')
+  await page.waitForSelector('[data-testid="tile-L"]')
+
   // 1b. server grid: picking a tenant tile outlines its 3 barcode servers
   await page.click('[data-testid="tile-E"]')
   const lit = await page.$$eval('[data-testid^="server-w"][data-lit="1"]', (els) => els.map((e) => e.dataset.testid.slice(7)).sort())
@@ -87,8 +108,32 @@ try {
     check('case log shows every event of the incident', logged >= rest.length, `ui=${logged} brain=${rest.length}`)
     const hasReport = !!(await page.$('[data-testid="report"], [data-testid="report-placeholder"]'))
     check('report or template placeholder rendered', hasReport)
+    if (await page.$('[data-testid="proof"]')) {
+      await page.click('[data-testid="proof-replay"]')
+      const runningNow = await page.$eval('[data-testid="proof"]', (el) => el.dataset.running)
+      check('proof animation replays', runningNow === '1')
+    } else console.log('SKIP  proof animation (this incident has no proving stage)')
     await page.goto(UI + '/', { waitUntil: 'networkidle2' })
     await page.waitForSelector('[data-testid="tile-L"]')
+  }
+
+  // 1c'. handoff column: the bridge's CaseView list, when it is reachable
+  const bridge = await fetch(`${HANDOFF}/cases`, { headers: { 'X-TenantGuard-Control-Token': TOKEN } }).then((r) => (r.ok ? r.json() : null), () => null)
+  await page.goto(UI + '/case', { waitUntil: 'networkidle2' })
+  const status = await until('handoff status', () => page.$eval('[data-testid="handoff-status"]', (el) => el.textContent).catch(() => null), 12000).catch(() => null)
+  if (!bridge) check('cases page says the bridge is not reachable', /not reachable/.test(status ?? ''), status)
+  else {
+    const list = Array.isArray(bridge) ? bridge : bridge.cases || []
+    const shown = await until('bridge count', async () => {
+      const t = await page.$eval('[data-testid="handoff-status"]', (el) => el.textContent)
+      return t.includes(`${list.length} Web PS3 case`) && t
+    }, 12000).catch(() => status)
+    check('cases page shows the bridge case count', !!shown && shown.includes(`${list.length} Web PS3 case`), shown)
+    if (list.length) {
+      const c = list[list.length - 1]
+      const cell = await until('handoff cell', () => page.$eval(`[data-testid="handoff-${c.incident_id}"]`, (el) => el.textContent).catch(() => null), 12000).catch(() => null)
+      check('handoff column shows case id + owner', !!cell && cell.includes(c.case_id) && (!c.owner || cell.includes(c.owner)), cell)
+    }
   }
 
   // 1d. scorecard: one chart per scenario from lab /lab/results

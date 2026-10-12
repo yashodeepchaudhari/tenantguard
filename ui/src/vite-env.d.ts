@@ -4,6 +4,7 @@ interface ImportMetaEnv {
   readonly VITE_BRAIN_URL?: string
   readonly VITE_GATEWAY_URL?: string
   readonly VITE_LAB_URL?: string
+  readonly VITE_HANDOFF_URL?: string
   readonly VITE_MOCK?: string
   readonly VITE_CONTROL_TOKEN?: string
   readonly VITE_P95_WARN_MS?: string

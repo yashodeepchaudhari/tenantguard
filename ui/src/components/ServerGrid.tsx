@@ -19,9 +19,11 @@ interface Props {
   highlightLabel?: string
   compact?: boolean
   title?: string
+  /** extra line per server, e.g. the decoder's P(slow) */
+  annotate?: Record<string, string>
 }
 
-function Cell({ sv, s, lit, compact }: { sv: string; s: ServerView | undefined; lit: boolean; compact: boolean }) {
+function Cell({ sv, s, lit, compact, note }: { sv: string; s: ServerView | undefined; lit: boolean; compact: boolean; note?: string }) {
   const st = serverStatus(s)
   const drained = s?.status === 'drained'
   return (
@@ -39,6 +41,7 @@ function Cell({ sv, s, lit, compact }: { sv: string; s: ServerView | undefined; 
         <span className="text-lg font-black leading-none text-ink-100">{sv}</span>
         <span className={`text-xs font-bold uppercase ${TEXT[st]}`}>{s?.status ?? '–'}</span>
       </div>
+      {note && <div className="text-sm font-semibold text-accent">{note}</div>}
       {s && (
         <>
           <div className={`font-bold leading-tight ${compact ? 'text-base' : 'text-xl'} ${TEXT[st]}`}>
@@ -58,7 +61,7 @@ function Cell({ sv, s, lit, compact }: { sv: string; s: ServerView | undefined; 
 }
 
 /** 3×3 fleet grid (w0..w8). Colour = server status; accent outline = highlighted barcode; hatched = drained. */
-export function ServerGrid({ servers, highlight = [], highlightLabel, compact = false, title = 'Servers · 3×3 fleet' }: Props) {
+export function ServerGrid({ servers, highlight = [], highlightLabel, compact = false, title = 'Servers · 3×3 fleet', annotate }: Props) {
   const by = new Map(servers.map((s) => [s.server, s]))
   const lit = new Set(highlight)
   const extra = servers.filter((s) => !FLEET.includes(s.server))
@@ -70,7 +73,7 @@ export function ServerGrid({ servers, highlight = [], highlightLabel, compact = 
       </div>
       <div className="grid min-h-0 flex-1 grid-cols-3 grid-rows-3 gap-1.5">
         {FLEET.map((sv) => (
-          <Cell key={sv} sv={sv} s={by.get(sv)} lit={lit.has(sv)} compact={compact} />
+          <Cell key={sv} sv={sv} s={by.get(sv)} lit={lit.has(sv)} compact={compact} note={annotate?.[sv]} />
         ))}
       </div>
       {extra.length > 0 && (
