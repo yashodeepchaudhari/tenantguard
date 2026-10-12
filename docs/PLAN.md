@@ -372,4 +372,11 @@ Build:
   - `ChargeCmd` contract added; `QueueStat.retries` added; `gateway.retry_budget` key added.
   - A retry = a repeated Idempotency-Key, or a repeat of a full fingerprint (method + path + full query + body hash) whose previous attempt FAILED within window_s. Class-level matching would punish normal repeat traffic.
   - Lanes are express > interactive > batch.
+- 2026-10-12 (2b review of T1/T3/T4):
+  - **Security:** `/admin/*` and `/control/*` on the gateway require header `X-TenantGuard-Control-Token` (env `TENANTGUARD_CONTROL_TOKEN`, default `dev`). The brain, UI (`VITE_CONTROL_TOKEN`) and lab send it.
+  - `/api/` path traversal blocked; x-admin-token and client x-tenantguard-* stripped.
+  - TTLs finite and ≤ `gateway.ttl_max_s`; quotas finite and ≤ `gateway.quota_max`.
+  - Brain: time-based baseline (`baseline_half_life_s`, frozen while a neighbour over-uses), hold by `hold_ratio`, sends serialised per tenant, reconcile overrides on start.
+  - The UI reads thresholds from `StateSnapshot.noisy_thresholds`.
+  - Gateway fixes are T7 step 0; brain fixes T8; UI fixes T9; lab token T5.
 - 2026-10-12: Cost bucket is debited with the worker-measured CPU (`X-TenantGuard-Cpu-Ms`) rather than an estimate, so it is a real resource quota, not a request count.

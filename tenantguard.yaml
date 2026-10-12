@@ -40,6 +40,8 @@ gateway:
   fail_static_after_s: 2
   batch_routes: ["/api/export"]
   upstream_timeout_s: 30
+  ttl_max_s: 3600               # control overrides: 0 < ttl_s <= this and finite, else 400
+  quota_max: {rate_rps: 10000, burst: 20000, cost_ms_per_s: 100000, concurrency: 1024}   # PATCH/POST bounds (finite, >0, <= these)
   retry_budget: {ratio: 0.1, window_s: 10, min_allowed: 3}   # retries allowed <= max(min_allowed, ratio * first attempts in window); else 429 retry_budget
   limiter: {min_window: 2, max_window: 64, initial_window: 8}
 
@@ -70,7 +72,9 @@ brain:
     throttle_factor: 0.5        # AIMD multiplicative decrease
     recover_step: 0.1           # additive increase per recovery tick
     min_victim_impact: 0.2      # neighbours must be hurt at least this much before anyone is flagged
-    baseline_alpha: 0.05        # calm-period EWMA for baseline p95
+    baseline_alpha: 0.05        # (legacy, per-frame) superseded by baseline_half_life_s
+    baseline_half_life_s: 60    # time-based EWMA for the calm baseline p95; frozen while a neighbour over-uses
+    hold_ratio: 0.8             # a level holds if >= this share of ticks in the hold window are above threshold
     recover_tick_s: 1.0
     throttle_floor: 0.25        # lowest factor reached by AIMD before deprioritize
     deprioritize_weight: 0.25

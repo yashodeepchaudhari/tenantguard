@@ -25,6 +25,9 @@ H_REQUEST_ID = "X-Request-Id"
 # Header set by the worker on every response: handler CPU ms spent on this request,
 # as a decimal float string, e.g. "12.375". Background-job CPU is NOT included (Wave 1).
 H_CPU_MS = "X-TenantGuard-Cpu-Ms"
+# Required on every gateway /admin/* and /control/* request (brain, UI, lab send it).
+# Value = env TENANTGUARD_CONTROL_TOKEN (default "dev"); compare with hmac.compare_digest. Missing/wrong -> 401.
+H_CONTROL_TOKEN = "X-TenantGuard-Control-Token"
 
 
 # ---------- 0. Tenancy / admin (gateway /admin/*) ----------
@@ -267,6 +270,7 @@ class StateSnapshot(BaseModel):
     fairness: float               # Jain index 0..1 over per-tenant (completed rps / weight) of active tenants
     status_sentence: str
     brain_ok: bool = True
+    noisy_thresholds: Dict[str, float] = Field(default_factory=dict)   # e.g. {"warn":1.5,"throttle":2.0,"quarantine":4.0} from brain.noisy; UI must use these, not its own copies
 
 
 Stage = Literal["detected", "level_change", "rescued", "named", "proving",
