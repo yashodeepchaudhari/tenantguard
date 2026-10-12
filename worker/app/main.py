@@ -28,11 +28,15 @@ from . import work
 from .cache import TenantCache
 from .config import WorkerConfig, load_config
 from .cpuclock import thread_cpu
-from .fault import FaultInjector, FaultReq
+from tenantguard_common.contracts import FaultReq
+
+from .blackbox import BlackBox
+from .fault import FaultInjector
 from .jobs import BackgroundJobs
+from .jobs import BgBacklog
 from .memory import MB, MemoryBudget, OverBudget
 from .meter import Meters, Usage
-from .stats import ProcessTree, cgroup_cpu_limit
+from .stats import ProcessTree, cgroup_cpu_limit, cgroup_mem_limit_mb
 from .store import TenantStore
 from .tenancy import NO_CLASS, RequestMeter, request_var, tenant_var, valid_tenant
 
@@ -40,6 +44,7 @@ log = logging.getLogger("worker")
 
 SEARCH_MAX_N = 2_000_000
 INDEX_MAX_ROUNDS = 20_000
+INGEST_MAX_DOCS = 10_000
 
 
 class Worker:
@@ -48,11 +53,14 @@ class Worker:
     def __init__(self, cfg: WorkerConfig) -> None:
         self.cfg = cfg
         self.meters = Meters()
-        self.store = TenantStore(cfg.data_dir, self.meters, cfg.seed_rows)
+        self.known_tenants = frozenset(cfg.tenants)
+        self.store = TenantStore(cfg.data_dir, self.meters, cfg.seed_rows, self.known_tenants)
         self.cache = TenantCache(int(cfg.cache_mb * MB), cfg.cache_guaranteed_share)
-        self.memory = MemoryBudget(cfg.tenant_mem_budget_mb, self.cache.tenant_bytes)
-        self.jobs = BackgroundJobs(self.meters, cfg.bg_threads)
+        self.memory = MemoryBudget(cfg.tenant_mem_budget_mb, self.cache.tenant_bytes, self.cache.total_bytes,
+                                   lambda: self.mem_limit_mb() - cfg.mem_baseline_mb)
+        self.jobs = BackgroundJobs(self.meters, cfg.bg_threads, cfg.bg_pending_per_tenant, cfg.bg_pending_total)
         self.fault = FaultInjector()
+        self.blackbox = BlackBox(cfg.blackbox_cpu_ms_per_doc, cfg.blackbox_queue_max)
         self.tree = ProcessTree()
         self.store.reset_and_seed(cfg.tenants)
 
@@ -77,6 +85,9 @@ class Worker:
             return self.cfg.cpu_limit_env
         return cgroup_cpu_limit() or self.cfg.cpus
 
+    def mem_limit_mb(self) -> float:
+        return cgroup_mem_limit_mb() or self.cfg.mem_limit_mb
+
     def stats(self) -> WorkerStats:
         usage, classes = self.meters.snapshot()
         tenants = sorted(set(self.cfg.tenants) | set(usage))
@@ -86,14 +97,15 @@ class Worker:
             rows.append(Meters.to_contract(t, u, mem_mb=round(self.memory.used_mb(t), 3), **self.cache.counters(t)))
         return WorkerStats(
             server=self.cfg.server, ts=time.time(), started_at=self.tree.started_at,
-            cpu_total_ms=round(self.tree.cpu_total_ms(), 3), blackbox_cpu_ms=0.0,
+            cpu_total_ms=round(self.tree.cpu_total_ms(), 3), blackbox_cpu_ms=round(self.blackbox.cpu_ms(), 3),
             cpu_limit_cores=self.cpu_limit_cores(), mem_mb=round(self.tree.rss_mb(), 2),
             fault=self.fault.current(), tenants=rows, classes=classes)
 
     def close(self) -> None:
         self.fault.clear()
-        self.jobs.shutdown()
-        self.store.close()
+        self.blackbox.close()
+        self.jobs.shutdown(timeout=5)  # cancel queued jobs, wait for running ones
+        self.store.close()             # closes each connection under its lock
 
 
 def _error(status: int, error: str, detail: str, tenant: Optional[str] = None) -> JSONResponse:
@@ -152,6 +164,8 @@ class TenantMiddleware:
                 return await reject(400, "missing_tenant", f"{H_TENANT} header is required")
             if not valid_tenant(tenant):
                 return await reject(400, "bad_tenant", f"invalid {H_TENANT}")
+            if tenant not in self.w.known_tenants:  # exact match: "a" is not "A" (case-insensitive FS)
+                return await reject(400, "unknown_tenant", f"tenant {tenant!r} is not configured")
             meter.tenant = tenant
             meter.bytes_in = len(body)
         else:
@@ -166,10 +180,23 @@ class TenantMiddleware:
                 return {"type": "http.request", "body": bytes(body), "more_body": False}
             return await receive()
 
+        started = False
+
+        async def send_tracked(message: Message) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send_with_cpu(message)
+
         t_tok = tenant_var.set(meter.tenant)
         r_tok = request_var.set(meter)
         try:
-            await self.app(scope, replay, send_with_cpu)
+            await self.app(scope, replay, send_tracked)
+        except Exception:
+            if started:
+                raise
+            log.exception("unhandled error on %s %s (tenant %s)", scope.get("method"), scope["path"], meter.tenant)
+            await _error(500, "internal_error", "unhandled worker error", meter.tenant)(scope, replay, send_with_cpu)
         finally:
             request_var.reset(r_tok)
             tenant_var.reset(t_tok)
@@ -181,6 +208,10 @@ class WriteReq(BaseModel):
     key: Optional[str] = Field(None, min_length=1, max_length=128)
     value: str
     index_rounds: int = Field(200, ge=0, le=INDEX_MAX_ROUNDS)  # background indexing cost knob
+
+
+class IngestReq(BaseModel):
+    docs: int = Field(10, ge=1, le=INGEST_MAX_DOCS)
 
 
 def create_app(cfg: Optional[WorkerConfig] = None) -> FastAPI:
@@ -236,10 +267,19 @@ def create_app(cfg: Optional[WorkerConfig] = None) -> FastAPI:
     @m
     def write(req: WriteReq) -> dict:
         key = req.key or f"u{uuid.uuid4().hex[:12]}"
+        try:  # reserve the background slot first, so a 503 means nothing was written
+            w.jobs.submit(index_job, key, req.value, req.index_rounds)
+        except BgBacklog as e:
+            raise HTTPException(503, {"error": "bg_backlog", "detail": str(e)})
         w.store.put(key, req.value)
         w.cache.put(key, req.value)
-        w.jobs.submit(index_job, key, req.value, req.index_rounds)
         return {"key": key, "bytes": len(req.value), "indexing": "queued", "server": cfg.server}
+
+    @app.post("/api/ingest", status_code=202)
+    @m
+    def ingest(req: IngestReq = Body(IngestReq())) -> dict:
+        """Hand docs to the vendor indexer (black box). Cheap here; the CPU is spent in the child."""
+        return {**w.blackbox.submit(req.docs), "server": cfg.server}
 
     @app.get("/api/memory")
     @m
@@ -247,13 +287,17 @@ def create_app(cfg: Optional[WorkerConfig] = None) -> FastAPI:
         try:
             return {**w.memory.hold(mb, hold_ms / 1000), "server": cfg.server}
         except OverBudget as e:
-            raise HTTPException(507, {"error": "tenant_memory_budget", "detail": str(e)})
+            raise HTTPException(507, {"error": e.kind, "detail": str(e)})
 
     @app.get("/api/export")
     @m
     def export(rows: int = Query(1000, ge=1, le=100_000), chunk: int = Query(100, ge=1, le=10_000),
                pause_ms: float = Query(20, ge=0, le=1000)) -> dict:
         """Batch export: page through the tenant's rows into CSV, pausing between chunks (slow sink)."""
+        est_s = -(-rows // chunk) * pause_ms / 1000
+        if est_s > cfg.max_request_s:
+            raise HTTPException(422, {"error": "request_too_slow",
+                                      "detail": f"estimated {est_s:.0f} s > max_request_s {cfg.max_request_s:.0f} s"})
         digest = hashlib.sha256()
         done, size, after = 0, 0, ""
         while done < rows:
@@ -301,7 +345,8 @@ def create_app(cfg: Optional[WorkerConfig] = None) -> FastAPI:
 
     @app.get("/healthz")
     def healthz() -> dict:
-        return {"ok": True, "server": cfg.server, "bg_pending": w.jobs.pending}
+        return {"ok": True, "server": cfg.server, "bg_pending": w.jobs.pending,
+                "bg_pending_by_tenant": w.jobs.pending_by_tenant(), "blackbox": w.blackbox.status()}
 
     @app.get("/stats", response_model=WorkerStats)
     def stats() -> WorkerStats:

@@ -48,9 +48,29 @@ def test_repository_takes_tenant_only_from_context(worker):
         worker.cache.get("k0001")
 
 
-def test_runtime_tenant_gets_own_seeded_db(client):
-    r = client.get("/api/read", params={"key": "k0002"}, headers=hdr("Znew"))
-    assert r.status_code == 200 and r.json()["value"].startswith("Znew|k0002|")
+def test_case_variant_of_a_tenant_cannot_reach_its_data(client, worker):
+    # On a case-insensitive filesystem "a" would open A.db; ids must match the allow-list exactly.
+    client.post("/api/write", json={"key": "secret", "value": "A-private"}, headers=hdr("A"))
+    r = client.get("/api/read", params={"key": "secret"}, headers=hdr("a"))
+    assert r.status_code == 400 and r.json()["error"] == "unknown_tenant"
+    assert "A-private" not in r.text
+
+
+def test_unknown_tenant_rejected_and_creates_no_file(client, worker):
+    r = client.get("/api/read", params={"key": "k0001"}, headers=hdr("zz-unknown"))
+    assert r.status_code == 400 and r.json()["error"] == "unknown_tenant"
+    assert not (worker.store.dir / "zz-unknown.db").exists()
+    assert "zz-unknown" not in {t["tenant"] for t in client.get("/stats").json()["tenants"]}
+
+
+def test_store_refuses_unknown_tenant_even_in_context(worker):
+    from app.store import UnknownTenantError
+    token = tenant_var.set("a")
+    try:
+        with pytest.raises(UnknownTenantError):
+            worker.store.get("secret")
+    finally:
+        tenant_var.reset(token)
 
 
 @pytest.mark.parametrize("bad", ["../A", "A/../../etc", "_canary", "x" * 40, "a b"])

@@ -1,0 +1,6 @@
+# Worker dev overlay: publish w0..w2 on the host for demos / calibration.
+# docker compose -f docker-compose.yml -f worker/compose.dev.yml up -d w0 w1 w2
+services:
+  w0: {ports: ["18100:8100"]}
+  w1: {ports: ["18101:8100"]}
+  w2: {ports: ["18102:8100"]}

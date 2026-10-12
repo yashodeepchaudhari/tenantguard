@@ -1,0 +1,346 @@
+"""The case book (pure: no I/O, `now` passed in).
+
+- brain IncidentEvent  -> create / update a CaseView (one per incident_id; case_id INC-NNNN assigned here)
+- Web owner / decision -> updated CaseView + the control commands to send (executed by bridge.py)
+- deadlines            -> expire pending actions (TenantGuard's safe default: TTL auto-undo)
+- CaseView             -> the partner's wire Case (HH:MM:SS strings appear only there)
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Dict, Iterable, List, Optional, Tuple
+
+from pydantic import BaseModel
+from tenantguard_common.contracts import (BlockCmd, CaseAction, CaseContext, CaseHistoryItem, CaseView,
+                                          IncidentEvent, OperatorCmd, TenantConfig)
+
+from . import wire
+from .settings import HandoffSettings
+from .timefmt import from_ist, ist
+
+SEVERITY = {"normal": "low", "warn": "low", "throttle": "medium", "deprioritize": "medium",
+            "quarantine": "high", "blocked": "high"}
+SEV_RANK = {"low": 0, "medium": 1, "high": 2}
+VERDICTS = set(wire.Verdict.__args__)  # type: ignore[attr-defined]
+HOLD_LEVELS = ("throttle", "deprioritize", "quarantine", "blocked")
+STAGE_TEXT = {"detected": "Detected", "level_change": "Level", "rescued": "Victims rescued", "named": "Named",
+              "proving": "Proving", "verdict": "Verdict", "resolved": "Resolved", "explained": "Explained",
+              "closed": "Closed"}
+
+
+def _first_sentence(text: str, limit: int = 120) -> str:
+    t = (text or "").split(": ", 1)[-1]
+    t = t.split("; ")[0].split(". ")[0].strip().rstrip(".")
+    return t if len(t) <= limit else t[: limit - 3] + "..."
+
+
+@dataclass
+class Command:
+    """A control call the bridge must make: target 'brain' (POST /api/operator) or 'gateway' (POST /control/...)."""
+    target: str
+    path: str
+    body: BaseModel
+
+
+@dataclass
+class _Case:
+    view: CaseView
+    version: int = 0
+    kinds: Dict[str, str] = field(default_factory=dict)      # action_id -> "hold" | "block"
+    level: str = "normal"
+    block_applied: bool = False
+    seen: set = field(default_factory=set)                   # (stage, ts) of events already applied
+
+
+class DecisionError(Exception):
+    def __init__(self, status: int, detail: str):
+        super().__init__(detail)
+        self.status, self.detail = status, detail
+
+
+class CaseBook:
+    def __init__(self, settings: HandoffSettings, tenants: Iterable[TenantConfig], next_seq: int = 1,
+                 id_map: Optional[Dict[str, str]] = None):
+        self.s = settings
+        self.tenants = {t.id: t for t in tenants}
+        self.next_seq = next_seq
+        self.by_incident: Dict[str, str] = dict(id_map or {})
+        self.cases: Dict[str, _Case] = {}
+
+    # ----- helpers -----
+    def _name(self, tenant: Optional[str]) -> str:
+        t = self.tenants.get(tenant or "")
+        return f"{t.name} ({t.id})" if t else (tenant or "unknown tenant")
+
+    def neighbours(self, tenant: Optional[str]) -> List[str]:
+        """Tenants sharing at least one server with `tenant` (its barcode neighbours: the potential victims)."""
+        me = self.tenants.get(tenant or "")
+        if not me:
+            return []
+        mine = set(me.servers)
+        return sorted(t.id for t in self.tenants.values() if t.id != me.id and mine & set(t.servers))
+
+    def _history(self, c: _Case, now: float, text: str) -> None:
+        c.view.history.append(CaseHistoryItem(at=now, time_ist=ist(now), event=text))
+
+    def _touch(self, c: _Case, now: float) -> None:
+        v = c.view
+        if v.status not in ("resolved", "closed"):
+            v.status = "waiting_for_decision" if any(a.state == "pending" for a in v.actions) else "in_progress"
+        v.updated_at = now
+        c.version += 1
+
+    def _new_action(self, c: _Case, kind: str, text: str, deadline: float) -> CaseAction:
+        a = CaseAction(action_id=f"A{len(c.view.actions) + 1}", text=text, deadline_at=deadline,
+                       deadline_ist=ist(deadline))
+        c.view.actions.append(a)
+        c.kinds[a.action_id] = kind
+        return a
+
+    def _pending(self, c: _Case, kind: str) -> Optional[CaseAction]:
+        return next((a for a in c.view.actions if a.state == "pending" and c.kinds.get(a.action_id) == kind), None)
+
+    def get(self, case_id: str) -> Optional[CaseView]:
+        c = self.cases.get(case_id)
+        return c.view if c else None
+
+    def version(self, case_id: str) -> int:
+        return self.cases[case_id].version
+
+    # ----- brain -> case -----
+    def on_event(self, ev: IncidentEvent, now: float) -> Optional[str]:
+        """Apply one incident event; returns the case_id if the case changed."""
+        case_id = self.by_incident.get(ev.incident_id)
+        c = self.cases.get(case_id) if case_id else None
+        if c is None:
+            if case_id is None:
+                case_id = f"INC-{self.next_seq:04d}"
+                self.next_seq += 1
+                self.by_incident[ev.incident_id] = case_id
+            name = self._name(ev.tenant)
+            server_incident = not ev.tenant
+            title = (f"Servers slower than their peers: {_first_sentence(ev.detail)}" if server_incident
+                     else f"{name} is using more than its fair share and slowing its neighbours")
+            c = _Case(view=CaseView(
+                case_id=case_id, incident_id=ev.incident_id, tenant=ev.tenant or None,
+                title=title, severity="medium" if server_incident else "low", status="in_progress",
+                context=CaseContext(verdict="over_plan", affected=self.neighbours(ev.tenant),
+                                    evidence_link=f"{self.s.ui_url.rstrip('/')}/case/{ev.incident_id}",
+                                    summary=ev.detail or f"Incident opened for {name}."),
+                created_at=now, updated_at=now))
+            self.cases[case_id] = c
+        key = (ev.stage, ev.ts, ev.level)
+        if key in c.seen:
+            return None                                   # replayed event (e.g. after a WS reconnect)
+        c.seen.add(key)
+        v, name = c.view, self._name(ev.tenant)
+
+        label = STAGE_TEXT.get(ev.stage, ev.stage)
+        if ev.stage == "level_change" and ev.level:
+            label = f"Level {ev.prev_level or c.level} -> {ev.level}"
+        self._history(c, now, f"{label}: {ev.detail}" if ev.detail else label)
+        if ev.detail:
+            v.context.summary = ev.detail
+        if ev.verdict in VERDICTS:
+            v.context.verdict = ev.verdict
+            self._history(c, now, f"Verdict: {ev.verdict.replace('_', ' ')}")
+
+        if ev.stage == "named":
+            self._on_named(c, ev, now)
+
+        if ev.level:
+            c.level = ev.level
+            sev = SEVERITY.get(ev.level, "low")
+            if SEV_RANK[sev] > SEV_RANK[v.severity]:
+                v.severity = sev
+            self._on_level(c, ev.level, name, now)
+
+        if ev.stage == "resolved":
+            self._expire_all(c, now, "incident resolved by TenantGuard")
+            v.status = "resolved"
+        elif ev.stage == "closed":
+            self._expire_all(c, now, "incident closed")
+            v.status = "closed"
+        self._touch(c, now)
+        return case_id
+
+    def _on_level(self, c: _Case, level: str, name: str, now: float) -> None:
+        hold = self._pending(c, "hold")
+        if level in HOLD_LEVELS:
+            ttl = self.s.ttl_quarantine_s if level in ("quarantine", "blocked") else self.s.ttl_throttle_s
+            deadline = now + ttl
+            text = (f"{name} is at level '{level}'. TenantGuard auto-reverts it at {ist(deadline)} IST unless "
+                    f"renewed. Extend (hold it {self.s.extend_s:.0f} s longer) or release (back to its full plan)?")
+            if hold:
+                hold.text, hold.deadline_at, hold.deadline_ist = text, deadline, ist(deadline)
+            else:
+                self._new_action(c, "hold", text, deadline)
+            if level == "quarantine" and not self._pending(c, "block") and not c.block_applied:
+                d = now + self.s.decision_window_s
+                self._new_action(c, "block", f"Approve blocking {name} entirely for {self.s.block_s:.0f} s "
+                                             f"(TTL-bound, auto-undo). Reject keeps the quarantine limits only.", d)
+        elif hold:                                         # back to warn / normal: nothing left to hold
+            hold.state = "expired"
+            self._history(c, now, f"{hold.action_id} no longer needed: {name} is back to '{level}'")
+
+    def _on_named(self, c: _Case, ev: IncidentEvent, now: float) -> None:
+        """A server incident named its culprit: adopt it, and ask the on-call whether to block it (TTL-bound)."""
+        top = max(ev.suspects, key=lambda x: x.confidence, default=None)
+        if top is None or top.confidence < self.s.confidence_to_name:
+            return
+        v = c.view
+        if not v.tenant:
+            v.tenant = top.tenant
+            v.title = f"{self._name(top.tenant)} named as the cause of slow servers ({top.confidence:.0%} confidence)"
+            v.context.affected = self.neighbours(top.tenant)
+        if v.severity != "high":
+            v.severity = "high"
+        if top.tenant == v.tenant and not self._pending(c, "block") and not c.block_applied:
+            d = now + self.s.decision_window_s
+            self._new_action(c, "block", f"{self._name(top.tenant)} is named ({top.confidence:.0%}) as the cause; "
+                                         f"its neighbours were already rescued. Approve blocking it for "
+                                         f"{self.s.block_s:.0f} s (TTL-bound, auto-undo)? Reject keeps the rescue only.",
+                             d)
+
+    def _expire_all(self, c: _Case, now: float, why: str) -> None:
+        for a in c.view.actions:
+            if a.state == "pending":
+                a.state = "expired"
+                self._history(c, now, f"{a.action_id} closed without a decision: {why}")
+
+    # ----- deadlines -----
+    def expire(self, now: float) -> List[str]:
+        """Pending actions past their deadline get TenantGuard's safe default (timer auto-undo)."""
+        changed = []
+        for cid, c in self.cases.items():
+            hit = False
+            for a in c.view.actions:
+                if a.state == "pending" and a.deadline_at <= now:
+                    a.state = "expired"
+                    self._history(c, now, f"No decision on {a.action_id} by {a.deadline_ist}: "
+                                          f"safe default applied (timers auto-undo)")
+                    hit = True
+            if hit:
+                self._touch(c, now)
+                changed.append(cid)
+        return changed
+
+    # ----- Web -> TenantGuard -----
+    def on_owner(self, upd: wire.CaseUpdateOwner, now: float) -> str:
+        c = self.cases.get(upd.case_id)
+        if c is None:
+            raise DecisionError(404, f"unknown case {upd.case_id}")
+        at = from_ist(upd.time, now)
+        prev = c.view.owner
+        c.view.owner, c.view.owner_since_at, c.view.owner_since_ist = upd.owner, at, ist(at)
+        self._history(c, now, f"Owner: {upd.owner} acknowledged" + (f" (handed over from {prev})" if prev else ""))
+        self._touch(c, now)
+        return upd.case_id
+
+    def on_decision(self, upd: wire.CaseUpdateDecision, now: float) -> Tuple[str, List[Command]]:
+        c = self.cases.get(upd.case_id)
+        if c is None:
+            raise DecisionError(404, f"unknown case {upd.case_id}")
+        v, t = c.view, c.view.tenant or ""
+        if upd.decision == "resolve":
+            return upd.case_id, self._resolve(c, upd, now)
+        a = next((x for x in v.actions if x.action_id == upd.action_id), None)
+        if a is None:
+            raise DecisionError(404, f"unknown action {upd.action_id} in {upd.case_id}")
+        kind = c.kinds.get(a.action_id)
+        allowed = {"hold": {"pending": {"approve", "reject", "extend", "release"}, "extended": {"extend", "release"}},
+                   "block": {"pending": {"approve", "reject"}, "approved": {"extend", "release"}}}
+        if upd.decision not in allowed.get(kind, {}).get(a.state, set()):
+            raise DecisionError(409, f"{upd.action_id} is {a.state}; '{upd.decision}' is not possible now")
+        cmds: List[Command] = []
+        hold_s = min(self.s.extend_s, self.s.ttl_max_s)
+        name = self._name(t)
+        if kind == "hold":
+            if upd.decision in ("approve", "extend"):
+                cmds.append(Command("brain", "/api/operator", OperatorCmd(
+                    tenant=t, decision="extend", until_s=hold_s, by=upd.by, case_id=v.case_id)))
+                a.state = "extended"
+                a.deadline_at = max(a.deadline_at, now) + hold_s
+                a.deadline_ist = ist(a.deadline_at)
+                self._history(c, now, f"{upd.by}: {upd.decision} {a.action_id}: hold {name} at its current level "
+                                      f"{hold_s:.0f} s longer")
+            elif upd.decision == "release":
+                cmds.append(Command("brain", "/api/operator", OperatorCmd(
+                    tenant=t, decision="release", until_s=hold_s, by=upd.by, case_id=v.case_id)))
+                a.state = "released"
+                self._history(c, now, f"{upd.by}: release {a.action_id}: {name} back to its full plan "
+                                      f"(no re-escalation for {hold_s:.0f} s)")
+            else:
+                a.state = "rejected"
+                self._history(c, now, f"{upd.by}: reject {a.action_id}: no change; timers auto-undo as planned")
+        else:   # block
+            block_s = min(self.s.block_s, self.s.ttl_max_s)
+            if upd.decision in ("approve", "extend"):
+                cmds.append(Command("gateway", "/control/block", BlockCmd(
+                    tenant=t, blocked=True, ttl_s=block_s, incident_id=v.incident_id)))
+                c.block_applied = True
+                a.state = "approved"
+                a.deadline_at = now + block_s
+                a.deadline_ist = ist(a.deadline_at)
+                self._history(c, now, f"{upd.by}: {upd.decision} {a.action_id}: {name} blocked until "
+                                      f"{a.deadline_ist} (auto-undo)")
+            elif upd.decision == "release":
+                cmds.append(Command("gateway", "/control/block", BlockCmd(
+                    tenant=t, blocked=False, incident_id=v.incident_id)))
+                c.block_applied = False
+                a.state = "released"
+                self._history(c, now, f"{upd.by}: release {a.action_id}: block on {name} lifted")
+            else:
+                a.state = "rejected"
+                self._history(c, now, f"{upd.by}: reject {a.action_id}: no block; quarantine limits stay")
+        a.decided_by, a.decided_at = upd.by, now
+        self._touch(c, now)
+        return upd.case_id, cmds
+
+    def _resolve(self, c: _Case, upd: wire.CaseUpdateDecision, now: float) -> List[Command]:
+        v, t = c.view, c.view.tenant or ""
+        cmds: List[Command] = []
+        if c.block_applied:
+            cmds.append(Command("gateway", "/control/block", BlockCmd(tenant=t, blocked=False,
+                                                                      incident_id=v.incident_id)))
+            c.block_applied = False
+        if any(c.kinds.get(a.action_id) == "hold" and a.state == "extended" for a in v.actions):
+            cmds.append(Command("brain", "/api/operator", OperatorCmd(
+                tenant=t, decision="resume", until_s=1.0, by=upd.by, case_id=v.case_id)))
+        for a in v.actions:
+            if a.state in ("pending", "extended", "approved"):
+                a.state = "resolved"
+                a.decided_by, a.decided_at = upd.by, now
+        v.status = "resolved"
+        self._history(c, now, f"{upd.by}: resolved the case; bridge-applied controls cleared")
+        self._touch(c, now)
+        return cmds
+
+    def note(self, case_id: str, now: float, text: str) -> None:
+        """Record the outcome of a control call in the case history."""
+        c = self.cases.get(case_id)
+        if c:
+            self._history(c, now, text)
+            self._touch(c, now)
+
+    def mark_delivered(self, case_id: str, version: int, at: float) -> None:
+        c = self.cases.get(case_id)
+        if c and version == c.version:
+            c.view.delivered_at = at
+
+    # ----- internal -> wire -----
+    def to_wire(self, case_id: str) -> wire.Case:
+        v = self.cases[case_id].view
+        return wire.Case(
+            case_id=v.case_id, title=v.title, severity=v.severity, status=v.status,
+            context=wire.CaseContext(
+                verdict=v.context.verdict,
+                affected=[t for t in v.context.affected if t in wire.TENANT_IDS],
+                evidence_link=v.context.evidence_link, summary=v.context.summary),
+            pending_actions=[wire.PendingAction(action_id=a.action_id, text=a.text, deadline=a.deadline_ist)
+                             for a in v.actions if a.state == "pending"],
+            history=[wire.HistoryItem(time=h.time_ist, event=h.event) for h in v.history])
+
+    # ----- persistence of ids (cases themselves are rebuilt from the brain stream) -----
+    def id_state(self) -> dict:
+        return {"next_seq": self.next_seq, "by_incident": dict(self.by_incident)}
