@@ -10,37 +10,50 @@ python -m tenantguard_gateway              # binds 0.0.0.0:8000 (port from tenan
 python -m pytest                           # needs pytest (requirements-dev.txt)
 python tools/stub_worker.py --name w0 --port 8100   # optional echo worker; the real one is worker/
 python tools/prove.py                      # end-to-end proof against a running gateway + workers
+python tools/prove_t7.py whale|storm|security   # wave 2 proof (express lane, retry storm, window, hardening)
 docker compose up gateway                  # from the repo root
 ```
 
-Env: `TENANTGUARD_WORKER_URLS` (`w0=http://..,w1=..`, else `tenantguard.yaml workers`), `TENANTGUARD_CORS_ORIGINS` (comma list, default `http://127.0.0.1:5173,http://localhost:5173`), `TENANTGUARD_GATEWAY_HOST` / `TENANTGUARD_GATEWAY_PORT`, `TENANTGUARD_UPSTREAM_TIMEOUT_S` (default 30).
+Env: `TENANTGUARD_CONTROL_TOKEN` (default `dev`; required as `X-TenantGuard-Control-Token` on every `/admin/*` and `/control/*` call, else 401), `TENANTGUARD_WORKER_URLS` (`w0=http://..,w1=..`, else `tenantguard.yaml workers`), `TENANTGUARD_CORS_ORIGINS` (comma list, default `http://127.0.0.1:5173,http://localhost:5173`), `TENANTGUARD_GATEWAY_HOST` / `TENANTGUARD_GATEWAY_PORT`, `TENANTGUARD_UPSTREAM_TIMEOUT_S` (overrides yaml `gateway.upstream_timeout_s`).
 
 ## Request path (`ANY /api/{path}`)
-1. **Identity**: the SHA-256 of `X-API-Key` maps to the tenant; only the hash is kept. A missing or unknown key gets **401** JSON. A body over `worker.body_limit_bytes` gets **413**.
-2. **Class**: `sha1(METHOD|path|sorted query keys|body-size bucket)[:8]`, sent to the worker as `X-TenantGuard-Class`.
-3. **Admission** (all modes except `off`). Every dimension is checked, and a token is consumed only if all of them pass:
+1. **Identity**: the SHA-256 of `X-API-Key` maps to the tenant; only the hash is kept. A missing or unknown key gets **401**, and the body is never read.
+2. **Hardening**:
+   - The path must provably stay under `/api/`, else **400** `bad_path`. Rejected: encoded `/` `\` NUL `#` `?`, `.` or `..` segments, `//`, control characters. The raw path is forwarded, so the worker decodes exactly what was checked.
+   - `Content-Length` over `worker.body_limit_bytes` gets **413** before reading. The body is read as a capped stream, so a chunked body over the limit also gets 413.
+   - `X-Request-Id` must match `^[A-Za-z0-9-]{1,64}$`, else a fresh one is generated. It is forwarded exactly once.
+   - Client `X-TenantGuard-*`, `X-Admin-Token`, `X-Request-Id` and `X-API-Key` headers are never forwarded.
+3. **Class**: `sha1(METHOD|path|sorted query keys|body-size bucket)[:8]`, sent to the worker as `X-TenantGuard-Class`.
+4. **Retry budget** (industry, tenantguard). A request is a retry if it repeats an `Idempotency-Key`, or repeats the fingerprint (method + path + full query + body hash) of a request that **failed** (429/503/5xx) within `retry_budget.window_s`. Plain repeat traffic is not a retry. Retries are allowed while retries in the window stay ≤ max(`min_allowed`, `ratio` × first attempts in the window), else **429** reason `retry_budget`. Retries are counted in `QueueStat.retries` and `tenantguard_retries_total`.
+5. **Admission** (all modes except `off`). Every dimension is checked, and a token is consumed only if all of them pass:
    - block (control);
    - token bucket (`rate_rps`, `burst`);
-   - cost bucket in CPU-ms: refills at `cost_ms_per_s`, capacity `cost_ms_per_s × gateway.cost_bucket_s`. It is debited **after** the response with the worker's `X-TenantGuard-Cpu-Ms`, and requests are refused while it is negative;
+   - cost bucket in CPU-ms: refills at `cost_ms_per_s`, capacity `cost_ms_per_s × gateway.cost_bucket_s`. It is debited **after** the response with the worker's `X-TenantGuard-Cpu-Ms`. If the client disconnects mid-flight, the class estimate is debited instead;
    - concurrency (queued + in flight).
 
-   A refusal returns **429** with `Retry-After`: integer seconds, rounded up, equal to the time until *every* refusing dimension passes (the concurrency dimension advertises 1 s). The JSON body carries `reasons` and `retry_after_ms`, and the response carries the `RateLimit-Policy` / `RateLimit` headers (structured-field draft, one named policy per dimension: `rate`, `cost`, `concurrency`). These headers are also on every admitted response.
-4. **Scheduler**: per-tenant queues served by weighted DRR.
-   - Weight = tier weight × `weight_factor`.
-   - Quantum = 5 CPU-ms × weight per turn.
-   - An item costs its (tenant, class) EWMA of measured CPU, default 5 ms.
-   - `off` mode uses one global FIFO (same queues, ordered by arrival).
-   - Bounded wait comes from `gateway.max_queue_wait_ms` (`interactive`; `batch` for `/api/export`). An expired request gets **503** `queue_timeout` and is never forwarded.
-   - Dispatch is limited per worker by `limiter.initial_window` (fixed in Wave 1).
-5. **Routing**: weighted random among the tenant's servers that have a free slot (equal weights by default). In `tenantguard` mode, route weights, relocation (tenant or tenant/class → `spare`/`quarantine`/`wN`) and drains apply. Drains never black-hole a tenant: if every candidate is drained, the request falls back to the barcode.
-6. **Forward** with a pooled httpx client. The gateway adds `X-TenantGuard-Tenant`, `X-TenantGuard-Class` and `X-Request-Id`, and drops `X-API-Key` and any client-supplied trusted headers. The response carries `X-TenantGuard-Server`. An unreachable worker gives **502**. A response with a missing or unparseable CPU header debits 0 and is counted in `tenantguard_cpu_header_missing_total`.
+   A refusal returns **429** with `Retry-After`: integer seconds, rounded up, equal to the time until every refusing dimension passes. The JSON body carries `reasons` and `retry_after_ms`, plus the `RateLimit-Policy` / `RateLimit` headers.
+6. **Lanes**: three weighted-DRR schedulers, served express → interactive → batch, each per-tenant fair (weight = tier weight × `weight_factor`; quantum 5 CPU-ms × weight).
+   - **express**: the class reference cost is < `gateway.express_cost_ms`. It may use the whole worker window.
+   - **interactive**: the default. It may use the window minus max(1, window/8), which keeps headroom for express.
+   - **batch**: the client sends `X-TenantGuard-Class: batch`, or the path is in `gateway.batch_routes`. It waits up to `max_queue_wait_ms.batch` and only starts when slots < window/2. When interactive or express work is waiting and a queued batch item's servers have no interactive headroom, the batch item is **shed** (503 `shed`).
+   - Reference cost: a brain `reference_costs` entry (tenantguard mode) > the measured (tenant, class) EWMA > 5 ms.
+   - The bounded wait expires with **503** `queue_timeout`, and the request is never forwarded.
+   - `off` mode: one FIFO, no lanes.
+7. **Adaptive window per worker** (industry, tenantguard; fixed `initial_window` in `off`). Gradient limiter: `new = old × (minRTT / sampleRTT) + sqrt(old)`, smoothed (0.2), clamped to `limiter.min_window..max_window`.
+   - The RTT is the worker-side **excess** latency (upstream ms − the request's own CPU ms). An expensive request is not counted as congestion; waiting inside the worker is.
+   - Each tick takes the median of that tick's samples.
+   - minRTT drifts up 0.1% per tick, so a permanently slower host is re-baselined.
+   - The window does not grow unless at least half of it is in use.
+   - The window is exposed in `LimiterStat.window` and `tenantguard_worker_window`.
+8. **Routing**: weighted random among the tenant's servers that have a free slot in that lane. In `tenantguard` mode, route weights, relocation and drains apply. Drains never black-hole a tenant.
+9. **Forward** with a pooled httpx client (timeout `gateway.upstream_timeout_s`). The gateway adds `X-TenantGuard-Tenant`, `X-TenantGuard-Class` and `X-Request-Id`. The response carries `X-TenantGuard-Server` and `X-TenantGuard-Lane`. An unreachable worker gives **502**. A missing or unparseable CPU header debits 0 and is counted in `tenantguard_cpu_header_missing_total`.
 
 ## Modes
 | | admission | scheduler | control overrides |
 |---|---|---|---|
-| `off` | none | FIFO | stored, not applied |
-| `industry` | rate + cost + concurrency | weighted DRR | stored, not applied |
-| `tenantguard` | same + LimitsCmd/BlockCmd | DRR × weight_factor | applied |
+| `off` | none | one FIFO, fixed window | stored, not applied |
+| `industry` | retry budget + rate + cost + concurrency | 3 DRR lanes, adaptive window | stored, not applied |
+| `tenantguard` | same + LimitsCmd/BlockCmd | same, DRR × weight_factor | applied (incl. charge, reference_costs) |
 
 Bounded wait and the per-worker window apply in every mode, so the queue can never grow without limit.
 
@@ -63,8 +76,11 @@ Bounded wait and the per-worker window apply in every mode, so the queue can nev
 | `POST /control/relocate` | `RelocateCmd`: `target=None` clears it |
 | `POST /control/drain` | `DrainCmd`: `drained=false` clears it |
 | `POST /control/heartbeat` | `Heartbeat`: the gateway records its *own* receive time |
+| `POST /control/charge` | `ChargeCmd`: debits background CPU from the cost bucket. tenantguard mode only (otherwise `ignored: mode`); idempotent by `charge_id` (the last 1024 are kept); 400 if `cpu_ms` < 0, not finite, or the tenant is unknown |
+| `POST /control/reference_costs` | `ReferenceCostsCmd`: the latest table replaces the previous one; values must be finite and > 0. Applied in tenantguard mode |
+| `GET /admin/reference_costs` | the pushed table plus the measured (tenant/class) EWMA |
 
-Every control command has `ttl_s > 0` and reverts on its own: getters check expiry and the tick sweeps. Invalid control input, including malformed JSON, gets **400** `ControlAck(ok=false)` and never crashes the gateway. `fail_static` is true when no heartbeat has arrived within `gateway.fail_static_after_s`, or none has ever arrived. While fail-static the gateway keeps its last config and overrides still expire at their TTL.
+All `/admin/*` and `/control/*` endpoints require `X-TenantGuard-Control-Token` (compared with `hmac.compare_digest`), else 401. Quotas (POST/PATCH) must be finite, > 0 and ≤ `gateway.quota_max`. Every control override needs a finite `0 < ttl_s ≤ gateway.ttl_max_s` and reverts on its own: getters check expiry and the tick sweeps. Invalid control input, including malformed JSON, gets **400** `ControlAck(ok=false)` and never crashes the gateway. `fail_static` is true when no heartbeat has arrived within `gateway.fail_static_after_s`, or none has ever arrived. While fail-static the gateway keeps its last config and overrides still expire at their TTL.
 
 ## Layout
-`settings.py` (yaml → dataclass), `buckets.py`, `admission.py`, `scheduler.py`, `router.py`, `overrides.py`, `tenants.py` (identity, class, registry), `telemetry.py`, `metrics.py`, `core.py` (request path, event-driven dispatch), `app.py` (FastAPI). The pure modules have no I/O and take `now` explicitly.
+`settings.py` (yaml → dataclass), `buckets.py`, `admission.py`, `scheduler.py`, `limiter.py` (gradient window), `retry.py` (retry budget), `security.py` (path / request-id checks), `router.py`, `overrides.py`, `tenants.py` (identity, class, registry), `telemetry.py`, `metrics.py`, `core.py` (request path, event-driven dispatch), `app.py` (FastAPI). The pure modules have no I/O and take `now` explicitly.

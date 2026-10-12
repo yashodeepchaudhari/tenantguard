@@ -49,6 +49,15 @@ def render_metrics(gw: "Gateway") -> str:
     for tenant, v in sorted(t.c_cpu_ms.items()):
         out.append(f"tenantguard_cpu_ms_total{_labels(tenant=tenant)} {v:.3f}")
 
+    head("tenantguard_retries_total", "counter",
+         "Requests identified as retries (repeated Idempotency-Key, or repeat of a failed request).")
+    for tenant, n in sorted(t.c_retries.items()):
+        out.append(f"tenantguard_retries_total{_labels(tenant=tenant)} {n}")
+
+    head("tenantguard_charged_cpu_ms_total", "counter", "Background CPU ms charged by the brain (control/charge).")
+    for tenant, v in sorted(t.c_charged_ms.items()):
+        out.append(f"tenantguard_charged_cpu_ms_total{_labels(tenant=tenant)} {v:.3f}")
+
     head("tenantguard_cpu_header_missing_total", "counter",
          "Worker responses without a usable CPU header (cost debited 0), by tenant and server.")
     for (tenant, server), n in sorted(t.c_cpu_missing.items()):
@@ -65,22 +74,33 @@ def render_metrics(gw: "Gateway") -> str:
         out.append(f"tenantguard_request_duration_ms_sum{_labels(tenant=tenant)} {t.h_e2e_sum[tenant]:.3f}")
         out.append(f"tenantguard_request_duration_ms_count{_labels(tenant=tenant)} {cum}")
 
-    head("tenantguard_queue_depth", "gauge", "Requests queued at the gateway.")
+    head("tenantguard_queue_depth", "gauge", "Requests queued at the gateway, by lane.")
     head("tenantguard_tenant_inflight", "gauge", "Requests forwarded upstream and not yet answered.")
     head("tenantguard_cost_bucket_ms", "gauge", "Current cost-bucket level (CPU ms; negative = in debt).")
     head("tenantguard_throttle_factor", "gauge", "Active LimitsCmd factor (1 = none).")
-    for tenant in gw.registry.ids():
-        st = gw.registry.get(tenant)
-        out.append(f"tenantguard_queue_depth{_labels(tenant=tenant)} {gw.sched.depth(tenant)}")
-        out.append(f"tenantguard_tenant_inflight{_labels(tenant=tenant)} {st.inflight}")
-        out.append(f"tenantguard_cost_bucket_ms{_labels(tenant=tenant)} {st.cost.level_ms:.3f}")
+    ids = gw.registry.ids()
+    for tenant in ids:
+        for lane, sched in gw.lanes.items():
+            out.append(f"tenantguard_queue_depth{_labels(tenant=tenant, lane=lane)} {sched.depth(tenant)}")
+    for tenant in ids:
+        out.append(f"tenantguard_tenant_inflight{_labels(tenant=tenant)} {gw.registry.get(tenant).inflight}")
+    for tenant in ids:
+        out.append(f"tenantguard_cost_bucket_ms{_labels(tenant=tenant)} {gw.registry.get(tenant).cost.level_ms:.3f}")
+    for tenant in ids:
         out.append(f"tenantguard_throttle_factor{_labels(tenant=tenant)} {gw.factors(tenant)[0]}")
 
     head("tenantguard_worker_window", "gauge", "Dispatch concurrency window per worker.")
     head("tenantguard_worker_inflight", "gauge", "Requests in flight per worker.")
-    for ls in gw.limiter_stats():
+    stats = gw.limiter_stats()
+    for ls in stats:
         out.append(f"tenantguard_worker_window{_labels(server=ls.server)} {ls.window}")
+    for ls in stats:
         out.append(f"tenantguard_worker_inflight{_labels(server=ls.server)} {ls.inflight}")
+    head("tenantguard_worker_min_rtt_ms", "gauge", "Gradient limiter baseline: min worker-side excess latency.")
+    for ls in stats:
+        mr = gw.limiters[ls.server].min_rtt
+        if mr is not None:
+            out.append(f"tenantguard_worker_min_rtt_ms{_labels(server=ls.server)} {mr:.3f}")
 
     head("tenantguard_loop_lag_ms", "gauge", "How late the last telemetry tick woke up (event-loop saturation).")
     out.append(f"tenantguard_loop_lag_ms {gw.loop_lag_ms:.3f}")
