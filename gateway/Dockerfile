@@ -12,7 +12,7 @@ COPY gateway/requirements.txt /app/gateway/requirements.txt
 RUN pip install --no-cache-dir -r /app/gateway/requirements.txt
 
 COPY tenantguard.yaml /app/tenantguard.yaml
-COPY layouts /app/layouts
+COPY worker/calibration.json /app/worker/calibration.json
 COPY gateway/tenantguard_gateway /app/gateway/tenantguard_gateway
 
 WORKDIR /app/gateway

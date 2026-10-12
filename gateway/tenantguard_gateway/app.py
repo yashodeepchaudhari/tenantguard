@@ -1,4 +1,5 @@
-"""FastAPI wiring: /api/* proxy, admin + control API, telemetry WS, /metrics."""
+"""FastAPI wiring: /api/* proxy, admin views, control (snapshot from the brain, operator blocks), telemetry WS,
+/metrics. Tenants, projects and replicas come only from the brain's snapshot (the brain owns the registry)."""
 from __future__ import annotations
 
 import asyncio
@@ -9,19 +10,18 @@ import math
 import time
 from typing import List, Optional, Set
 
+import httpx
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
-from tenantguard_common.config import load_settings, load_tenants, worker_urls
-from tenantguard_common.contracts import (H_CONTROL_TOKEN, BlockCmd, ChargeCmd, ControlAck, DrainCmd, Heartbeat, LimitsCmd,
-                                          ModeBody, OverridesView, QuotaPatch, ReferenceCostsCmd, RelocateCmd,
-                                          RouteWeightsCmd, TenantAdminView, TenantConfig)
+from tenantguard_common.config import ROOT, load_settings
+from tenantguard_common.contracts import (H_CONTROL_TOKEN, BlockCmd, ControlAck, ModeBody, OverridesView, Snapshot,
+                                          TenantAdminView, WakeCmd)
 
 from .core import Gateway, Result
 from .metrics import render_metrics
 from .settings import GatewaySettings
-from .tenants import quota_problems
 
 log = logging.getLogger("tenantguard.gateway")
 API_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
@@ -35,10 +35,49 @@ def _ok(detail: str = "") -> ControlAck:
     return ControlAck(ok=True, detail=detail)
 
 
-def create_app(gw: Optional[Gateway] = None, run_ticker: bool = True) -> FastAPI:
+def snapshot_problems(snap: Snapshot, ttl_max_s: float) -> Optional[str]:
+    """Why a snapshot must be refused (400), or None."""
+    tenants = {t.id for t in snap.tenants}
+    for c in snap.limits:
+        if c.tenant not in tenants:
+            return f"limits for unknown tenant {c.tenant}"
+        if not (0 < c.factor <= 1 and 0 < c.weight_factor <= 1):
+            return f"limits for {c.tenant}: factor and weight_factor must be in (0, 1]"
+        if not (math.isfinite(c.ttl_s) and 0 < c.ttl_s <= ttl_max_s):
+            return f"limits for {c.tenant}: ttl_s must be finite and in (0, {ttl_max_s:g}]"
+    known = {r.id for rs in snap.replicas.values() for r in rs}
+    bad = sorted(t for t, r in snap.pins.items() if t not in tenants or r not in known)
+    return f"pins for unknown tenants or replicas: {bad}" if bad else None
+
+
+def brain_waker(gw: Gateway):
+    """POST /control/wake to the brain for a project with no ready replica (best effort)."""
+    async def wake(project: str) -> None:
+        try:
+            await gw.client.post(gw.s.brain_url + "/control/wake", json=WakeCmd(project=project).model_dump(),
+                                 headers={H_CONTROL_TOKEN: gw.s.control_token}, timeout=2.0)
+        except httpx.HTTPError as e:
+            log.info("wake %s not delivered: %s", project, type(e).__name__)
+    return wake
+
+
+async def fetch_snapshot(gw: Gateway) -> None:
+    """Until the first snapshot arrives (gateway start or restart), pull it from the brain every second."""
+    while gw.snapshot is None:
+        try:
+            r = await gw.client.get(gw.s.brain_url + "/snapshot", headers={H_CONTROL_TOKEN: gw.s.control_token},
+                                    timeout=2.0)
+            if r.status_code == 200 and gw.snapshot is None:
+                gw.on_snapshot(Snapshot.model_validate(r.json()))
+        except (httpx.HTTPError, ValueError) as e:
+            log.info("GET brain /snapshot failed (%s); retrying", type(e).__name__)
+        await asyncio.sleep(1.0)
+
+
+def create_app(gw: Optional[Gateway] = None, run_loops: bool = True) -> FastAPI:
     if gw is None:
-        raw = load_settings()
-        gw = Gateway(GatewaySettings.from_dict(raw), load_tenants(raw), worker_urls(raw))
+        gw = Gateway(GatewaySettings.from_dict(load_settings(), root=str(ROOT)))
+        gw.waker = brain_waker(gw)
     subscribers: Set[asyncio.Queue] = set()
 
     async def ticker() -> None:
@@ -65,14 +104,13 @@ def create_app(gw: Optional[Gateway] = None, run_ticker: bool = True) -> FastAPI
 
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI):
-        task = asyncio.create_task(ticker()) if run_ticker else None
+        tasks = [asyncio.create_task(ticker()), asyncio.create_task(fetch_snapshot(gw))] if run_loops else []
         try:
             yield
         finally:
-            if task:
+            for task in tasks:
                 task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
+            await asyncio.gather(*tasks, return_exceptions=True)
             await gw.aclose()
 
     app = FastAPI(title="TenantGuard gateway", lifespan=lifespan)
@@ -83,8 +121,7 @@ def create_app(gw: Optional[Gateway] = None, run_ticker: bool = True) -> FastAPI
     @app.exception_handler(RequestValidationError)
     async def _validation(request: Request, exc: RequestValidationError):
         # Control input is validated to 400 (PLAN §2.9); admin keeps FastAPI's 422.
-        status = 400 if request.url.path.startswith("/control/") else 422
-        if status == 400:
+        if request.url.path.startswith("/control/"):
             return _bad(f"invalid body: {exc.errors()}")
         return JSONResponse({"detail": exc.errors()}, status_code=422)
 
@@ -102,7 +139,7 @@ def create_app(gw: Optional[Gateway] = None, run_ticker: bool = True) -> FastAPI
             return bytes(buf)
 
         res: Result = await gw.handle(request.method, request.scope["path"], request.url.query,
-                                      list(request.query_params.keys()), headers, read_body,
+                                      dict(request.query_params), headers, read_body,
                                       raw_path=request.scope.get("raw_path"))
         if res.json is not None:
             return JSONResponse(res.json, status_code=res.status, headers=res.headers)
@@ -110,7 +147,8 @@ def create_app(gw: Optional[Gateway] = None, run_ticker: bool = True) -> FastAPI
 
     @app.get("/healthz")
     async def healthz():
-        return {"ok": True, "mode": gw.mode, "tenants": len(gw.registry.ids()), "workers": len(gw.workers)}
+        return {"ok": True, "mode": gw.mode, "tenants": len(gw.registry.ids()), "replicas": len(gw.urls),
+                "snapshot_version": gw.overrides.snapshot_version}
 
     # ---------- telemetry ----------
     @app.websocket("/internal/telemetry")
@@ -160,7 +198,6 @@ def create_app(gw: Optional[Gateway] = None, run_ticker: bool = True) -> FastAPI
     admin = APIRouter(dependencies=[Depends(require_token)])
     control = APIRouter(dependencies=[Depends(require_token)])
 
-    # ---------- admin ----------
     @admin.get("/admin/tenants", response_model=List[TenantAdminView])
     async def list_tenants():
         return [gw.admin_view(st) for st in gw.registry.by_id.values()]
@@ -170,43 +207,6 @@ def create_app(gw: Optional[Gateway] = None, run_ticker: bool = True) -> FastAPI
         st = gw.registry.get(tenant)
         if st is None:
             return JSONResponse({"detail": f"unknown tenant {tenant}"}, status_code=404)
-        return gw.admin_view(st)
-
-    @admin.post("/admin/tenants", response_model=TenantAdminView, status_code=201)
-    async def add_tenant(cfg: TenantConfig):
-        errs = quota_problems(cfg.quota, gw.s.quota_max)
-        unknown = [s for s in cfg.servers if s not in gw.workers]
-        if unknown:
-            errs.append(f"unknown servers {unknown}")
-        if not cfg.servers:
-            errs.append("servers must not be empty")
-        if not (math.isfinite(cfg.weight) and cfg.weight > 0):
-            errs.append("weight must be > 0")
-        if errs:
-            return JSONResponse({"detail": errs}, status_code=400)
-        try:
-            st = gw.registry.add(cfg, time.perf_counter())
-        except KeyError as e:
-            return JSONResponse({"detail": str(e.args[0])}, status_code=409)
-        return gw.admin_view(st)
-
-    @admin.delete("/admin/tenants/{tenant}")
-    async def delete_tenant(tenant: str):
-        if gw.registry.remove(tenant) is None:
-            return JSONResponse({"detail": f"unknown tenant {tenant}"}, status_code=404)
-        return {"ok": True}
-
-    @admin.patch("/admin/tenants/{tenant}/quota", response_model=TenantAdminView)
-    async def patch_quota(tenant: str, patch: QuotaPatch):
-        st = gw.registry.get(tenant)
-        if st is None:
-            return JSONResponse({"detail": f"unknown tenant {tenant}"}, status_code=404)
-        new = st.cfg.quota.model_copy(update=patch.model_dump(exclude_none=True))
-        errs = quota_problems(new, gw.s.quota_max)
-        if errs:
-            return JSONResponse({"detail": errs}, status_code=400)
-        st.cfg = st.cfg.model_copy(update={"quota": new})
-        st.configure(gw.effective_quota(st), gw.s.cost_bucket_s, time.perf_counter())
         return gw.admin_view(st)
 
     @admin.get("/admin/mode", response_model=ModeBody)
@@ -222,105 +222,28 @@ def create_app(gw: Optional[Gateway] = None, run_ticker: bool = True) -> FastAPI
     async def overrides():
         return gw.overrides.view(gw.s.fail_static_after_s)
 
-    # ---------- control (brain -> gateway) ----------
-    def _check_ttl(ttl: float) -> Optional[str]:
-        if math.isfinite(ttl) and 0 < ttl <= gw.s.ttl_max_s:
-            return None
-        return f"ttl_s must be finite and in (0, {gw.s.ttl_max_s:g}]"
+    @admin.get("/admin/costs")
+    async def costs():
+        return {"seed": gw.costs.seed,
+                "measured": {f"{t}/{c}": round(v, 3) for (t, c), v in sorted(gw.costs.measured.items())}}
 
-    def _check_tenant(t: str) -> Optional[str]:
-        return None if gw.registry.get(t) else f"unknown tenant {t}"
-
-    @control.post("/control/limits", response_model=ControlAck)
-    async def control_limits(cmd: LimitsCmd):
-        err = _check_tenant(cmd.tenant) or _check_ttl(cmd.ttl_s)
-        if not err and not 0 < cmd.factor <= 1:
-            err = "factor must be in (0, 1]"
-        if not err and not 0 < cmd.weight_factor <= 1:
-            err = "weight_factor must be in (0, 1]"
+    @control.post("/control/snapshot", response_model=ControlAck)
+    async def control_snapshot(snap: Snapshot):
+        err = snapshot_problems(snap, gw.s.ttl_max_s)
         if err:
             return _bad(err)
-        gw.overrides.set_limits(cmd)
-        gw._pump()
-        cleared = cmd.factor == 1.0 and cmd.weight_factor == 1.0
-        return _ok("cleared" if cleared else f"limits {cmd.tenant} factor={cmd.factor} "
-                                             f"weight_factor={cmd.weight_factor} ttl={cmd.ttl_s}s")
+        gw.on_snapshot(snap)
+        return _ok(f"snapshot v{snap.version}: {len(snap.tenants)} tenants, "
+                   f"{sum(len(r) for r in snap.replicas.values())} replicas")
 
     @control.post("/control/block", response_model=ControlAck)
     async def control_block(cmd: BlockCmd):
-        err = _check_tenant(cmd.tenant) or _check_ttl(cmd.ttl_s)
-        if err:
-            return _bad(err)
+        if gw.registry.get(cmd.tenant) is None:
+            return _bad(f"unknown tenant {cmd.tenant}")
+        if not (math.isfinite(cmd.ttl_s) and 0 < cmd.ttl_s <= gw.s.ttl_max_s):
+            return _bad(f"ttl_s must be finite and in (0, {gw.s.ttl_max_s:g}]")
         gw.overrides.set_block(cmd)
         return _ok(f"{'blocked' if cmd.blocked else 'unblocked'} {cmd.tenant}")
-
-    @control.post("/control/heartbeat", response_model=ControlAck)
-    async def control_heartbeat(_: Heartbeat):
-        gw.overrides.heartbeat()
-        return _ok()
-
-    @control.post("/control/route_weights", response_model=ControlAck)
-    async def control_route_weights(cmd: RouteWeightsCmd):
-        err = _check_ttl(cmd.ttl_s)
-        for t, w in cmd.weights.items():
-            err = err or _check_tenant(t)
-            if err:
-                break
-            bad = [s for s in w if s not in gw.workers]
-            if bad:
-                err = f"unknown servers {bad} for tenant {t}"
-            elif any(not math.isfinite(x) or x < 0 for x in w.values()):
-                err = f"weights for {t} must be finite and >= 0"
-            elif not any(x > 0 for x in w.values()):
-                err = f"weights for {t} must have at least one positive entry"
-        if err:
-            return _bad(err)
-        gw.overrides.set_route_weights(cmd)
-        gw._pump()
-        return _ok(f"route weights for {sorted(cmd.weights)}")
-
-    @control.post("/control/relocate", response_model=ControlAck)
-    async def control_relocate(cmd: RelocateCmd):
-        err = _check_tenant(cmd.tenant) or _check_ttl(cmd.ttl_s)
-        if not err and cmd.target is not None and cmd.target not in gw.workers:
-            err = f"unknown target {cmd.target}"
-        if err:
-            return _bad(err)
-        gw.overrides.set_relocate(cmd)
-        gw._pump()
-        what = cmd.tenant + (f"/{cmd.cls}" if cmd.cls else "")
-        return _ok(f"relocated {what} -> {cmd.target}" if cmd.target else f"relocation of {what} cleared")
-
-    @control.post("/control/drain", response_model=ControlAck)
-    async def control_drain(cmd: DrainCmd):
-        err = _check_ttl(cmd.ttl_s) or (None if cmd.server in gw.workers else f"unknown server {cmd.server}")
-        if err:
-            return _bad(err)
-        gw.overrides.set_drain(cmd)
-        gw._pump()
-        return _ok(f"{'drained' if cmd.drained else 'undrained'} {cmd.server}")
-
-    @control.post("/control/charge", response_model=ControlAck)
-    async def control_charge(cmd: ChargeCmd):
-        err = _check_tenant(cmd.tenant)
-        if not err and not (math.isfinite(cmd.cpu_ms) and cmd.cpu_ms >= 0):
-            err = "cpu_ms must be a finite number >= 0"
-        if err:
-            return _bad(err)
-        return _ok(gw.charge(cmd))
-
-    @control.post("/control/reference_costs", response_model=ControlAck)
-    async def control_reference_costs(cmd: ReferenceCostsCmd):
-        bad = [c for c, v in cmd.costs.items() if not (math.isfinite(v) and v > 0)]
-        if bad:
-            return _bad(f"reference costs must be finite and > 0: {bad}")
-        gw.reference_costs = dict(cmd.costs)     # the latest table replaces the previous one
-        return _ok(f"{len(cmd.costs)} reference costs" + ("" if gw.controlled else " (stored; applied in tenantguard mode)"))
-
-    @admin.get("/admin/reference_costs")
-    async def get_reference_costs():
-        return {"reference_costs": gw.reference_costs,
-                "measured": {f"{t}/{c}": round(v, 3) for (t, c), v in sorted(gw.class_cost.items())}}
 
     app.include_router(admin)
     app.include_router(control)

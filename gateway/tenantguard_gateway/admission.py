@@ -1,4 +1,4 @@
-"""Multi-dimensional admission: block, token bucket, cost bucket, concurrency. Pure."""
+"""Multi-dimensional admission: block, token bucket, concurrency. Pure."""
 from __future__ import annotations
 
 import math
@@ -7,7 +7,7 @@ from typing import Dict, List, Optional
 
 from tenantguard_common.contracts import Quota
 
-from .buckets import CostBucket, TokenBucket
+from .buckets import TokenBucket
 
 
 @dataclass
@@ -30,7 +30,7 @@ class Decision:
 CONCURRENCY_RETRY_S = 1.0
 
 
-def admit(tokens: TokenBucket, cost: CostBucket, pending: int, quota: Quota, now: float,
+def admit(tokens: TokenBucket, pending: int, quota: Quota, now: float,
           block_remaining_s: Optional[float] = None) -> Decision:
     """Check every dimension; consume a token only if the request is admitted."""
     reasons: List[str] = []
@@ -41,9 +41,6 @@ def admit(tokens: TokenBucket, cost: CostBucket, pending: int, quota: Quota, now
     if not tokens.available(now):
         reasons.append("rate")
         wait = max(wait, tokens.retry_after(now))
-    if not cost.available(now):
-        reasons.append("cost")
-        wait = max(wait, cost.retry_after(now))
     if pending >= quota.concurrency:
         reasons.append("concurrency")
         wait = max(wait, CONCURRENCY_RETRY_S)
@@ -53,20 +50,12 @@ def admit(tokens: TokenBucket, cost: CostBucket, pending: int, quota: Quota, now
     return Decision(True)
 
 
-def ratelimit_headers(tokens: TokenBucket, cost: CostBucket, pending: int, quota: Quota,
-                      cost_bucket_s: float, now: float) -> Dict[str, str]:
+def ratelimit_headers(tokens: TokenBucket, pending: int, quota: Quota, now: float) -> Dict[str, str]:
     """IETF draft-ietf-httpapi-ratelimit-headers (structured-field form), one named policy per dimension."""
     window = quota.burst / quota.rate_rps if quota.rate_rps > 0 else 1.0
-    policy = (f'"rate";q={quota.burst};w={max(1, math.ceil(window))}, '
-              f'"cost";q={int(quota.cost_ms_per_s * cost_bucket_s)};w={max(1, math.ceil(cost_bucket_s))};qu="cpu-ms", '
-              f'"concurrency";q={quota.concurrency}')
+    policy = f'"rate";q={quota.burst};w={max(1, math.ceil(window))}, "concurrency";q={quota.concurrency}'
     tok = tokens.level(now)
-    lvl = cost.level(now)
     rate_r = max(0, math.floor(tok))
     rate_t = 0 if rate_r > 0 else math.ceil(tokens.retry_after(now))
-    cost_r = max(0, math.floor(lvl))
-    cost_t = 0 if lvl >= 0 else math.ceil(cost.retry_after(now))
     conc_r = max(0, quota.concurrency - pending)
-    state = (f'"rate";r={rate_r};t={rate_t}, "cost";r={cost_r};t={cost_t}, '
-             f'"concurrency";r={conc_r}')
-    return {"RateLimit-Policy": policy, "RateLimit": state}
+    return {"RateLimit-Policy": policy, "RateLimit": f'"rate";r={rate_r};t={rate_t}, "concurrency";r={conc_r}'}

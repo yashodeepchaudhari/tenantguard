@@ -7,7 +7,7 @@ import pytest
 from tenantguard_common.contracts import H_CONTROL_TOKEN
 
 from tenantguard_gateway.security import safe_api_path, valid_request_id
-from test_api import WORKERS, client, make, run, tenant
+from test_api import client, make, run, snapshot, tenant
 
 KEY = {"X-API-Key": "key-A"}
 
@@ -85,16 +85,21 @@ def test_control_token_from_settings():
 
 
 # ---------- (3) ttl bounds ----------
+def _snapshot_with_ttl(ttl: str) -> str:
+    raw = snapshot([tenant("K")]).model_dump_json()
+    return raw.replace('"limits":[]', '"limits":[{"tenant":"K","factor":0.5,"weight_factor":1.0,"ttl_s":%s}]' % ttl)
+
+
 @pytest.mark.parametrize("ttl", ["Infinity", "-Infinity", "NaN", "0", "-1", "3600.5", "1e308"])
 def test_ttl_must_be_finite_and_bounded(ttl):
     gw, app, up = make([tenant("K")], mode="tenantguard")
-    body = '{"tenant": "K", "factor": 0.5, "weight_factor": 1.0, "ttl_s": %s}' % ttl
+    block = '{"tenant": "K", "ttl_s": %s}' % ttl
 
     async def go():
         async with client(app) as c:
-            r = await c.post("/control/limits", content=body, headers={"content-type": "application/json"})
-            rb = await c.post("/control/block", content=body.replace('"factor": 0.5, "weight_factor": 1.0, ', ""),
-                              headers={"content-type": "application/json"})
+            r = await c.post("/control/snapshot", content=_snapshot_with_ttl(ttl),
+                             headers={"content-type": "application/json"})
+            rb = await c.post("/control/block", content=block, headers={"content-type": "application/json"})
             ov = await c.get("/admin/overrides")
             return r, rb, ov
     r, rb, ov = run(go())
@@ -107,36 +112,9 @@ def test_ttl_at_max_is_accepted():
 
     async def go():
         async with client(app) as c:
-            return await c.post("/control/limits", json={"tenant": "K", "factor": 0.5, "weight_factor": 1.0,
-                                                          "ttl_s": 3600})
+            return await c.post("/control/snapshot", content=_snapshot_with_ttl("3600"),
+                                headers={"content-type": "application/json"})
     assert run(go()).status_code == 200
-
-
-# ---------- (4) quota bounds ----------
-@pytest.mark.parametrize("patch", ['{"rate_rps": Infinity}', '{"rate_rps": 1e9}', '{"burst": 20001}',
-                                   '{"cost_ms_per_s": NaN}', '{"concurrency": 0}', '{"concurrency": 1025}'])
-def test_quota_patch_bounds(patch):
-    gw, app, up = make([tenant("A")])
-
-    async def go():
-        async with client(app) as c:
-            r = await c.patch("/admin/tenants/A/quota", content=patch, headers={"content-type": "application/json"})
-            v = await c.get("/admin/tenants")
-            return r, v
-    r, v = run(go())
-    assert r.status_code == 400
-    assert v.status_code == 200 and v.json()[0]["quota"]["rate_rps"] == 1000
-
-
-def test_new_tenant_quota_bounds():
-    gw, app, up = make([tenant("A")])
-    cfg = tenant("M").model_dump()
-    cfg["quota"]["burst"] = 10 ** 9
-
-    async def go():
-        async with client(app) as c:
-            return await c.post("/admin/tenants", json=cfg)
-    assert run(go()).status_code == 400 and gw.registry.get("M") is None
 
 
 # ---------- (5) key + Content-Length before the body; capped streaming read ----------
@@ -203,23 +181,22 @@ def test_request_id_validated_and_forwarded_once():
     assert len(good.headers.get_list("x-request-id")) == 1
 
 
-# ---------- (7) CPU debited when the client disconnects mid-flight ----------
-def test_cpu_debited_from_class_estimate_when_client_disconnects():
+# ---------- (7) a client that disconnects mid-flight releases its slot and counters ----------
+def test_client_disconnect_releases_slot_and_counters():
     async def slow(req: httpx.Request) -> httpx.Response:
         await asyncio.sleep(5)
         return httpx.Response(200, headers={"X-TenantGuard-Cpu-Ms": "1"})
 
     from tenantguard_gateway.core import Gateway
     from tenantguard_gateway.settings import GatewaySettings
-    gw = Gateway(GatewaySettings(default_mode="industry"), [tenant("A", cost_ms_per_s=100)], WORKERS,
-                 client=httpx.AsyncClient(transport=httpx.MockTransport(slow)))
+    gw = Gateway(GatewaySettings(default_mode="industry"), client=httpx.AsyncClient(transport=httpx.MockTransport(slow)))
+    gw.on_snapshot(snapshot([tenant("A")]))
 
     async def body(limit):
         return b""
 
     async def go():
-        gw.class_cost[("A", "dummy")] = 0.0                  # untouched entry: proves we use the right key
-        t = asyncio.create_task(gw.handle("GET", "/api/heavy", "", [], {"x-api-key": "key-A"}, body))
+        t = asyncio.create_task(gw.handle("GET", "/api/heavy", "", {}, {"x-api-key": "key-A"}, body))
         await asyncio.sleep(0.05)
         assert gw.registry.get("A").inflight == 1
         t.cancel()
@@ -227,5 +204,4 @@ def test_cpu_debited_from_class_estimate_when_client_disconnects():
             await t
     run(go())
     st = gw.registry.get("A")
-    assert st.cost.level_ms == pytest.approx(200 - 5.0, abs=1)   # default class estimate (5 ms) charged
-    assert st.inflight == 0 and st.pending == 0 and gw.slots == {w: 0 for w in WORKERS}
+    assert st.inflight == 0 and st.pending == 0 and set(gw.slots.values()) == {0}

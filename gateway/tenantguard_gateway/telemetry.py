@@ -22,7 +22,7 @@ def percentile(xs: Sequence[float], p: float) -> float:
 
 
 class _TenantTick:
-    __slots__ = ("waits", "e2e", "admitted", "rejected", "expired", "retries")
+    __slots__ = ("waits", "e2e", "admitted", "rejected", "expired", "retries", "refused_cost")
 
     def __init__(self) -> None:
         self.waits: List[float] = []
@@ -31,6 +31,7 @@ class _TenantTick:
         self.rejected = 0
         self.expired = 0
         self.retries = 0
+        self.refused_cost = 0.0     # reference cost of refused / expired requests (unserved demand)
 
 
 class _CellTick:
@@ -52,7 +53,6 @@ class Telemetry:
         self.c_admitted: Dict[str, int] = defaultdict(int)
         self.c_cpu_ms: Dict[str, float] = defaultdict(float)
         self.c_retries: Dict[str, int] = defaultdict(int)
-        self.c_charged_ms: Dict[str, float] = defaultdict(float)
         self.c_cpu_missing: Dict[Tuple[str, str], int] = defaultdict(int)   # (tenant, server)
         self.h_e2e: Dict[str, List[int]] = defaultdict(lambda: [0] * (len(LAT_BUCKETS_MS) + 1))
         self.h_e2e_sum: Dict[str, float] = defaultdict(float)
@@ -63,14 +63,17 @@ class Telemetry:
         self._tenants[tenant].admitted += 1
         self.c_admitted[tenant] += 1
 
-    def rejected(self, tenant: str, reasons: Sequence[str]) -> None:
-        self._tenants[tenant].rejected += 1
+    def rejected(self, tenant: str, reasons: Sequence[str], cost_ms: float = 0.0) -> None:
+        tt = self._tenants[tenant]
+        tt.rejected += 1
+        tt.refused_cost += cost_ms
         for r in reasons or ("unknown",):
             self.c_rejected[(tenant, r)] += 1
 
-    def expired(self, tenant: str, wait_ms: float) -> None:
+    def expired(self, tenant: str, wait_ms: float, cost_ms: float = 0.0) -> None:
         tt = self._tenants[tenant]
         tt.expired += 1
+        tt.refused_cost += cost_ms
         tt.waits.append(wait_ms)
         self.c_expired[tenant] += 1
 
@@ -80,9 +83,6 @@ class Telemetry:
     def retry(self, tenant: str) -> None:
         self._tenants[tenant].retries += 1
         self.c_retries[tenant] += 1
-
-    def charged(self, tenant: str, cpu_ms: float) -> None:
-        self.c_charged_ms[tenant] += cpu_ms
 
     def cpu_missing(self, tenant: str, server: str) -> None:
         """Worker answered without a usable X-TenantGuard-Cpu-Ms: debited 0, counted here."""
@@ -108,7 +108,8 @@ class Telemetry:
 
     # ----- tick -----
     def frame(self, mode: str, tick_ms: int, tenants: Sequence[str], depth: Callable[[str], int],
-              inflight: Callable[[str], int], limiter: Sequence[LimiterStat], ts: Optional[float] = None) -> TelemetryFrame:
+              inflight: Callable[[str], int], limiter: Sequence[LimiterStat], ts: Optional[float] = None,
+              queued_cost: Callable[[str], float] = lambda t: 0.0) -> TelemetryFrame:
         """Build the frame for the tick that just ended and start a new tick."""
         cells = [Cell(tenant=t, server=s, count=len(c.lat), p50_ms=percentile(c.lat, 50),
                       p95_ms=percentile(c.lat, 95), errors=c.errors)
@@ -120,7 +121,8 @@ class Telemetry:
             queues.append(QueueStat(
                 tenant=t, depth=depth(t), wait_p95_ms=percentile(tt.waits, 95),
                 p95_ms=percentile(tt.e2e, 95), completed=len(tt.e2e), admitted=tt.admitted,
-                rejected_429=tt.rejected, expired_503=tt.expired, retries=tt.retries, inflight=inflight(t)))
+                rejected_429=tt.rejected, expired_503=tt.expired, retries=tt.retries, inflight=inflight(t),
+                queued_cost_ms=round(queued_cost(t), 3), refused_cost_ms=round(tt.refused_cost, 3)))
         self._tenants = defaultdict(_TenantTick)
         self._cells = defaultdict(_CellTick)
         self.frames += 1

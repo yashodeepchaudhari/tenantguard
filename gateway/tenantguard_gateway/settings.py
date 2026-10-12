@@ -5,13 +5,12 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
-# Brief: the DRR cost of a class nobody has measured yet (CPU ms), and the base quantum per weight unit.
+# DRR quantum per weight unit, and the cost of a class nobody has measured or seeded (CPU ms).
 DEFAULT_CLASS_COST_MS = 5.0
 # EWMA smoothing for a (tenant, class) average cost.
 CLASS_COST_ALPHA = 0.2
 # Upstream request timeout (s). Bounded-wait covers queueing; this only guards hung workers.
 DEFAULT_UPSTREAM_TIMEOUT_S = 30.0
-DEFAULT_QUOTA_MAX = {"rate_rps": 10000, "burst": 20000, "cost_ms_per_s": 100000, "concurrency": 1024}
 DEFAULT_CORS = "http://127.0.0.1:5173,http://localhost:5173"
 
 
@@ -20,7 +19,8 @@ class GatewaySettings:
     default_mode: str = "tenantguard"
     tick_ms: int = 250
     max_wait_ms: Dict[str, float] = field(default_factory=lambda: {"interactive": 1000.0, "batch": 5000.0})
-    cost_bucket_s: float = 2.0
+    cold_wait_ms: float = 5000.0
+    wake_debounce_s: float = 2.0
     express_cost_ms: float = 5.0
     fail_static_after_s: float = 2.0
     initial_window: int = 8
@@ -31,24 +31,28 @@ class GatewaySettings:
     retry_min_allowed: int = 3
     body_limit_bytes: int = 1048576
     batch_routes: List[str] = field(default_factory=lambda: ["/api/export"])
+    size_params: List[str] = field(default_factory=lambda: ["n", "limit", "pages"])
+    cost_seed: str = ""
     cors_origins: List[str] = field(default_factory=lambda: DEFAULT_CORS.split(","))
     upstream_timeout_s: float = DEFAULT_UPSTREAM_TIMEOUT_S
     ttl_max_s: float = 3600.0
-    quota_max: Dict[str, float] = field(default_factory=lambda: dict(DEFAULT_QUOTA_MAX))
+    brain_url: str = "http://127.0.0.1:8200"
     control_token: str = "dev"
 
     @classmethod
-    def from_dict(cls, s: Dict[str, Any]) -> "GatewaySettings":
+    def from_dict(cls, s: Dict[str, Any], root: str = "") -> "GatewaySettings":
         g = s.get("gateway", {}) or {}
         lim = g.get("limiter", {}) or {}
         w = s.get("worker", {}) or {}
         rb = g.get("retry_budget", {}) or {}
         cors = os.environ.get("TENANTGUARD_CORS_ORIGINS", DEFAULT_CORS)
+        seed = g.get("cost_seed", "")
         return cls(
             default_mode=g.get("default_mode", "tenantguard"),
             tick_ms=int(g.get("tick_ms", 250)),
             max_wait_ms={k: float(v) for k, v in (g.get("max_queue_wait_ms") or {"interactive": 1000, "batch": 5000}).items()},
-            cost_bucket_s=float(g.get("cost_bucket_s", 2)),
+            cold_wait_ms=float(g.get("cold_wait_ms", 5000)),
+            wake_debounce_s=float(g.get("wake_debounce_s", 2)),
             express_cost_ms=float(g.get("express_cost_ms", 5)),
             fail_static_after_s=float(g.get("fail_static_after_s", 2)),
             initial_window=int(lim.get("initial_window", 8)),
@@ -59,10 +63,13 @@ class GatewaySettings:
             retry_min_allowed=int(rb.get("min_allowed", 3)),
             body_limit_bytes=int(w.get("body_limit_bytes", 1048576)),
             batch_routes=list(g.get("batch_routes", ["/api/export"])),
+            size_params=list(g.get("size_params", ["n", "limit", "pages"])),
+            cost_seed=os.path.join(root, seed) if seed and root else seed,
             cors_origins=[o.strip() for o in cors.split(",") if o.strip()],
             upstream_timeout_s=float(os.environ.get("TENANTGUARD_UPSTREAM_TIMEOUT_S",
                                                     g.get("upstream_timeout_s", DEFAULT_UPSTREAM_TIMEOUT_S))),
             ttl_max_s=float(g.get("ttl_max_s", 3600)),
-            quota_max={**DEFAULT_QUOTA_MAX, **{k: float(v) for k, v in (g.get("quota_max") or {}).items()}},
+            brain_url=os.environ.get("TENANTGUARD_BRAIN_URL",
+                                     (s.get("services") or {}).get("brain", "http://127.0.0.1:8200")).rstrip("/"),
             control_token=os.environ.get("TENANTGUARD_CONTROL_TOKEN", "dev"),
         )
