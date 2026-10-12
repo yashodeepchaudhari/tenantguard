@@ -482,4 +482,11 @@ Build:
   - `srv-*` incidents for server-level detection.
   - `POST /api/operator` is live.
 - 2026-10-12 (T9, merged): the brain ends incidents with `closed`, which the UI treats as resolved. TenantView.p95_ms = 0 is shown as "no traffic".
+- 2026-10-12: **Docker host runbook (verified):**
+  - Remote `docker --context tg-host compose` fails when starting/building in parallel: Windows sshd resets the concurrent SSH sessions. So:
+    - (a) build via the context one at a time, `COMPOSE_PARALLEL_LIMIT=1 docker --context tg-host compose -p codeastra build <svc>`, or build on the host;
+    - (b) deploy source with `git archive --format=tar master | ssh tg-host "tar -x -f - -C C:\Users\preeti\tenantguard-deploy"`;
+    - (c) run `ssh tg-host "cd /d C:\Users\preeti\tenantguard-deploy && docker compose -p codeastra up -d --build"`, a single SSH session.
+  - All 13 containers are healthy. From this laptop: gateway `http://100.112.232.8:8000` (healthz 200, admin 401 without token), brain `:8200`; mode tenantguard, fleet CPU 2% idle.
+  - Workers are reachable only inside the Docker network.
 - 2026-10-12: Cost bucket is debited with the worker-measured CPU (`X-TenantGuard-Cpu-Ms`) rather than an estimate, so it is a real resource quota, not a request count.

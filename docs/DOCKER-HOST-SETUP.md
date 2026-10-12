@@ -85,7 +85,7 @@ docker context create tg-host --docker "host=ssh://<user>@<ip>"   # once, uses ~
 docker --context tg-host compose up -d --build                    # builds from OUR files, runs on Laptop A
 docker --context tg-host compose ps
 ```
-Fallback if the Docker-over-SSH context misbehaves on Windows:
+Preferred on Windows hosts (sshd resets parallel SSH sessions): `git archive --format=tar master | ssh tg-host "tar -x -f - -C C:\Users\preeti\tenantguard-deploy"`, then run compose there over one session. Fallback:
 ```bash
 ssh <user>@<ip> "cd C:\tenantguard && git pull && docker compose up -d --build"
 ```
