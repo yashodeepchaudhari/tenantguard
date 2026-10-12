@@ -245,11 +245,11 @@ Prove it: run against a stub gateway (a 10-line FastAPI that sleeps 2 ms), then 
 
 | Task | Branch | Worktree | Session | Status |
 |---|---|---|---|---|
-| T1 Gateway | task/T1-gateway | D:\yashodeep\codeAstra-T1 | (user to start) | assigned |
-| T2 Workers | task/T2-workers | D:\yashodeep\codeAstra-T2 | (user to start) | assigned |
-| T3 Brain | task/T3-brain | D:\yashodeep\codeAstra-T3 | (user to start) | assigned |
-| T4 UI | task/T4-ui | D:\yashodeep\codeAstra-T4 | (user to start) | assigned |
-| T5 Lab | task/T5-lab | D:\yashodeep\codeAstra-T5 | (user to start) | assigned |
+| T1 Gateway | task/T1-gateway | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | in progress |
+| T2 Workers | task/T2-workers | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | in progress |
+| T3 Brain | task/T3-brain | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | in progress |
+| T4 UI | task/T4-ui | D:\yashodeep\codeAstra-T4 | codeastra-t4-6b | in progress |
+| T5 Lab | task/T5-lab | D:\yashodeep\codeAstra-T5 | codeastra-t5-79 | in progress |
 | Convergence samples | n/a (main dir, docs/convergence/) | main | codeastra-21 | assigned |
 | Review | n/a | main | codeastra-2b | standby |
 
