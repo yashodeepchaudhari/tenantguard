@@ -1,21 +1,15 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useBackend, useLive, useNow } from '../lib/liveContext.ts'
-import { ATTACKS, DURATION_MAX_S, INTENSITY_MAX, INTENSITY_MIN, type AttackName, type AttackReq, type LabStatus } from '../types.ts'
+import { DURATION_MAX_S, LAUNCHABLE_ATTACKS, INTENSITY_MAX, INTENSITY_MIN, type AttackName, type AttackReq, type LabStatus } from '../types.ts'
 
-const SERVERS = ['w0', 'w1', 'w2', 'w3', 'w4', 'w5', 'w6', 'w7', 'w8']
 const FALLBACK_TENANTS = 'ABCDEFGHIJKL'.split('')
 
-const ABOUT: Record<AttackName, string> = {
+const ABOUT: Partial<Record<AttackName, string>> = {
   flood: '10× request rate of light calls',
   whale: 'few, very heavy searches',
   hog: 'many slow concurrent exports',
   memory: 'memory-hungry requests',
   retry_storm: 'retries instantly on 429/503',
-  background_bomb: 'heavy background jobs (Wave 2)',
-  blackbox_bomb: 'unattributed vendor CPU (Wave 2)',
-  cache_flood: 'evicts everyone’s cache (Wave 2)',
-  faulty_server: 'a slow host, not a tenant (Wave 2)',
-  honest_spike: 'legit growth, should NOT be punished (Wave 2)',
 }
 
 export function AttackLauncher() {
@@ -25,7 +19,6 @@ export function AttackLauncher() {
   const tenants = snapshot?.tenants.map((t) => t.tenant) ?? FALLBACK_TENANTS
   const [attack, setAttack] = useState<AttackName>('whale')
   const [tenant, setTenant] = useState('K')
-  const [server, setServer] = useState('w4')
   const [intensity, setIntensity] = useState(2)
   const [duration, setDuration] = useState(60)
   const [lab, setLab] = useState<LabStatus | null>(null)
@@ -48,7 +41,6 @@ export function AttackLauncher() {
     return () => clearInterval(id)
   }, [refresh])
 
-  const byServer = attack === 'faulty_server'
   const intensityOk = intensity >= INTENSITY_MIN && intensity <= INTENSITY_MAX
   const durationOk = duration > 0 && duration <= DURATION_MAX_S
 
@@ -57,8 +49,8 @@ export function AttackLauncher() {
     setMsg(null)
     const req: AttackReq = {
       attack,
-      tenant: byServer ? null : tenant,
-      server: byServer ? server : null,
+      tenant,
+      server: null,
       intensity,
       duration_s: duration,
     }
@@ -96,32 +88,21 @@ export function AttackLauncher() {
         <label className="flex flex-col text-sm text-ink-300">
           Attack
           <select className="field mt-0.5 w-full min-w-0" value={attack} onChange={(e) => setAttack(e.target.value as AttackName)} title={ABOUT[attack]}>
-            {ATTACKS.map((a) => (
+            {LAUNCHABLE_ATTACKS.map((a) => (
               <option key={a} value={a}>
                 {a} — {ABOUT[a]}
               </option>
             ))}
           </select>
         </label>
-        {byServer ? (
-          <label className="flex flex-col text-sm text-ink-300">
-            Server
-            <select className="field mt-0.5" value={server} onChange={(e) => setServer(e.target.value)}>
-              {SERVERS.map((s) => (
-                <option key={s}>{s}</option>
-              ))}
-            </select>
-          </label>
-        ) : (
-          <label className="flex flex-col text-sm text-ink-300">
-            Tenant
-            <select className="field mt-0.5" value={tenant} onChange={(e) => setTenant(e.target.value)}>
-              {tenants.map((t) => (
-                <option key={t}>{t}</option>
-              ))}
-            </select>
-          </label>
-        )}
+        <label className="flex flex-col text-sm text-ink-300">
+          Tenant
+          <select className="field mt-0.5" value={tenant} onChange={(e) => setTenant(e.target.value)}>
+            {tenants.map((t) => (
+              <option key={t}>{t}</option>
+            ))}
+          </select>
+        </label>
         <label className="flex flex-col text-sm text-ink-300">
           Duration (s)
           <input
@@ -150,7 +131,7 @@ export function AttackLauncher() {
           />
         </label>
         <button className="btn-accent whitespace-nowrap" disabled={busy || !intensityOk || !durationOk} onClick={launch}>
-          {busy ? 'Launching…' : `Launch on ${byServer ? server : tenant}`}
+          {busy ? 'Launching…' : `Launch on ${tenant}`}
         </button>
       </div>
       {msg && (
