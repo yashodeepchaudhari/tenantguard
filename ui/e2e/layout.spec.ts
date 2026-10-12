@@ -47,7 +47,7 @@ for (const size of SIZES) {
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true)
     })
 
-    test('the headline stays one fixed-height line while the state updates', async ({ page }) => {
+    test('the status bar keeps its height and the headline is always shown in full', async ({ page }) => {
       await page.goto('/?view=tiles')
       await expect(page.getByTestId('status-bar')).toBeVisible({ timeout: 20_000 })
       const status = page.locator('[data-panel="status"]')
@@ -57,11 +57,18 @@ for (const size of SIZES) {
         await page.waitForTimeout(500)
       }
       expect(new Set(heights).size, `status bar heights ${heights}`).toBe(1)
-      const lineHeight = await page.getByTestId('status-sentence').evaluate((el) => {
+      const head = await page.getByTestId('status-sentence').evaluate((el) => {
         const cs = getComputedStyle(el)
-        return { h: el.getBoundingClientRect().height, lh: parseFloat(cs.lineHeight) }
+        return {
+          h: el.getBoundingClientRect().height,
+          lh: parseFloat(cs.lineHeight),
+          clipped: el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1,
+          ellipsis: cs.textOverflow === 'ellipsis',
+        }
       })
-      expect(lineHeight.h).toBeLessThanOrEqual(lineHeight.lh + 2) // one line
+      expect(head.h, 'headline wraps to at most two lines').toBeLessThanOrEqual(2 * head.lh + 2)
+      expect(head.clipped, 'headline text is not clipped').toBe(false)
+      expect(head.ellipsis, 'headline never uses an ellipsis').toBe(false)
       await expect(page.getByTestId('scenario-badge')).not.toBeEmpty()
     })
 

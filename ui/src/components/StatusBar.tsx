@@ -27,7 +27,7 @@ export function StatusBar({ snapshot }: { snapshot: StateSnapshot }) {
     <div className="flex min-w-0 flex-1 items-center gap-3" data-testid="status-bar">
       <StatusDot status={h.tone} className="h-4 w-4" />
       <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 items-center gap-x-2">
           <span
             className={`shrink-0 whitespace-nowrap rounded-md border px-2 py-0.5 text-sm font-bold ${BADGE[scenario.kind]}`}
             data-testid="scenario-badge"
@@ -35,7 +35,8 @@ export function StatusBar({ snapshot }: { snapshot: StateSnapshot }) {
           >
             {scenario.label}
           </span>
-          <h1 className={`min-w-0 truncate text-2xl font-bold leading-tight ${TONE[h.tone]}`} data-testid="status-sentence" title={h.text}>
+          {/* always shown in full: short templates, wraps to at most two lines, never an ellipsis */}
+          <h1 className={`min-w-0 flex-1 text-xl font-bold leading-tight 2xl:text-2xl ${TONE[h.tone]}`} data-testid="status-sentence">
             {h.text}
           </h1>
         </div>

@@ -1,6 +1,8 @@
 import { useEffect, useRef } from 'react'
 import { config } from '../config.ts'
-import { pickServer, routeTable } from '../lib/flow.ts'
+import { pickServer, rerouteHint, routeTable } from '../lib/flow.ts'
+import { useLive, useNow } from '../lib/liveContext.ts'
+import { scenarioOf } from '../lib/scenario.ts'
 import { FLEET, serverStatus, STATUS_HEX, tenantStatus } from '../lib/status.ts'
 import type { OverridesView, StateSnapshot } from '../types.ts'
 
@@ -25,6 +27,10 @@ const EXTRA = ['spare', 'quarantine']
 
 /** Live request flow: tenant -> gateway -> server, sampled from snapshot rps. */
 export function FlowView({ snapshot, overrides, barcodes }: Props) {
+  const { lab, labReachable } = useLive()
+  const now = useNow()
+  const attacking = scenarioOf(lab, labReachable !== false && lab !== null, now).kind === 'attack'
+  const hint = rerouteHint(overrides, attacking, snapshot.mode, snapshot.servers)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
   // the animation loop reads the latest data through refs (no re-subscribe per snapshot)
@@ -256,6 +262,15 @@ export function FlowView({ snapshot, overrides, barcodes }: Props) {
           <span className="text-accent">↷ ― rerouted (route weight = line width)</span>
         </div>
       </div>
+      {hint && (
+        <div
+          className={`mb-1 text-sm font-semibold ${hint.kind === 'rerouted' ? 'text-accent' : hint.kind === 'off' ? 'text-bad' : 'text-ink-100'}`}
+          data-testid="reroute-hint"
+          data-kind={hint.kind}
+        >
+          {hint.text}
+        </div>
+      )}
       <div ref={wrapRef} className="relative min-h-0 flex-1" data-testid="flow-view">
         <canvas ref={canvasRef} className="absolute inset-0" aria-label="Live request flow from tenants to servers" />
       </div>

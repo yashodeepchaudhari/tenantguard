@@ -151,9 +151,14 @@ test('Scorecard shows lab results by scenario and mode (or says why not)', async
   await expect(page.getByTestId('score-table').locator('tbody tr')).toHaveCount(scenarios * 3)
 })
 
-test('flow view toggle draws the live request flow and toggles back', async ({ page }) => {
+test('flow view toggle draws the live request flow and toggles back', async ({ page, request, services }) => {
   await openControlRoom(page)
   await page.getByTestId('view-flow').click()
+  // during an attack the flow view says why there are (or are not) reroute lines
+  const attackRunning =
+    services.lab &&
+    ((await (await request.get(`${URLS.lab}/lab/status`)).json()).attacks as { state: string }[]).some((a) => a.state === 'running')
+  if (attackRunning) await expect(page.getByTestId('reroute-hint')).toHaveAttribute('data-kind', /rerouted|refused|off/)
   const canvas = page.getByTestId('flow-view').locator('canvas')
   await expect(canvas).toBeVisible()
   await expect

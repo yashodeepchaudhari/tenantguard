@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { OverridesView } from '../types.ts'
-import { pickServer, tenantRoutes } from './flow.ts'
+import { pickServer, rerouteHint, tenantRoutes } from './flow.ts'
 
 const ov = (o: Partial<OverridesView>): OverridesView => ({
   limits: {}, blocks: {}, relocations: [], route_weights: {}, drains: {}, expires_at: {}, fail_static: false, ...o,
@@ -41,5 +41,17 @@ describe('flow routing model', () => {
     expect(pickServer(r, 0.5)).toBe('b')
     expect(pickServer(r, 0.9999)).toBe('b')
     expect(pickServer([], 0.5)).toBeNull()
+  })
+
+  it('reroute hint: rerouting active names the servers routed around', () => {
+    const h = rerouteHint(ov({ route_weights: { B: { w3: 1, w4: 0, w5: 1 }, E: { w1: 1, w4: 0, w7: 1 } } }), true, 'tenantguard', [])
+    expect(h).toEqual({ kind: 'rerouted', text: '↷ 2 tenants rerouted around w4' })
+  })
+
+  it('reroute hint: an attack with no rerouting explains that the gateway refused the excess', () => {
+    expect(rerouteHint(ov({}), true, 'tenantguard', [])).toEqual({ kind: 'refused', text: 'no rerouting needed: the excess is refused at the gateway (red ✕)' })
+    expect(rerouteHint(ov({}), true, 'off', [])?.kind).toBe('off')
+    expect(rerouteHint(ov({}), false, 'tenantguard', [])).toBeNull()
+    expect(rerouteHint(null, false, 'tenantguard', [])).toBeNull()
   })
 })

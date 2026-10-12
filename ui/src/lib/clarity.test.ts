@@ -55,17 +55,17 @@ describe('headline', () => {
   })
   it('attack on K with the culprit throttled and neighbours protected', () => {
     const h = buildHeadline(snap({ K: { level: 'throttle', factor: 0.5, noisy_score: 3 } }), scenarioOf(lab({ attacks: [attack()] }), true, 1000), th, {}, null)
-    expect(h.text).toBe('Attack: whale on K · K throttled (50% of plan) · 11 tenants protected')
+    expect(h.text).toBe('whale on K · K throttled 50% · 11 protected')
     expect(h.tone).toBe('warn')
   })
   it('next to the scenario badge the attack is not repeated', () => {
     const h = buildHeadline(snap({ K: { level: 'quarantine', factor: 0.1, noisy_score: 8 } }), scenarioOf(lab({ attacks: [attack()] }), true, 1000), th, {}, null, { includeAttack: false })
-    expect(h.text).toBe('K quarantined (10% of plan) · 11 tenants protected')
+    expect(h.text).toBe('K quarantined 10% · 11 protected')
   })
 
   it('victims slowed in OFF mode', () => {
     const h = buildHeadline(snap({ A: { p95_ms: 900 }, B: { p95_ms: 200 } }, { mode: 'off' }), scenarioOf(lab({ attacks: [attack()] }), true, 1000), th, {}, null)
-    expect(h.text).toBe('Defences OFF · Attack: whale on K · 2 tenants slowed')
+    expect(h.text).toBe('Defences OFF · whale on K · 2 slowed')
     expect(h.tone).toBe('bad')
   })
   it('a slow server with no culprit', () => {
@@ -73,28 +73,37 @@ describe('headline', () => {
     s.servers[4].status = 'slow'
     const ov = { limits: {}, blocks: {}, relocations: [], drains: {}, expires_at: {}, fail_static: false, route_weights: { B: {}, E: {}, G: {}, L: {} } }
     const h = buildHeadline(s, calm, th, {}, ov)
-    expect(h.text).toBe('Server w4 slow · 4 tenants moved away · no tenant blamed · 12 tenants protected')
+    expect(h.text).toBe('w4 slow · 4 rerouted · no one blamed · 12 protected')
   })
   it('a tenant back at 100 % while its level catches up is not shown "throttled (100% of plan)"', () => {
     const h = buildHeadline(snap({ K: { level: 'throttle', factor: 0.999, noisy_score: 0.4 } }), calm, th, {}, null)
-    expect(h.text).toBe('K throttled · 11 tenants protected')
+    expect(h.text).toBe('K throttled · 11 protected')
     expect(tileReason(tv('K', { level: 'throttle', factor: 0.999, noisy_score: 0.4 }), undefined)?.text).toBe('recovering · back to its full plan')
     expect(tileReason(tv('K', { level: 'warn', noisy_score: 0.6 }), undefined)?.text).toBe('back within its fair share · still watched')
   })
 
   it('several tenants acted on are listed briefly', () => {
     const h = buildHeadline(snap({ A: { level: 'throttle', factor: 0.7 }, B: { level: 'throttle', factor: 0.6 }, G: { level: 'warn' } }), calm, th, {}, null)
-    expect(h.text).toBe('3 tenants acted on (A, B, G) · 9 tenants protected')
+    expect(h.text).toBe('3 acted on: A, B, G · 9 protected')
   })
   it('lab offline: says what it observes, not what it assumes', () => {
     const h = buildHeadline(snap(), scenarioOf(null, false, 1000), th, {}, null)
     expect(h.text).toBe('No attack detected · 12 tenants healthy')
   })
 
+  it('stays short even in the busiest case (never needs an ellipsis)', () => {
+    const many = Object.fromEntries('ABCDE'.split('').map((t) => [t, { level: 'throttle' as const, factor: 0.25, noisy_score: 3 }]))
+    const s = snap({ ...many, F: { p95_ms: 900 } }, { mode: 'off' })
+    s.servers[1].status = 'slow'
+    const h = buildHeadline(s, scenarioOf(lab({ attacks: [attack()] }), true, 1000), th, {}, null)
+    expect(h.text).toBe('Defences OFF · whale on K · 5 acted on: A, B, C +2 · 1 slowed')
+    expect(h.text.length).toBeLessThanOrEqual(64)
+  })
+
   it('no traffic at all', () => {
     const idle = Object.fromEntries(ALL.map((t) => [t, { p95_ms: 0, rps: 0 }]))
     const h = buildHeadline(snap(idle), scenarioOf(lab({ calm_running: false }), true, 1000), th, {}, null)
-    expect(h.text).toBe('No traffic · no tenant has traffic')
+    expect(h.text).toBe('No traffic')
     expect(h.tone).toBe('idle')
   })
 })
