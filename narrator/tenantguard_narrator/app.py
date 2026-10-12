@@ -7,7 +7,7 @@ import json
 import logging
 from typing import List, Optional
 
-import httpx2 as httpx   # anthropic 1.x ships httpx2; reuse it for the brain backfill
+import httpx
 import websockets
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,18 +15,10 @@ from fastapi.responses import JSONResponse
 from tenantguard_common.config import load_settings, load_tenants
 from tenantguard_common.contracts import ReportView
 
-from .ai import AIWriter
 from .service import Narrator
 from .settings import NarratorSettings
 
 log = logging.getLogger("tenantguard.narrator")
-
-
-def make_writer(s: NarratorSettings) -> Optional[AIWriter]:
-    if not s.ai_enabled:
-        return None
-    import anthropic
-    return AIWriter(anthropic.AsyncAnthropic(), s.model, s.effort, s.max_tokens, s.timeout_s)
 
 
 async def consume_brain(n: Narrator, brain_url: str, state: dict) -> None:
@@ -60,7 +52,7 @@ def create_app(narrator: Optional[Narrator] = None, settings: Optional[NarratorS
                follow_brain: bool = True) -> FastAPI:
     raw = load_settings() if (narrator is None or settings is None) else None
     s = settings or NarratorSettings.from_dict(raw)
-    n = narrator or Narrator(load_tenants(raw), make_writer(s))
+    n = narrator or Narrator(load_tenants(raw), max_reports=s.max_reports)
     state = {"brain_connected": False}
 
     @contextlib.asynccontextmanager
@@ -73,8 +65,6 @@ def create_app(narrator: Optional[Narrator] = None, settings: Optional[NarratorS
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
-            for t in list(n.tasks):
-                t.cancel()
 
     app = FastAPI(title="TenantGuard narrator", lifespan=lifespan)
     app.state.narrator = n
@@ -82,8 +72,7 @@ def create_app(narrator: Optional[Narrator] = None, settings: Optional[NarratorS
 
     @app.get("/healthz")
     async def healthz():
-        return {"ok": True, "brain_connected": state["brain_connected"], "ai_enabled": n.writer is not None,
-                "model": s.model if n.writer else None, "reports": len(n.reports), **n.stats}
+        return {"ok": True, "brain_connected": state["brain_connected"], "reports": len(n.reports), **n.stats}
 
     @app.get("/reports", response_model=List[ReportView])
     async def reports(limit: int = 50):

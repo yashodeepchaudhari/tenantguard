@@ -1,1 +1,1 @@
-"""TenantGuard incident narrator: evidence pack -> instant template report -> grounded AI report (never decides)."""
+"""TenantGuard incident narrator: evidence pack -> deterministic incident report + anonymised customer message."""
