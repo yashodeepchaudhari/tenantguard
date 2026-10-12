@@ -375,6 +375,7 @@ class Brain:
             weights=self.weights, servers_of=self.servers_of, active=active, cpu_by_server=by_server,
             cpu_cap=cpu_cap, occupancy=queue, slots=slots, slowdowns=slow,
             neighbours=self.neighbours, min_victim_impact=self.cfg.min_victim_impact, over_use=self.cfg.over_use,
+            min_hurt=self.cfg.min_hurt_neighbours, hurt_level=self.hurt_off,
             quarantine_threshold=self.p.quarantine)
         self.calm = not self.book.open and all(
             not (s.flagged and s.score >= self.p.warn) for s in self.scores.values())

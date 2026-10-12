@@ -34,6 +34,7 @@ class BrainSettings:
     victim_window_s: float = 5.0      # victim latency from per-tick p95 over this window ...
     victim_min_ticks: int = 4
     over_use: float = 1.25            # flagged only at >= this x its fair share
+    min_hurt_neighbours: int = 3      # ... and with at least this many neighbours slower than their baseline
     victim_quantile: float = 0.3      # ... this quantile of it (a slowdown must cover ~70% of the window)
     victim_abs_ms: float = 8.0        # a victim is slower only if >= this many ms above its baseline
     default_mode: str = "tenantguard"
@@ -91,6 +92,7 @@ def load(raw: dict | None = None) -> BrainSettings:
         victim_min_ticks=int(noisy.get("victim_min_ticks", 4)),
         victim_quantile=float(noisy.get("victim_quantile", 0.3)),
         over_use=float(noisy.get("over_use", 1.25)),
+        min_hurt_neighbours=int(noisy.get("min_hurt_neighbours", 3)),
         victim_abs_ms=float(noisy.get("victim_abs_ms", health.get("slow_abs_ms", 8))),
         default_mode=str(raw["gateway"].get("default_mode", "tenantguard")),
         control_token=os.environ.get("TENANTGUARD_CONTROL_TOKEN", "dev"),

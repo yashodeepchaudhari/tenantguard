@@ -11,7 +11,8 @@ score(t) = max(cpu_share / fair_share, queue_share / fair_share) * (1 + victim_i
 - baseline_p95     = per-tenant EWMA, updated only in calm periods (see BaselineTracker)
 
 A tenant is *flagged* only if it over-uses (ratio >= `over_use`, 1.25: at its fair share a busy fleet is
-not over-use) AND its neighbours are hurt
+not over-use) AND its neighbours are hurt, broadly (at least `min_hurt_neighbours` of them, 3: two slow
+neighbours are more likely their own servers than a noisy neighbour)
 (victim_impact >= min_victim_impact). A heavy tenant whose neighbours are fine is never flagged.
 
 Neighbours instead of "all other tenants": with shuffle-sharded barcodes (AG(2,3)) each tenant
@@ -105,7 +106,7 @@ def compute_scores(*, weights: Mapping[str, float], servers_of: Mapping[str, Seq
                    slowdowns: Mapping[str, Optional[float]],
                    neighbours: Mapping[str, Sequence[str]],
                    min_victim_impact: float, quarantine_threshold: float,
-                   over_use: float = 1.0) -> Dict[str, ScoreDetail]:
+                   over_use: float = 1.0, min_hurt: int = 1, hurt_level: float = 0.0) -> Dict[str, ScoreDetail]:
     """Score every tenant in `weights`.
 
     Shares are measured against the capacity of the tenant's *own* servers, and the fair share is
@@ -139,7 +140,8 @@ def compute_scores(*, weights: Mapping[str, float], servers_of: Mapping[str, Seq
             tenant=t, cpu_share=cpu_share, queue_share=queue_share, fair_share=fair,
             usage_ratio=ratio, victim_impact=impact, score=score,
             norm=min(1.0, score / quarantine_threshold) if quarantine_threshold > 0 else 0.0,
-            flagged=ratio >= over_use and ratio > 1.0 and impact >= min_victim_impact,
+            flagged=(ratio >= over_use and ratio > 1.0 and impact >= min_victim_impact
+                     and sum(1 for _, s in victims if s >= hurt_level) >= min_hurt),
             victims=victims,
         )
     return out

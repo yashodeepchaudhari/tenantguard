@@ -83,7 +83,8 @@ class Stage3:
         self.cfg = cfg
         servers = sorted(set(cfg.worker_urls) | set(cfg.fleet_servers))
         self.barcodes = {t: list(c.servers) for t, c in brain.tenants.items()}
-        self.health = HealthTracker(servers, cfg.health, self.barcodes)
+        self.health = HealthTracker(servers, cfg.health, self.barcodes,
+                                    {t: c.sla_p95_ms for t, c in brain.tenants.items()})
         self.prover: Prover = prover or NullProver()
         self.inc: Optional[Incident] = None
         self.decoding: Optional[Decoding] = None

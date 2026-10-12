@@ -21,7 +21,9 @@ broken. The canary can only keep an already-slow server open, never open one: an
 traffic first, so an idle or lightly loaded host (probe jitter of a few ms) opens nothing.
 
 A server is *slow now* when peer_ratio >= slow_peer_ratio AND its median excess latency >= slow_abs_ms
-(canary: canary_abs_ms; ratio alone would flag 2 ms vs 1 ms). It becomes *slow* (open) once it was slow now in
+(canary: canary_abs_ms; ratio alone would flag 2 ms vs 1 ms) AND its level is at least
+max(slow_abs_ms, min_slow_ms, sla_fraction x the strictest SLA p95 of its tenants): 17 ms vs 4 ms is 4x,
+but no SLA is at risk. It becomes *slow* (open) once it was slow now in
 >= hold_ratio of the ticks of the last `open_hold_s` (4 s), and healthy again after `heal_hold_s` (2 s) of
 mostly healthy ticks. Persistence, not a streak: on the Docker host a 0.5-CPU container stalls for 1-3 s now
 and then at calm (CPU-quota throttling) and that is not a slow server.
@@ -51,6 +53,8 @@ class HealthParams:
     heal_hold_s: float = 2.0           # healthy in >= hold_ratio of the ticks of the last heal_hold_s -> heal
     hold_ratio: float = 0.8
     level_quantile: float = 0.3        # a cell's level: this quantile of its per-tick p95 (sustained, not tails)
+    min_slow_ms: float = 25.0          # a server is never "slow" below this level ...
+    sla_fraction: float = 0.5          # ... nor below this fraction of the strictest SLA p95 among its tenants
 
     @classmethod
     def from_yaml(cls, health: dict, tick_s: float) -> "HealthParams":
@@ -70,7 +74,9 @@ class HealthParams:
                    open_hold_s=float(health.get("open_hold_s", d.open_hold_s)),
                    heal_hold_s=float(health.get("heal_hold_s", d.heal_hold_s)),
                    hold_ratio=float(health.get("hold_ratio", d.hold_ratio)),
-                   level_quantile=float(health.get("level_quantile", d.level_quantile)))
+                   level_quantile=float(health.get("level_quantile", d.level_quantile)),
+                   min_slow_ms=float(health.get("min_slow_ms", d.min_slow_ms)),
+                   sla_fraction=float(health.get("sla_fraction", d.sla_fraction)))
 
 
 @dataclass
@@ -108,12 +114,22 @@ def weighted_median(samples: Sequence[Tuple[float, int]]) -> float:
 
 class HealthTracker:
     def __init__(self, servers: Iterable[str], params: HealthParams,
-                 barcodes: Optional[Mapping[str, Sequence[str]]] = None):
+                 barcodes: Optional[Mapping[str, Sequence[str]]] = None,
+                 sla_ms: Optional[Mapping[str, float]] = None):
         self.p = params
         self.servers: Dict[str, ServerHealth] = {s: ServerHealth(s) for s in servers}
         # servers that are peers of each other (the barcode fleet). Pool servers (spare, quarantine) are judged
         # against the fleet but never count as anyone's peer: they hold whoever we moved there.
         self.fleet = set(s for v in (barcodes or {}).values() for s in v) or None
+        # per server: the latency level below which it is never "slow" (17 ms vs 4 ms is 4x, but nobody's SLA
+        # is at risk): max(slow_abs_ms, min_slow_ms, sla_fraction x the strictest SLA p95 of its tenants)
+        strictest: Dict[str, float] = {}
+        for t, srv in (barcodes or {}).items():
+            for s in srv:
+                if sla_ms and t in sla_ms:
+                    strictest[s] = min(strictest.get(s, float("inf")), sla_ms[t])
+        self.floor_ms: Dict[str, float] = {s: max(params.slow_abs_ms, params.min_slow_ms,
+                                                  params.sla_fraction * v) for s, v in strictest.items()}
         self.cells: Dict[Tuple[str, str], Deque[Tuple[float, float, int]]] = {}   # (tenant, server) -> (t, p95, n)
 
     def _h(self, s: str) -> ServerHealth:
@@ -193,7 +209,9 @@ class HealthTracker:
                 h.source, h.tenants_used, h.level_ms, h.peer_ms = "none", 0, None, None
                 h.peer_ratio, h.excess_ms = 1.0, 0.0
             floor = self.p.canary_abs_ms if h.source == "canary" else self.p.slow_abs_ms
-            h.slow_now = (h.source != "none" and h.peer_ratio >= self.p.slow_peer_ratio and h.excess_ms >= floor)
+            level_floor = self.floor_ms.get(s, max(self.p.slow_abs_ms, self.p.min_slow_ms))
+            h.slow_now = (h.source != "none" and h.peer_ratio >= self.p.slow_peer_ratio and h.excess_ms >= floor
+                          and (h.level_ms or 0.0) >= level_floor)
             if h.source == "canary" and not h.slow:
                 h.slow_now = False     # the canary can keep a slow server open, never open one: real traffic must
                 #                        be slow first (an idle host's probe jitter is nobody's problem)

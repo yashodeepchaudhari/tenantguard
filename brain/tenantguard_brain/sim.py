@@ -27,7 +27,7 @@ from tenantguard_common.contracts import (Cell, ClassCost, LimiterStat, QueueSta
 
 CALM_RPS = {"enterprise": 30.0, "pro": 22.0, "free": 15.0}
 CALM_COST_MS = 4.5           # mean handler CPU per calm request
-BASE_LATENCY_MS = 6.0        # end-to-end p95 of a calm request on an idle server
+BASE_LATENCY_MS = 12.0       # end-to-end p95 of a calm request on an idle server (host calm: ~10-15 ms)
 LIGHT, HEAVY = "c-light", "c-heavy"
 POOL = {"spare": 1.0, "quarantine": 0.25}      # extra servers and their CPU (cores)
 

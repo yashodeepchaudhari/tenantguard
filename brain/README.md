@@ -129,7 +129,9 @@ moved the ladder 19 times in 270 s. Every signal is therefore *sustained*, not i
   the window;
 - a victim must also be >= 8 ms above its baseline (each victim clipped before the mean);
 - slot occupancy is a 5 s median (a stall raises everyone's inflight);
-- flagging needs >= 1.25x the fair share;
+- flagging needs >= 1.25x the fair share and >= 3 hurt neighbours;
+- a server is never slow below max(8 ms, 25 ms, half the strictest SLA p95 of its tenants): 17 ms vs 4 ms is 4x,
+  but no SLA is at risk;
 - the ladder may warn but not throttle during a rescue's grace period, and relaxes a tenant only once it no
   longer over-uses.
 
@@ -229,13 +231,16 @@ brain:
     victim_quantile: 0.3        # a slowdown must cover ~70% of the window (CPU-quota stalls don't)
     victim_min_ticks: 4
     victim_abs_ms: 8.0          # and be >= this many ms above the baseline
-    over_use: 1.25              # flagged only at >= this x its fair share
+    over_use: 1.25              # flagged only at >= this x its fair share ...
+    min_hurt_neighbours: 3      # ... with at least this many neighbours slower than their baseline
   health:                       # + probe_window_ticks, slow_peer_ratio, slow_abs_ms (open_after_ticks unused now)
     window_s: 5.0
     level_quantile: 0.3         # a cell's level: this quantile of its per-tick p95 in the window
     open_hold_s: 4.0            # open: slow in >= hold_ratio of the ticks of the last 4 s
     heal_hold_s: 2.0
     hold_ratio: 0.8
+    min_slow_ms: 25.0           # never "slow" below max(slow_abs_ms, min_slow_ms, sla_fraction x strictest SLA p95)
+    sla_fraction: 0.5
     min_cell_requests: 5
     min_tenants: 2
     canary_s: 1.0
