@@ -12,6 +12,8 @@ from tenantguard_common.contracts import TenantConfig
 from .decoder import DecoderParams
 from .health import HealthParams
 from .ladder import LadderParams
+from .prover import ProverParams
+from .verdicts import ActionBudget, VerdictParams
 
 
 @dataclass
@@ -32,6 +34,11 @@ class BrainSettings:
     default_mode: str = "tenantguard"
     control_token: str = "dev"
     ttl_max_s: float = 3600.0
+    charge_s: float = 1.0
+    verdicts: VerdictParams = field(default_factory=VerdictParams)
+    action_budget: ActionBudget = field(default_factory=ActionBudget)
+    prover: ProverParams = field(default_factory=ProverParams)
+    prover_mode: str = "auto"         # auto | docker | null
     min_victim_impact: float = 0.2
     slow_peer_ratio: float = 1.6
     slow_abs_ms: float = 8.0
@@ -78,6 +85,11 @@ def load(raw: dict | None = None) -> BrainSettings:
         default_mode=str(raw["gateway"].get("default_mode", "tenantguard")),
         control_token=os.environ.get("TENANTGUARD_CONTROL_TOKEN", "dev"),
         ttl_max_s=float(raw["gateway"].get("ttl_max_s", 3600)),
+        charge_s=float(brain.get("charge_s", 1.0)),
+        verdicts=VerdictParams.from_yaml(brain),
+        action_budget=ActionBudget.from_yaml(brain),
+        prover=ProverParams.from_yaml(brain),
+        prover_mode=os.environ.get("TENANTGUARD_PROVER", str(brain.get("prover", "auto"))),
         min_victim_impact=float(noisy.get("min_victim_impact", 0.2)),
         slow_peer_ratio=float(health.get("slow_peer_ratio", 1.6)),
         slow_abs_ms=float(health.get("slow_abs_ms", 8)),

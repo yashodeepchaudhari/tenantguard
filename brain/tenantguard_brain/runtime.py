@@ -11,7 +11,7 @@ import httpx
 import websockets
 from pydantic import BaseModel
 
-from tenantguard_common.contracts import (H_CONTROL_TOKEN, Heartbeat, IncidentEvent, LimitsCmd, OverridesView,
+from tenantguard_common.contracts import (H_CONTROL_TOKEN, ChargeCmd, Heartbeat, IncidentEvent, LimitsCmd, OverridesView,
                                           TelemetryFrame, WorkerStats)
 
 from .core import Brain
@@ -163,6 +163,16 @@ class Runtime:
             self.sent_count += 1
             log.info("sent route weights for %s ttl=%gs", sorted(cmd.weights), cmd.ttl_s)
 
+    def _control_done(self, cmd: BaseModel, ok: bool) -> None:
+        if isinstance(cmd, ChargeCmd):
+            if not ok:
+                self.brain.charge_failed(cmd)
+            return
+        self.brain.control_done(cmd, ok, time.time())
+        if ok:
+            self.sent_count += 1
+            log.info("sent %s", cmd)
+
     def send_limits(self, cmd: LimitsCmd) -> None:
         self.sender.submit(f"limits:{cmd.tenant}", "/control/limits", cmd, self._limits_done)
 
@@ -271,6 +281,8 @@ class Runtime:
                     self.send_limits(cmd)
                 for rc in res.route_cmds:
                     self.sender.submit("routes", "/control/route_weights", rc, self._routes_done)
+                for key, path, cmd in res.control:
+                    self.sender.submit(key, path, cmd, self._control_done)
             except Exception:
                 log.exception("tick failed; skipping")
             await asyncio.sleep(max(0.01, self.cfg.tick_s - (time.monotonic() - t0)))

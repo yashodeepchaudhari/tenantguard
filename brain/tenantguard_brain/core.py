@@ -9,7 +9,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Deque, Dict, List, Optional, Tuple
 
-from tenantguard_common.contracts import (IncidentEvent, LimitsCmd, OperatorCmd, OverridesView, RouteWeightsCmd,
+from tenantguard_common.contracts import (ChargeCmd, IncidentEvent, LimitsCmd, OperatorCmd, OverridesView, RouteWeightsCmd,
                                           ServerView, StateSnapshot, TelemetryFrame, TenantView, WorkerStats)
 
 from . import ladder as lad
@@ -33,6 +33,7 @@ class StatSample:
     tenant_bg_ms: Dict[str, float] = field(default_factory=dict)        # bg CPU ms in dt
     tenant_evictions: Dict[str, int] = field(default_factory=dict)      # evictions caused in dt
     blackbox_ms: float = 0.0                                             # unattributed CPU ms in dt
+    class_cpu_ms: Dict[Tuple[str, str], float] = field(default_factory=dict)   # (tenant, class) CPU ms in dt
 
 
 @dataclass
@@ -57,6 +58,9 @@ class OperatorHold:
 class TickResult:
     commands: List[LimitsCmd] = field(default_factory=list)
     route_cmds: List[RouteWeightsCmd] = field(default_factory=list)
+    # other control commands: (sender key, gateway path, command). Charges, relocations, drains.
+    control: List[Tuple[str, str, object]] = field(default_factory=list)
+    jobs: List[object] = field(default_factory=list)         # async tests for the runtime (prover.py)
     events: List[IncidentEvent] = field(default_factory=list)
 
 
@@ -65,12 +69,20 @@ class TenantAgg:
     completed: int = 0
     p95_weighted: float = 0.0
     rejected: int = 0
+    admitted: int = 0
     occupancy: float = 0.0
     ticks: int = 0
+    served: int = 0               # requests answered by a worker (cells), ...
+    failed: int = 0               # ... of which 5xx / unreachable
 
     @property
     def p95(self) -> Optional[float]:
         return self.p95_weighted / self.completed if self.completed > 0 else None
+
+    @property
+    def ok_fraction(self) -> float:
+        """Share of answered requests that succeeded (1.0 when nothing was answered yet)."""
+        return 1.0 - self.failed / self.served if self.served > 0 else 1.0
 
 
 class Brain:
@@ -99,6 +111,8 @@ class Brain:
         self.hurt_off = cfg.min_victim_impact / 2.0
         self.s3 = Stage3(self)
         self.holds: Dict[str, OperatorHold] = {}
+        self.bg_pending: Dict[str, float] = defaultdict(float)   # bg CPU ms not yet charged to the gateway
+        self.last_charge_at: Optional[float] = None
 
     # ------------------------------------------------------------------ ingest
     def ingest_frame(self, frame: TelemetryFrame, now: float) -> None:
@@ -181,9 +195,19 @@ class Brain:
             cpu[u.tenant] = max(0.0, u.handler_cpu_ms + u.bg_cpu_ms - ((b.handler_cpu_ms + b.bg_cpu_ms) if b else 0.0))
             bg[u.tenant] = max(0.0, u.bg_cpu_ms - (b.bg_cpu_ms if b else 0.0))
             ev[u.tenant] = max(0, u.evictions_caused - (b.evictions_caused if b else 0))
+        for t, ms in bg.items():
+            if ms > 0 and t in self.tenants:
+                self.bg_pending[t] += ms
+        before_cls = {(c.tenant, c.cls): c.cpu_ms_total for c in prev.classes}
+        cls_cpu = {}
+        for c in st.classes:
+            d = c.cpu_ms_total - before_cls.get((c.tenant, c.cls), 0.0)
+            if d > 0:
+                cls_cpu[(c.tenant, c.cls)] = d
         self.stat_samples.append(StatSample(now, st.server, st.ts - prev.ts, cpu,
                                             st.cpu_total_ms - prev.cpu_total_ms, st.cpu_limit_cores,
-                                            bg, ev, max(0.0, st.blackbox_cpu_ms - prev.blackbox_cpu_ms)))
+                                            bg, ev, max(0.0, st.blackbox_cpu_ms - prev.blackbox_cpu_ms),
+                                            cls_cpu))
         self._prune(now)
 
     def _prune(self, now: float) -> None:
@@ -214,10 +238,15 @@ class Brain:
                 a = agg[q.tenant]
                 a.ticks += 1
                 a.rejected += q.rejected_429 + q.expired_503
+                a.admitted += q.admitted
                 a.occupancy += q.depth + q.inflight
                 if q.completed > 0 and q.p95_ms > 0:
                     a.completed += q.completed
                     a.p95_weighted += q.p95_ms * q.completed
+            for c in f.cells:
+                a = agg[c.tenant]
+                a.served += c.count
+                a.failed += min(c.errors, c.count)
         return agg
 
     def _cpu_by_server(self, now: float, window: float) -> Dict[str, Dict[str, float]]:
@@ -283,7 +312,8 @@ class Brain:
             base = self.baseline.get(t) if self.baseline.ready(t) else None
             slow[t] = slowdown(agg[t].p95 if t in agg else None, base, self.cfg.slow_abs_ms)
         self.slowdowns = slow
-        queue = {t: a.occupancy / max(1, a.ticks) for t, a in agg.items()}
+        # failed / 5xx requests (e.g. all of a tenant's servers down: fast 502s) are not slot usage
+        queue = {t: a.occupancy / max(1, a.ticks) * a.ok_fraction for t, a in agg.items()}
         servers = {s for t in self.tenants.values() for s in t.servers}
         limits = {s: lim for s, (_, lim) in self._server_cpu(now, cpu_window).items()}
         cpu_cap = {s: 1000.0 * (limits.get(s) or self.cfg.default_cores) for s in servers}
@@ -324,8 +354,109 @@ class Brain:
         ev, routes = self.s3.tick(now, acting=fresh and self.mode == ACTING_MODE)
         res.events.extend(ev)
         res.route_cmds = routes
+        res.control.extend(self.s3.control)
+        res.jobs.extend(self.s3.jobs)
+        self.s3.control, self.s3.jobs = [], []
         res.commands = self._commands(now)
+        res.control.extend(self._charges(now, fresh and self.mode == ACTING_MODE))
         return res
+
+    # ------------------------------------------------------------------ stage 3 support
+    def on_proof(self, result, now: float) -> TickResult:
+        """A relocation test finished (runtime): verdict + actions."""
+        res = TickResult(events=self.s3.on_proof(result, now))
+        res.control, res.jobs = self.s3.control, self.s3.jobs
+        self.s3.control, self.s3.jobs = [], []
+        return res
+
+    def on_host(self, result, now: float) -> TickResult:
+        res = TickResult(events=self.s3.on_host(result, now))
+        res.control, res.jobs = self.s3.control, self.s3.jobs
+        self.s3.control, self.s3.jobs = [], []
+        return res
+
+    def control_done(self, cmd, ok: bool, now: float) -> None:
+        """Relocate / drain delivery result. A refused action is logged by the runtime; its TTL bounds it."""
+        return None
+
+    def readings(self, now: float):
+        from .prover import Readings
+        cpu = {srv: ms for srv, (ms, _) in self._server_cpu(now, max(2.0, 2 * self.cfg.stats_poll_s)).items()}
+        hs = self.s3.health.servers
+        return Readings(slowdown={s: max(0.0, h.peer_ratio - 1.0) for s, h in hs.items()},
+                        peer_ratio={s: h.peer_ratio for s, h in hs.items()}, cpu_ms=cpu,
+                        source={s: h.source for s, h in hs.items()})
+
+    def footprint(self, t: str, now: float) -> Dict[str, float]:
+        """The suspect's CPU on its servers: paid (metered handler + bg) and unexplained (black-box)."""
+        window = max(self.cfg.probe_window_s, 3 * self.cfg.stats_poll_s)
+        by = self.cpu_by_server(now)
+        servers = self.servers_of[t]
+        paid = sum(by.get(s, {}).get(t, 0.0) for s in servers)
+        bb: Dict[str, List[float]] = {}
+        for x in self.stat_samples:
+            if x.t > now - window and x.server in servers:
+                a = bb.setdefault(x.server, [0.0, 0.0])
+                a[0] += x.blackbox_ms
+                a[1] += x.dt
+        unexplained = sum(ms / dt for ms, dt in bb.values() if dt > 0)
+        return {"paid": paid, "unexplained": unexplained, "footprint": paid + unexplained}
+
+    def verdict_inputs(self, t: str, now: float) -> Dict[str, float]:
+        fp = self.footprint(t, now)
+        agg = self._tenant_agg(self._frames(now, self.cfg.view_window_s)).get(t, TenantAgg())
+        asked = agg.admitted + agg.rejected
+        led = self.s3.ledger
+        return {"paid_share": fp["paid"] / fp["footprint"] if fp["footprint"] > 0 else 1.0,
+                "blackbox_hint": led.blackbox_all.get(t, 0.0), "evict_hint": led.evict_share.get(t, 0.0),
+                "rejected_share": agg.rejected / asked if asked > 0 else 0.0}
+
+    def top_class(self, t: str, now: float) -> Optional[str]:
+        """The tenant's most expensive request class (CPU over the last few seconds), if workers report classes."""
+        window = max(self.cfg.probe_window_s, 5 * self.cfg.stats_poll_s)
+        acc: Dict[str, float] = defaultdict(float)
+        for x in self.stat_samples:
+            if x.t > now - window:
+                for (tt, cls), ms in x.class_cpu_ms.items():
+                    if tt == t:
+                        acc[cls] += ms
+        return max(acc, key=acc.get) if acc else None
+
+    def server_utilisation(self, now: float) -> Dict[str, float]:
+        return {srv: (ms / (lim * 1000.0) if lim > 0 else 0.0)
+                for srv, (ms, lim) in self._server_cpu(now, max(2.0, 2 * self.cfg.stats_poll_s)).items()}
+
+    def force_throttle(self, t: str, now: float, reason: str) -> List[IncidentEvent]:
+        """over_plan verdict: put the tenant's ladder at throttle (factor = throttle_factor) so the normal
+        AIMD path renews and later relaxes it."""
+        st = self.ladders[t]
+        f = min(st.factor, self.p.throttle_factor)
+        if st.acting and st.factor <= f:
+            return []
+        tr = lad.Transition("escalate", st.level, self.p.level_for(f, st.weight_factor), st.factor, f,
+                            st.weight_factor, st.weight_factor, reason)
+        st.level, st.factor, st.changed_at = tr.level, f, now
+        st.peak = tr.level if lad.RANK[tr.level] > lad.RANK[st.peak] else st.peak
+        self._restart_holds(st, now)
+        return self._on_transition(t, tr, now)
+
+    def _charges(self, now: float, acting: bool) -> List[Tuple[str, str, ChargeCmd]]:
+        """Once a second: debit each tenant's background-job CPU (not in X-TenantGuard-Cpu-Ms) from its cost
+        bucket. tenantguard mode only; outside it the CPU is simply not charged."""
+        if self.last_charge_at is not None and now - self.last_charge_at < self.cfg.charge_s:
+            return []
+        period = now - self.last_charge_at if self.last_charge_at is not None else self.cfg.charge_s
+        self.last_charge_at = now
+        pending, self.bg_pending = self.bg_pending, defaultdict(float)
+        if not acting:
+            return []
+        return [(f"charge:{t}:{int(now)}", "/control/charge",
+                 ChargeCmd(tenant=t, cpu_ms=round(ms, 3), period_s=round(period, 3), charge_id=f"{t}-{int(now)}"))
+                for t, ms in sorted(pending.items()) if ms > 0]
+
+    def charge_failed(self, cmd: ChargeCmd) -> None:
+        """Not delivered: fold it into the next charge (a new charge_id; the gateway never saw this one)."""
+        self.bg_pending[cmd.tenant] += cmd.cpu_ms
 
     # ------------------------------------------------------------------ operator decisions
     def operator(self, cmd: OperatorCmd, now: float) -> List[IncidentEvent]:
