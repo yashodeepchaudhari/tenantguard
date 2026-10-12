@@ -1,7 +1,7 @@
 """Evidence packs (pure): everything a report may say, collected from the brain's event stream.
 
-The pack is the single source of truth for both reports. The grounding check only allows tenant ids,
-server ids, times and numbers that appear in it.
+The pack is the single source of truth for the incident report; an anonymised subset of it (no tenant,
+no server, no copied brain text) is the only input of the customer message.
 """
 from __future__ import annotations
 

@@ -12,6 +12,7 @@ from typing import List, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
+PARTNER_TOKEN_HEADER = "X-Handoff-Token"     # Web -> TenantGuard updates must carry HANDOFF_PARTNER_TOKEN here
 HHMMSS = r"^([01]\d|2[0-3]):[0-5]\d:[0-5]\d$"
 CASE_ID = r"^INC-\d{4}$"
 

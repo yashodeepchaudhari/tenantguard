@@ -98,6 +98,8 @@ flowchart LR
 | `push_timeout_s` | 3 | Timeout for a POST to the partner app and for control calls |
 | `retention_s` | 3600 | Closed/resolved cases are evicted this long after they close |
 | `history_wire_max` | 50 | History items sent to the partner per case (+ an "N earlier events" line) |
+| `history_keep` | 500 | History items kept per case in memory (older ones counted, not kept) |
+| `id_map_max` | 2000 | incident_id → case_id entries kept and persisted (live cases always keep their ids) |
 
 ### `billing` (**in progress**, T17: keys exist; the service code is not on master)
 `poll_s` 5, `bucket_s` 60, `retention_h` 24, `price_rs_per_cpu_s` (enterprise 0.40, pro 0.60, free 0.80), `db_price_rs_per_s` 0.0, `ref_alpha` 0.2, `sla_default_p95_ms` 100, `sla_credit_table` (2 s → 2%, 10 s → 4%, 60 s → 10%, 300 s → 25%), `unmetered_min_confidence` 0.6.
@@ -135,7 +137,7 @@ flowchart LR
 | `WEB_URL` | handoff, `mock_web.py` | `http://127.0.0.1:8500` | The partner Digital Handoff app |
 | `TENANTGUARD_UI_URL` | handoff | `http://127.0.0.1:5173` | Host used in each case's `evidence_link` |
 | `HANDOFF_STATE_PATH` | handoff | `data/handoff-state.json` (`/data/...` in compose) | Persisted case-id counter and incident→case map |
-| `HANDOFF_PARTNER_TOKEN` | handoff | unset | Required on inbound partner updates (`X-Handoff-Token`); unset → 503 (fail-closed), wrong → 401 |
+| `HANDOFF_PARTNER_TOKEN` | handoff, `mock_web.py`, `prove_handoff.py` | unset | Required on inbound partner updates (`X-Handoff-Token`); unset → 503 (fail-closed), wrong → 401. The partner tools send it and refuse to run without it |
 | `HANDOFF_HOST` / `HANDOFF_PORT` | handoff `__main__` | `0.0.0.0` / yaml port | Bind address |
 | `HANDOFF_URL`, `FAKE_GW_URL` | handoff tools (`mock_web.py`, `prove_handoff.py`) | `:8400`, `:8099` | Tool targets |
 | `NARRATOR_HOST` / `NARRATOR_PORT` | narrator `__main__` | `0.0.0.0` / yaml port | Bind address |

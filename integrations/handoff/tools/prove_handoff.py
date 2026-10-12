@@ -1,6 +1,7 @@
 """End-to-end proof: brain incident -> case at the (mock) Web app -> owner -> decisions -> control commands.
 
 Assumes running: fake gateway (FAKE_GW_URL, default :8099), brain, bridge (HANDOFF_URL), mock web (WEB_URL).
+Partner updates carry HANDOFF_PARTNER_TOKEN (must match the bridge's), as the real partner app would.
 """
 from __future__ import annotations
 
@@ -9,6 +10,7 @@ import os
 import time
 
 import httpx
+from mock_web import partner_headers   # same directory; also checks that the token is set
 
 HANDOFF = os.environ.get("HANDOFF_URL", "http://127.0.0.1:8400")
 WEB = os.environ.get("WEB_URL", "http://127.0.0.1:8500")
@@ -38,11 +40,12 @@ def case_with_pending():
 
 
 def update(body):
-    r = httpx.post(f"{HANDOFF}/control/case-update", json=body, timeout=10)
+    r = httpx.post(f"{HANDOFF}/control/case-update", json=body, headers=partner_headers(), timeout=10)
     return {"status": r.status_code, "response": r.json()}
 
 
 def main():
+    partner_headers()                    # fail fast, before waiting for an incident
     c = wait_for(case_with_pending, 150)
     if c is None:
         show("no case with a pending action appeared", httpx.get(f"{HANDOFF}/cases").json())

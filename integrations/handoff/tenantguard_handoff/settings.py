@@ -55,5 +55,7 @@ class HandoffSettings:
             confidence_to_name=float((s.get("brain") or {}).get("confidence_to_prove", 0.6)),
             retention_s=float(h.get("retention_s", 3600)),
             history_wire_max=int(h.get("history_wire_max", 50)),
+            history_keep=int(h.get("history_keep", 500)),
+            id_map_max=int(h.get("id_map_max", 2000)),
             cors_origins=[o.strip() for o in cors.split(",") if o.strip()],
         )

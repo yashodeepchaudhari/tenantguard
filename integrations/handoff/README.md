@@ -15,6 +15,7 @@ cd integrations/handoff
 pip install -r requirements.txt               # tenantguard_common must already be installed
 WEB_URL=http://<web-laptop>:<port> python -m tenantguard_handoff      # binds 0.0.0.0:8400
 python tools/mock_web.py serve --port 8500    # stand-in for the Web app (WEB_URL=http://127.0.0.1:8500)
+export HANDOFF_PARTNER_TOKEN=<same value as the bridge>   # the tools send it as X-Handoff-Token
 python tools/mock_web.py owner INC-0001 Rahul
 python tools/mock_web.py decide INC-0001 A1 extend Rahul
 python -m pytest
