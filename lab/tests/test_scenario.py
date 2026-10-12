@@ -146,6 +146,9 @@ async def test_lab_run_end_to_end_writes_runresult(tmp_path):
     assert res.victim_p99_ms.baseline > 0 and "K" not in res.victim_p99_by_tenant
     assert res.time_to_detect_s is not None and 0 <= res.time_to_detect_s < 1.5
     assert not lab.engine.calm_running                    # calm restored to its previous (off) state
+    marks = info.view()["marks"]                          # actual phase timestamps exposed for analysis
+    assert marks["t0"] <= marks["baseline_start"] < marks["attack_start"] < marks["attack_end"] < marks["end"]
+    assert marks["attack_end"] - marks["attack_start"] >= 1.5
 
 
 async def test_attack_start_marked_after_attack_is_running():
