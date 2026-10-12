@@ -391,6 +391,20 @@ Build:
 5. **Handoff:** a Cases column showing the bridge's `CaseView` (GET :8400/cases) with owner + pending actions, when the bridge is reachable.
 6. Keep the Control Room on one 1080p screen (a toggle between tiles and the flow view is fine). Tests, e2e, screenshots.
 
+### T16: Submission docs (T1 session, same worktree)
+**You are TASK T16:** when this is finished, a judge who opens the repo understands TenantGuard in 2 minutes and can run it in 10. Everything says TenantGuard, matches the real Python stack, and quotes only measured numbers.
+
+You own (delegated by the coordinator for this task only): `README.md`, `docs/architecture.html`, `docs/Architecture.pdf`, new `docs/SETUP.md`, new `docs/SUBMISSION.md`. Do not touch `docs/PLAN.md` or `docs/FINAL-PLAN.md`.
+
+Build:
+1. **README.md:** the one-line pitch; the problem in 3 lines; a Mermaid architecture diagram (data / control / management planes + 5 isolation layers); a component table with ports; a quick start (Docker host + local); how to run the demo (`tools/demo.py`); the "not just a rate limit" evidence (3-mode scorecard, black-box: `ingest` 0.07 ms visible vs 20.25 ms hidden CPU from `worker/calibration.json`); repo map.
+2. **docs/architecture.html + PDF:** rewrite the earlier version (it shows a FastAPI + Redis + Postgres stack that we didn't build). Show the real architecture, components and tech stack. Keep "Version 1 technical / Version 2 simple flow". Render the PDF with headless Edge like before (`msedge --headless=new --print-to-pdf`); check the page breaks.
+3. **docs/SETUP.md:** the two-laptop + Tailscale setup, Docker host steps (link DOCKER-HOST-SETUP.md), local dev, env vars, tokens, ports.
+4. **docs/SUBMISSION.md:** PS3 checklist → where implemented (file paths); AI-tool disclosure (state plainly that AI coding assistants were used in development; the product's Claude narrator is a feature); known limitations; roadmap.
+5. Numbers: only from committed result files (lab/results or calibration.json). Mark anything else "to be measured".
+
+No code changes. Done = files rendered and checked (open the PDF pages as images via a headless screenshot, as before).
+
 ## Task table
 
 | Task | Branch | Worktree | Session | Status |
@@ -398,10 +412,11 @@ Build:
 | T1 Gateway | task/T1-gateway | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
 | T7 Gateway wave 2 | task/T7-gateway-adaptive | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
 | T11 Handoff bridge (Web PS3 convergence) | task/T11-handoff-bridge | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
-| T14 Demo driver (`tools/demo.py`) | task/T14-demo-runbook | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | assigned |
+| T14 Demo driver (`tools/demo.py`) | task/T14-demo-runbook | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
+| T16 Submission docs | task/T16-submission-docs | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | assigned |
 | T2 Workers | task/T2-workers | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged** (9cebaaf) |
 | T6 Workers wave 2 | task/T6-worker-blackbox | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged** |
-| T15 Worker calibration in-container | task/T15-worker-calib | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | assigned |
+| T15 Worker calibration in-container | task/T15-worker-calib | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged**; host calibration committed (fa011b3) |
 | T3 Brain | task/T3-brain | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | **merged** |
 | T8 Brain integration + health/rescue/decoder | task/T8-brain-detect | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | **merged** |
 | T12 Brain prover + verdicts + calibration | task/T12-brain-prover | D:\yashodeep\codeAstra-T3 | codeastra-t3-b9 | in progress (merges coord/layout-balance) |
