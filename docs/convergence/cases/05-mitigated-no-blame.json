@@ -6,7 +6,7 @@
   "context": {
     "verdict": "mitigated_no_blame",
     "affected": ["A", "F", "I", "C", "D", "H"],
-    "evidence_link": "http://<padosi-host>/case/INC-0108",
+    "evidence_link": "http://<ui-host>:5173/case/INC-0108",
     "summary": "Servers w2 and w6 slowed for about 6 seconds. Affected tenants were moved to their healthy servers within 1 s. No tenant had all 3 of its servers slow; the closest match, LokVani News (L), shares w2 and w6 but its third server w4 stayed healthy, so its confidence was only 42%. The slowdown ended before a test was needed. Padosi did not blame or limit anyone; the full data is saved for review."
   },
   "pending_actions": [

@@ -6,7 +6,7 @@
   "context": {
     "verdict": "over_plan",
     "affected": [],
-    "evidence_link": "http://<padosi-host>/case/INC-0105",
+    "evidence_link": "http://<ui-host>:5173/case/INC-0105",
     "summary": "Chitra Studio (Free plan) sent about 200 requests/s against a plan of 20/s. The rate limiter rejected the extra requests with Retry-After, and its batch uploads were queued at the plan rate. No other tenant slowed down. Over plan 37% of the last 10 minutes."
   },
   "pending_actions": [

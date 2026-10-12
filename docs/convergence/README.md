@@ -8,5 +8,5 @@
 6. When the new owner clicks **Acknowledge**, send the `owner` example from `case-update-examples.json` to `POST {PADOSI_URL}/control/case-update`.
 7. Approve / Reject / Extend / Release / Resolve buttons send the matching `decision` example for that `action_id`.
 8. `affected` lists tenant IDs A–L. Names: A Aarogya Health, B BazaarKart, C Chitra Studio, D DhanSetu Payments, E Ekalavya Learn, F FitPadosi, G GaadiGo, H HisaabBooks, I IdliExpress, J JhatpatMart, K KaamKaro, L LokVani News.
-9. `evidence_link` uses the placeholder `<padosi-host>`; replace it with the Padosi laptop's address on the day.
+9. `evidence_link` is `http://<ui-host>:5173/case/<incident_id>`; replace `<ui-host>` with the Padosi UI laptop's address on the day.
 10. If no decision arrives before a deadline, Padosi applies its safe default (timer auto-undo), so a missed click never breaks anything.

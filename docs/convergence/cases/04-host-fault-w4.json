@@ -6,7 +6,7 @@
   "context": {
     "verdict": "host_fault",
     "affected": ["B", "E", "G", "L"],
-    "evidence_link": "http://<padosi-host>/case/INC-0107",
+    "evidence_link": "http://<ui-host>:5173/case/INC-0107",
     "summary": "Server w4 became 3.1x slower than its peers. No tenant's pattern explains it: no tenant has all 3 of its servers slow. Padosi drained w4, and BazaarKart, Ekalavya Learn, GaadiGo and LokVani News were moved to their other servers in 0.8 s. Even with no traffic, w4 stayed 2.7x slower than its peers, so this is a machine fault. No tenant was blamed or limited."
   },
   "pending_actions": [

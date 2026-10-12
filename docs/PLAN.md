@@ -85,7 +85,7 @@ Gate G2: black-box bomb is missed by `industry` and rescued → named → proved
 
 ## §5 Task briefs (Wave 1)
 
-Each brief is copied into its worktree as `TASK-T<n>.md`.
+Each brief is copied into its worktree as `TASK-T<n>.md`. **Every TASK file also carries an "Addendum: contracts v2 + two-laptop setup" that overrides the brief text where they differ** (QueueStat `rejected_429`/`expired_503`/`p95_ms`, TenantAdminView, OverridesView, LimitsCmd "always send both factors", `noisy_norm`, Lab models, bind 0.0.0.0, URLs from env, CORS).
 
 ### Common footer (part of every brief)
 > Read `README.md`, `docs/PLAN.md` (§2 is settled: follow it, don't relitigate it) and `docs/FINAL-PLAN.md`. Build the standard feature set for your domain, not the bare minimum.
@@ -269,4 +269,11 @@ Prove it: run against a stub gateway (a 10-line FastAPI that sleeps 2 ms), then 
   - case status is `waiting_for_decision|in_progress|resolved|closed`; severity is `low|medium|high`; times are HH:MM:SS IST
   - evidence_link = `http://<ui-host>:5173/case/<incident_id>` (T4 adds the `/case/:id` route in Wave 2)
   - Case/handoff Pydantic models are added to `contracts.py` at the start of Wave 3.
+- 2026-10-12 (user): **Two-laptop setup.**
+  - The friend's laptop = Docker host ("Laptop A"): gateway, workers, spare, quarantine and brain in compose. The brain must sit with docker.sock.
+  - This laptop = dev + traffic ("Laptop B"): all Claude sessions, the lab and the UI, pointing at `<friend-ip>`.
+  - Dev needs no Docker; Docker is only required at gate G1.
+  - Code reaches Laptop A via a private GitHub remote (pending user OK).
+  - Laptop A needs ≥ 8 cores / 16 GB; with fewer, lower `worker.cpus` or use the 6-worker layout.
+  - Services must therefore bind `0.0.0.0` and allow CORS from the UI origin; nothing may assume 127.0.0.1 for a peer service (always read URLs from config/env).
 - 2026-10-12: Cost bucket is debited with the worker-measured CPU (`X-Padosi-Cpu-Ms`) rather than an estimate, so it is a real resource quota, not a request count.

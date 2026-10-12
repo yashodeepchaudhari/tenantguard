@@ -6,7 +6,7 @@
   "context": {
     "verdict": "costly_pattern",
     "affected": ["A", "E", "H", "B", "D", "I", "C", "F", "G"],
-    "evidence_link": "http://<padosi-host>/case/INC-0104",
+    "evidence_link": "http://<ui-host>:5173/case/INC-0104",
     "summary": "KaamKaro's bulk-ingest requests trigger about 9x more work in the black-box indexer than they are billed for. Its 3 servers (w1, w3, w8) slowed down. The 9 tenants sharing those servers were moved to healthy servers in 0.9 s. Moving KaamKaro to the spare server made w1, w3 and w8 recover (R = 0.78), and the slowdown followed KaamKaro to the spare. Genuineness 34%, importance Medium (Pro, Rs 1.8 lakh/month)."
   },
   "pending_actions": [

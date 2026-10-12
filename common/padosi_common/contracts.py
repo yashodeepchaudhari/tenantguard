@@ -31,7 +31,7 @@ H_CPU_MS = "X-Padosi-Cpu-Ms"
 class Quota(BaseModel):
     rate_rps: float          # token bucket refill, requests/s
     burst: int               # token bucket capacity, requests
-    cost_ms_per_s: float     # cost bucket refill, CPU-ms per second (capacity = 2 s worth)
+    cost_ms_per_s: float     # cost bucket refill, CPU-ms per second (capacity = padosi.yaml gateway.cost_bucket_s seconds worth)
     concurrency: int         # max in-flight requests
 
 
@@ -93,7 +93,7 @@ class QueueStat(BaseModel):
     tenant: str
     depth: int                   # queued now
     wait_p95_ms: float           # gateway queue wait
-    p95_ms: float                # end-to-end (queue wait + upstream) p95 of completed requests; 0 if none
+    p95_ms: float                # end-to-end (queue wait + upstream) p95 of completed requests; 0 if completed==0 (consumers MUST skip such ticks, not treat as fast)
     completed: int
     admitted: int
     rejected_429: int            # refused by admission (rate / cost / concurrency / block)
@@ -144,7 +144,7 @@ class WorkerStats(BaseModel):
     started_at: float            # process start; a change means counters reset
     cpu_total_ms: float          # whole process tree, cumulative
     blackbox_cpu_ms: float = 0.0 # unattributed "vendor indexer" CPU, cumulative (Wave 2)
-    cpu_limit_cores: float = 0.5 # container CPU limit, for computing cpu_pct
+    cpu_limit_cores: float = 0.5 # container CPU limit (worker fills from padosi.yaml worker.cpus / env), for cpu_pct
     mem_mb: float
     fault: Optional[dict] = None
     tenants: List[TenantUsage] = Field(default_factory=list)
@@ -174,7 +174,10 @@ class LimitsCmd(ControlBase):
     - Base = the tenant's current configured quota (after any PATCH), not the tier default.
     - Effective int fields = max(1, round(base * factor)); floats = base * factor.
     - factor == 1.0 and weight_factor == 1.0 clears the override immediately.
-    - Gateway returns 400 if factor <= 0 or factor > 1, or weight_factor <= 0 or > 1.
+    - Gateway returns 400 if factor <= 0 or factor > 1, or weight_factor <= 0 or > 1
+      (checked by hand in the handler; do NOT add Field constraints here, they would give 422).
+    - SENDERS MUST ALWAYS SEND BOTH factors from their current state; an omitted field
+      defaults to 1.0 and silently un-throttles that dimension.
     """
     tenant: str
     factor: float = 1.0                       # multiplies rate, burst, cost and concurrency
@@ -229,7 +232,7 @@ class TenantView(BaseModel):
     noisy_norm: float             # 0..1 = min(1, noisy_score / brain.noisy.quarantine), for bars
     level: Level
     factor: float = 1.0           # current throttle factor applied
-    placement: str = "normal"     # normal | spare | quarantine
+    placement: str = "normal"     # normal | spare | quarantine | wN (same values as TenantAdminView)
 
 
 class ServerView(BaseModel):
