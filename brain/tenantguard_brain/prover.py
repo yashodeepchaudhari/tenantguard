@@ -129,28 +129,41 @@ class DockerControl(Protocol):
 class EngineDocker:
     """Minimal Docker Engine API client over the unix socket (no SDK needed in the image)."""
 
-    def __init__(self, socket_path: str = "/var/run/docker.sock", api: str = "v1.41", service: str = SPARE):
+    def __init__(self, socket_path: str = "/var/run/docker.sock", api: str = "v1.41", service: str = SPARE,
+                 project: Optional[str] = None, explicit: Optional[str] = None):
         self.socket_path = socket_path
         self.service = service
+        self.project = project if project is not None else os.environ.get("COMPOSE_PROJECT")
+        self.explicit = explicit if explicit is not None else os.environ.get("TENANTGUARD_SPARE_CONTAINER")
         self.resolved: Dict[str, str] = {}
         self.client = httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=socket_path),
                                         base_url=f"http://docker/{api}", timeout=5.0)
 
     async def _resolve(self, container: str) -> str:
-        """The container's real id: by name, else by its compose service label (the compose project name on
-        the Docker host may not be what COMPOSE_PROJECT says)."""
+        """The id of OUR stack's spare. Several compose projects can share one Docker host (e.g. dev + a frozen
+        demo), so the spare is found by BOTH labels, com.docker.compose.project=<COMPOSE_PROJECT> and
+        com.docker.compose.service=spare, never by the service alone and never by a guessed name.
+        TENANTGUARD_SPARE_CONTAINER (an exact container name) overrides that."""
         if container in self.resolved:
             return self.resolved[container]
-        r = await self.client.get(f"/containers/{container}/json")
-        if r.status_code == 200:
-            self.resolved[container] = container
-            return container
-        flt = json.dumps({"label": [f"com.docker.compose.service={self.service}"]})
+        if self.explicit:
+            r = await self.client.get(f"/containers/{self.explicit}/json")
+            r.raise_for_status()
+            self.resolved[container] = r.json()["Id"]
+            return self.resolved[container]
+        if not self.project:
+            raise RuntimeError("COMPOSE_PROJECT is not set: refusing to pick a spare that may belong to "
+                               "another stack (set COMPOSE_PROJECT or TENANTGUARD_SPARE_CONTAINER)")
+        flt = json.dumps({"label": [f"com.docker.compose.project={self.project}",
+                                    f"com.docker.compose.service={self.service}"]})
         r = await self.client.get("/containers/json", params={"filters": flt})
         r.raise_for_status()
-        found = r.json()
-        if not found:
-            raise RuntimeError(f"no container {container} and none labelled compose service={self.service}")
+        found = [c for c in r.json()
+                 if (c.get("Labels") or {}).get("com.docker.compose.project", self.project) == self.project
+                 and (c.get("Labels") or {}).get("com.docker.compose.service", self.service) == self.service]
+        if len(found) != 1:
+            raise RuntimeError(f"expected exactly one '{self.service}' container in compose project "
+                               f"'{self.project}', found {len(found)}")
         self.resolved[container] = found[0]["Id"]
         return found[0]["Id"]
 
@@ -189,10 +202,8 @@ class EngineDocker:
 
 
 def spare_container_name() -> str:
-    explicit = os.environ.get("TENANTGUARD_SPARE_CONTAINER")
-    if explicit:
-        return explicit
-    return f"{os.environ.get('COMPOSE_PROJECT', 'codeastra')}-{SPARE}-1"
+    """A label for logs; the container itself is resolved by EngineDocker from the compose labels."""
+    return os.environ.get("TENANTGUARD_SPARE_CONTAINER") or f"{os.environ.get('COMPOSE_PROJECT', '?')}/{SPARE}"
 
 
 # ------------------------------------------------------------------ provers
@@ -327,6 +338,11 @@ async def make_prover(mode: str, params: ProverParams, vparams: VerdictParams) -
     if mode == "auto" and not os.path.exists(sock):
         return NullProver()
     eng = EngineDocker(sock)
+    if not (eng.project or eng.explicit):
+        await eng.aclose()
+        if mode == "docker":
+            raise RuntimeError("TENANTGUARD_PROVER=docker needs COMPOSE_PROJECT (or TENANTGUARD_SPARE_CONTAINER)")
+        return NullProver()                 # never guess which stack's spare is ours
     if await eng.ping():
         return DockerProver(eng, params, vparams)
     await eng.aclose()

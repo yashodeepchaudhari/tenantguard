@@ -26,7 +26,8 @@ python -m tenantguard_brain                     # binds 0.0.0.0:8200
 | `TENANTGUARD_CONTROL_TOKEN` | `dev` | sent as `X-TenantGuard-Control-Token` on every gateway `/admin` + `/control` call; required on `POST /api/operator` |
 | `TENANTGUARD_PROVER` | yaml `brain.prover` (`auto`) | `docker`: relocation proofs through the Docker socket (fails loudly if it doesn't answer); `null`: no proofs; `auto`: docker when `/var/run/docker.sock` answers |
 | `TENANTGUARD_DOCKER_SOCKET` | `/var/run/docker.sock` | |
-| `TENANTGUARD_SPARE_CONTAINER` | `$COMPOSE_PROJECT-spare-1` | else found by the compose label `com.docker.compose.service=spare` |
+| `COMPOSE_PROJECT` | (compose passes its project name) | the spare is the ONE container labelled `com.docker.compose.project=$COMPOSE_PROJECT` **and** `com.docker.compose.service=spare`, never matched by service alone (two stacks can share a Docker host). Unset: no Docker actions (prover null) |
+| `TENANTGUARD_SPARE_CONTAINER` | unset | an exact container name, overrides the label lookup |
 
 Docker: `docker compose up brain` (image from `brain/Dockerfile`, build context = repo root).
 

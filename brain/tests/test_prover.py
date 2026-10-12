@@ -157,36 +157,6 @@ def test_host_prover_drain_refused():
     assert not res.drained and "refused" in res.detail
 
 
-# ------------------------------------------------------------------ Engine API client
-def engine(host_config):
-    seen = []
-
-    def handler(r: httpx.Request):
-        seen.append((r.method, r.url.path, json.loads(r.content) if r.content else None))
-        if r.url.path.endswith("/json"):
-            return httpx.Response(200, json={"HostConfig": host_config})
-        return httpx.Response(200, json={"Warnings": []})
-
-    e = EngineDocker.__new__(EngineDocker)
-    e.socket_path, e.service, e.resolved = "test", "spare", {}
-    e.client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://docker/v1.41")
-    return e, seen
-
-
-def test_engine_uses_nano_cpus_for_compose_cpus():
-    e, seen = engine({"NanoCpus": 1_000_000_000, "CpuQuota": 0, "CpuPeriod": 0})
-    assert run(e.get_cpus("codeastra-spare-1")) == 1.0
-    run(e.set_cpus("codeastra-spare-1", 1.5))
-    assert seen[-1] == ("POST", "/v1.41/containers/codeastra-spare-1/update", {"NanoCpus": 1_500_000_000})
-
-
-def test_engine_uses_cpu_quota_when_the_container_has_one():
-    e, seen = engine({"NanoCpus": 0, "CpuQuota": 50_000, "CpuPeriod": 100_000})
-    assert run(e.get_cpus("c")) == 0.5
-    run(e.set_cpus("c", 0.75))
-    assert seen[-1][2] == {"CpuQuota": 75_000, "CpuPeriod": 100_000}
-
-
 def test_make_prover_switch(tmp_path, monkeypatch):
     p = ProverParams()
     v = VerdictParams()
@@ -197,23 +167,112 @@ def test_make_prover_switch(tmp_path, monkeypatch):
         run(make_prover("docker", p, v))                                     # explicitly asked: fail loudly
 
 
-def test_engine_finds_the_spare_by_compose_label_when_the_name_differs():
-    seen = []
+class FakeEngine:
+    """Docker Engine API with containers from two compose projects on one host."""
 
-    def handler(r: httpx.Request):
-        seen.append((r.method, r.url.path, r.url.params.get("filters")))
-        if r.url.path == "/v1.41/containers/codeastra-spare-1/json":
+    def __init__(self, containers):
+        self.containers = containers          # id -> {"Labels": {...}, "HostConfig": {...}}
+        self.updates = []
+
+    def handler(self, r: httpx.Request):
+        path = r.url.path.replace("/v1.41", "")
+        if path == "/containers/json":
+            want = json.loads(r.url.params["filters"])["label"]
+            out = [{"Id": cid, "Labels": c["Labels"]} for cid, c in self.containers.items()
+                   if all(c["Labels"].get(k) == v for k, v in (x.split("=", 1) for x in want))]
+            return httpx.Response(200, json=out)
+        parts = path.strip("/").split("/")
+        cid = parts[1]
+        if cid not in self.containers:
             return httpx.Response(404, json={"message": "No such container"})
-        if r.url.path == "/v1.41/containers/json":
-            return httpx.Response(200, json=[{"Id": "abc123"}])
-        if r.url.path == "/v1.41/containers/abc123/json":
-            return httpx.Response(200, json={"HostConfig": {"NanoCpus": 500_000_000}})
-        return httpx.Response(200, json={})
+        if parts[2] == "json":
+            return httpx.Response(200, json={"Id": cid, "HostConfig": self.containers[cid]["HostConfig"]})
+        self.updates.append((cid, json.loads(r.content)))
+        return httpx.Response(200, json={"Warnings": []})
 
+
+def engine_for(fake, project=None, explicit=None):
     e = EngineDocker.__new__(EngineDocker)
-    e.socket_path, e.service, e.resolved = "test", "spare", {}
-    e.client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://docker/v1.41")
-    assert run(e.get_cpus("codeastra-spare-1")) == 0.5
-    run(e.set_cpus("codeastra-spare-1", 1.0))
-    assert seen[-1][:2] == ("POST", "/v1.41/containers/abc123/update")
-    assert any("com.docker.compose.service=spare" in (f or "") for _, _, f in seen)
+    e.socket_path, e.service, e.resolved, e.project, e.explicit = "test", "spare", {}, project, explicit
+    e.client = httpx.AsyncClient(transport=httpx.MockTransport(fake.handler), base_url="http://docker/v1.41")
+    return e
+
+
+TWO_STACKS = {
+    "dev-spare": {"Labels": {"com.docker.compose.project": "codeastra", "com.docker.compose.service": "spare"},
+                  "HostConfig": {"NanoCpus": 1_000_000_000}},
+    "demo-spare": {"Labels": {"com.docker.compose.project": "tgdemo", "com.docker.compose.service": "spare"},
+                   "HostConfig": {"NanoCpus": 2_000_000_000}},
+    "dev-w1": {"Labels": {"com.docker.compose.project": "codeastra", "com.docker.compose.service": "w1"},
+               "HostConfig": {"NanoCpus": 500_000_000}},
+}
+
+
+def test_spare_is_found_by_project_and_service_with_two_stacks_on_one_host():
+    for project, mine, other in (("codeastra", "dev-spare", "demo-spare"), ("tgdemo", "demo-spare", "dev-spare")):
+        fake = FakeEngine({k: dict(v) for k, v in TWO_STACKS.items()})
+        e = engine_for(fake, project=project)
+        assert run(e.get_cpus("spare")) == TWO_STACKS[mine]["HostConfig"]["NanoCpus"] / 1e9
+        run(e.set_cpus("spare", 1.5))
+        assert [cid for cid, _ in fake.updates] == [mine]          # never the other stack's spare
+        assert other not in e.resolved.values()
+
+
+def test_no_project_means_no_docker_action():
+    fake = FakeEngine({k: dict(v) for k, v in TWO_STACKS.items()})
+    e = engine_for(fake, project=None)
+    with pytest.raises(RuntimeError, match="COMPOSE_PROJECT"):
+        run(e.set_cpus("spare", 1.0))
+    assert fake.updates == []
+
+
+def test_ambiguous_or_missing_spare_is_refused():
+    dup = {k: dict(v) for k, v in TWO_STACKS.items()}
+    dup["dev-spare-2"] = {"Labels": {"com.docker.compose.project": "codeastra", "com.docker.compose.service": "spare"},
+                          "HostConfig": {"NanoCpus": 1}}
+    fake = FakeEngine(dup)
+    with pytest.raises(RuntimeError, match="exactly one"):
+        run(engine_for(fake, project="codeastra").set_cpus("spare", 1.0))
+    with pytest.raises(RuntimeError, match="found 0"):
+        run(engine_for(FakeEngine(dict(TWO_STACKS)), project="other").set_cpus("spare", 1.0))
+    assert fake.updates == []
+
+
+def test_explicit_container_name_overrides():
+    fake = FakeEngine({k: dict(v) for k, v in TWO_STACKS.items()})
+    e = engine_for(fake, project="codeastra", explicit="demo-spare")
+    run(e.set_cpus("spare", 0.5))
+    assert fake.updates == [("demo-spare", {"NanoCpus": 500_000_000})]
+
+
+def test_make_prover_without_a_project_is_null(tmp_path, monkeypatch):
+    sock = tmp_path / "docker.sock"
+    sock.write_text("")
+    monkeypatch.setenv("TENANTGUARD_DOCKER_SOCKET", str(sock))
+    monkeypatch.delenv("COMPOSE_PROJECT", raising=False)
+    monkeypatch.delenv("TENANTGUARD_SPARE_CONTAINER", raising=False)
+    assert isinstance(run(make_prover("auto", ProverParams(), VerdictParams())), NullProver)
+    with pytest.raises(RuntimeError, match="COMPOSE_PROJECT"):
+        run(make_prover("docker", ProverParams(), VerdictParams()))
+
+
+# ------------------------------------------------------------------ Engine API client
+def one_spare(host_config):
+    return {"sp": {"Labels": {"com.docker.compose.project": "codeastra", "com.docker.compose.service": "spare"},
+                   "HostConfig": host_config}}
+
+
+def test_engine_uses_nano_cpus_for_compose_cpus():
+    fake = FakeEngine(one_spare({"NanoCpus": 1_000_000_000, "CpuQuota": 0, "CpuPeriod": 0}))
+    e = engine_for(fake, project="codeastra")
+    assert run(e.get_cpus("spare")) == 1.0
+    run(e.set_cpus("spare", 1.5))
+    assert fake.updates == [("sp", {"NanoCpus": 1_500_000_000})]
+
+
+def test_engine_uses_cpu_quota_when_the_container_has_one():
+    fake = FakeEngine(one_spare({"NanoCpus": 0, "CpuQuota": 50_000, "CpuPeriod": 100_000}))
+    e = engine_for(fake, project="codeastra")
+    assert run(e.get_cpus("spare")) == 0.5
+    run(e.set_cpus("spare", 0.75))
+    assert fake.updates == [("sp", {"CpuQuota": 75_000, "CpuPeriod": 100_000})]
