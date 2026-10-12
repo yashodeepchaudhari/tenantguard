@@ -7,6 +7,7 @@ from typing import Optional
 import psutil
 
 CGROUP_CPU_MAX = Path("/sys/fs/cgroup/cpu.max")
+CGROUP_MEM_MAX = Path("/sys/fs/cgroup/memory.max")
 
 
 class ProcessTree:
@@ -42,6 +43,15 @@ class ProcessTree:
             except psutil.Error:
                 continue
         return rss / (1024 * 1024)
+
+
+def cgroup_mem_limit_mb() -> Optional[float]:
+    """MB from cgroup v2 memory.max; None if unlimited/absent."""
+    try:
+        raw = CGROUP_MEM_MAX.read_text().strip()
+    except OSError:
+        return None
+    return None if raw == "max" else int(raw) / (1024 * 1024)
 
 
 def cgroup_cpu_limit() -> Optional[float]:
