@@ -34,7 +34,7 @@ services:
 
   gateway:
     build: {context: ., dockerfile: gateway/Dockerfile}
-    ports: ["8000:8000"]
+    ports: ["${GATEWAY_PORT:-8000}:8000"]
     environment:
       TENANTGUARD_ROOT: /app
       TENANTGUARD_WORKER_URLS: *worker-urls
@@ -44,21 +44,21 @@ services:
 
   brain:
     build: {context: ., dockerfile: brain/Dockerfile}
-    ports: ["8200:8200"]
+    ports: ["${BRAIN_PORT:-8200}:8200"]
     environment:
       TENANTGUARD_ROOT: /app
       TENANTGUARD_WORKER_URLS: *worker-urls
       TENANTGUARD_GATEWAY_URL: http://gateway:8000
       TENANTGUARD_CONTROL_TOKEN: ${TENANTGUARD_CONTROL_TOKEN:-dev}
       TENANTGUARD_CORS_ORIGINS: ${TENANTGUARD_UI_ORIGINS:-http://127.0.0.1:5173}
-      COMPOSE_PROJECT: codeastra
+      COMPOSE_PROJECT: ${COMPOSE_PROJECT_NAME:-codeastra}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on: [gateway]
 
   handoff:
     build: {context: ., dockerfile: integrations/handoff/Dockerfile}
-    ports: ["8400:8400"]
+    ports: ["${HANDOFF_PORT:-8400}:8400"]
     environment:
       TENANTGUARD_ROOT: /app
       TENANTGUARD_BRAIN_URL: http://brain:8200
@@ -74,7 +74,7 @@ services:
 
   narrator:
     build: {context: ., dockerfile: narrator/Dockerfile}
-    ports: ["8700:8700"]
+    ports: ["${NARRATOR_PORT:-8700}:8700"]
     environment:
       TENANTGUARD_ROOT: /app
       TENANTGUARD_BRAIN_URL: http://brain:8200
@@ -84,7 +84,7 @@ services:
 
   billing:
     build: {context: ., dockerfile: billing/Dockerfile}
-    ports: ["8600:8600"]
+    ports: ["${BILLING_PORT:-8600}:8600"]
     environment:
       TENANTGUARD_ROOT: /app
       TENANTGUARD_WORKER_URLS: *worker-urls
@@ -97,7 +97,7 @@ services:
 
   lab:
     build: {context: ., dockerfile: lab/Dockerfile}
-    ports: ["8300:8300"]
+    ports: ["${LAB_PORT:-8300}:8300"]
     environment:
       TENANTGUARD_ROOT: /app
       TENANTGUARD_GATEWAY_URL: http://gateway:8000
