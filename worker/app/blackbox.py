@@ -96,6 +96,10 @@ class BlackBox:
                                   args=(self._q, self._processed, self.cpu_ms_per_doc, os.getpid()))
         self._proc.start()
         self._psproc = psutil.Process(self._proc.pid)
+        try:  # share the parent's cores (local --pin-cores; a container shares the cgroup anyway)
+            self._psproc.cpu_affinity(psutil.Process().cpu_affinity())
+        except (psutil.Error, AttributeError):
+            pass
 
     def _watch(self) -> None:
         with self._lock:

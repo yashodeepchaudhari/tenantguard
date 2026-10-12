@@ -1,0 +1,194 @@
+{
+  "meta": {
+    "where": "local",
+    "url": "http://127.0.0.1:8101",
+    "server": "w1",
+    "cpu_limit_cores": 1.0,
+    "ts": 1791815791.3335485,
+    "tenant": "A",
+    "method": "sequential single client, keep-alive; latency measured client-side (includes host->container port forwarding when run against Docker)",
+    "notes": {
+      "handler_cpu_ms": "X-TenantGuard-Cpu-Ms: what the gateway cost bucket is debited",
+      "process_cpu_ms": "worker process-tree CPU per request (incl. HTTP overhead, bg, black box): size fleet load with this against cpu_limit_cores",
+      "capacity_rps_at_limit": "cpu_limit_cores*1000/process_cpu_ms (one worker, 100% CPU)",
+      "windows_worker": "if the worker ran on Windows, process/bg/black-box CPU come from GetProcessTimes (15.6 ms ticks): batch averages, error +-15.6/n ms; handler_cpu_ms is exact (QueryThreadCycleTime)"
+    },
+    "client_platform": "win32",
+    "local_setup": "local Windows run, not Docker: worker w1 pinned to 1 core with --pin-cores 2 (CPU_LIMIT_CORES=1), sample counts x0.5; the Docker-host run (0.5-CPU cgroup) replaces this file"
+  },
+  "endpoints": {
+    "light": {
+      "method": "GET",
+      "path": "/api/light",
+      "params": null,
+      "samples": 100,
+      "handler_cpu_ms": {
+        "mean": 0.925,
+        "p95": 1.031
+      },
+      "latency_ms": {
+        "mean": 4.835,
+        "p50": 3.972,
+        "p95": 8.983
+      },
+      "bg_cpu_ms": 0.0,
+      "blackbox_cpu_ms": 0.0,
+      "process_cpu_ms": 4.062,
+      "capacity_rps_at_limit": 246.2
+    },
+    "read_cold": {
+      "method": "GET",
+      "path": "/api/read",
+      "params": null,
+      "samples": 50,
+      "handler_cpu_ms": {
+        "mean": 0.29,
+        "p95": 0.385
+      },
+      "latency_ms": {
+        "mean": 4.151,
+        "p50": 2.826,
+        "p95": 6.881
+      },
+      "bg_cpu_ms": 0.0,
+      "blackbox_cpu_ms": 0.0,
+      "process_cpu_ms": 4.062,
+      "capacity_rps_at_limit": 246.2
+    },
+    "read_warm": {
+      "method": "GET",
+      "path": "/api/read",
+      "params": null,
+      "samples": 100,
+      "handler_cpu_ms": {
+        "mean": 0.135,
+        "p95": 0.277
+      },
+      "latency_ms": {
+        "mean": 3.51,
+        "p50": 2.742,
+        "p95": 9.107
+      },
+      "bg_cpu_ms": 0.0,
+      "blackbox_cpu_ms": 0.0,
+      "process_cpu_ms": 3.438,
+      "capacity_rps_at_limit": 290.9
+    },
+    "search": {
+      "method": "GET",
+      "path": "/api/search",
+      "params": null,
+      "samples": 30,
+      "handler_cpu_ms": {
+        "mean": 9.853,
+        "p95": 11.599
+      },
+      "latency_ms": {
+        "mean": 41.558,
+        "p50": 23.697,
+        "p95": 133.34
+      },
+      "bg_cpu_ms": 0.0,
+      "blackbox_cpu_ms": 0.0,
+      "process_cpu_ms": 10.938,
+      "capacity_rps_at_limit": 91.4
+    },
+    "write": {
+      "method": "POST",
+      "path": "/api/write",
+      "params": null,
+      "samples": 50,
+      "handler_cpu_ms": {
+        "mean": 0.356,
+        "p95": 0.647
+      },
+      "latency_ms": {
+        "mean": 6.89,
+        "p50": 4.939,
+        "p95": 13.745
+      },
+      "bg_cpu_ms": 2.292,
+      "blackbox_cpu_ms": 0.0,
+      "process_cpu_ms": 5.312,
+      "capacity_rps_at_limit": 188.3
+    },
+    "ingest": {
+      "method": "POST",
+      "path": "/api/ingest",
+      "params": null,
+      "samples": 20,
+      "handler_cpu_ms": {
+        "mean": 0.13,
+        "p95": 0.372
+      },
+      "latency_ms": {
+        "mean": 18.425,
+        "p50": 15.068,
+        "p95": 40.203
+      },
+      "bg_cpu_ms": 0.0,
+      "blackbox_cpu_ms": 12.5,
+      "process_cpu_ms": 17.969,
+      "capacity_rps_at_limit": 55.7
+    },
+    "memory": {
+      "method": "GET",
+      "path": "/api/memory",
+      "params": {
+        "mb": 1
+      },
+      "samples": 5,
+      "handler_cpu_ms": {
+        "mean": 1.317,
+        "p95": 2.702
+      },
+      "latency_ms": {
+        "mean": 522.138,
+        "p50": 518.974,
+        "p95": 534.711
+      },
+      "bg_cpu_ms": 0.0,
+      "blackbox_cpu_ms": 0.0,
+      "process_cpu_ms": 21.875,
+      "capacity_rps_at_limit": 45.7
+    },
+    "export": {
+      "method": "GET",
+      "path": "/api/export",
+      "params": null,
+      "samples": 5,
+      "handler_cpu_ms": {
+        "mean": 20.627,
+        "p95": 25.315
+      },
+      "latency_ms": {
+        "mean": 401.445,
+        "p50": 346.241,
+        "p95": 572.953
+      },
+      "bg_cpu_ms": 0.0,
+      "blackbox_cpu_ms": 0.0,
+      "process_cpu_ms": 28.125,
+      "capacity_rps_at_limit": 35.6
+    },
+    "canary": {
+      "method": "GET",
+      "path": "/canary",
+      "params": null,
+      "samples": 50,
+      "handler_cpu_ms": {
+        "mean": 1.597,
+        "p95": 3.357
+      },
+      "latency_ms": {
+        "mean": 9.534,
+        "p50": 7.132,
+        "p95": 31.766
+      },
+      "bg_cpu_ms": 0.0,
+      "blackbox_cpu_ms": 0.0,
+      "process_cpu_ms": 5.625,
+      "capacity_rps_at_limit": 177.8
+    }
+  }
+}

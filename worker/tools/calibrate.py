@@ -17,6 +17,7 @@ import argparse
 import http.client
 import json
 import statistics
+import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -130,13 +131,16 @@ def run(url: str, where: str, scale: float) -> dict:
               f"  latency {r['latency_ms']['mean']:8.2f} ms (p95 {r['latency_ms']['p95']:8.2f})", flush=True)
     return {
         "meta": {"where": where, "url": url, "server": s["server"], "cpu_limit_cores": s["cpu_limit_cores"],
-                 "ts": time.time(), "tenant": TENANT,
+                 "ts": time.time(), "tenant": TENANT, "client_platform": sys.platform,
                  "method": "sequential single client, keep-alive; latency measured client-side "
                            "(includes host->container port forwarding when run against Docker)",
                  "notes": {"handler_cpu_ms": "X-TenantGuard-Cpu-Ms: what the gateway cost bucket is debited",
                            "process_cpu_ms": "worker process-tree CPU per request (incl. HTTP overhead, bg, "
                                              "black box): size fleet load with this against cpu_limit_cores",
-                           "capacity_rps_at_limit": "cpu_limit_cores*1000/process_cpu_ms (one worker, 100% CPU)"}},
+                           "capacity_rps_at_limit": "cpu_limit_cores*1000/process_cpu_ms (one worker, 100% CPU)",
+                           "windows_worker": "if the worker ran on Windows, process/bg/black-box CPU come from "
+                                             "GetProcessTimes (15.6 ms ticks): batch averages, error +-15.6/n ms; "
+                                             "handler_cpu_ms is exact (QueryThreadCycleTime)"}},
         "endpoints": {k: {**v, "capacity_rps_at_limit": round(s["cpu_limit_cores"] * 1000 / v["process_cpu_ms"], 1)
                           if v["process_cpu_ms"] > 0 else None} for k, v in result.items()},
     }
