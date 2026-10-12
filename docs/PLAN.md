@@ -465,6 +465,8 @@ Common rules for every writer:
 | T11 Handoff bridge (Web PS3 convergence) | task/T11-handoff-bridge | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
 | T14 Demo driver (`tools/demo.py`) | task/T14-demo-runbook | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** |
 | T16 Submission docs | task/T16-submission-docs | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** (re-check after T10/T12) |
+| T22 Prototype docs pack (`prototype-docs/`, 20 files, 6.7k lines) | T22a/b/c + 2b | 4 writers | T1, T2, T4, 2b | **merged** |
+| T23 Handoff tools token + telemetry counter bug + docstring | task/T23-handoff-token-tools | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | assigned |
 | T21 Narrator template-only (user: no AI) | task/T21-narrator-template-only | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** (with coord/no-ai) |
 | T18 Incident narrator service | task/T18-narrator | D:\yashodeep\codeAstra-T1 | codeastra-t1-71 | **merged** (template-only per user) |
 | T2 Workers | task/T2-workers | D:\yashodeep\codeAstra-T2 | codeastra-t2-d5 | **merged** (9cebaaf) |
