@@ -14,7 +14,8 @@ Ports, URLs and tunables come from `tenantguard.yaml` and env; nothing is hard-c
  ┌──────────────────────────────────┐   Tailscale  ┌────────────────────────────────┐
  │ gateway :8000   brain :8200       │◄──────────►│ lab :8300   (traffic, attacks)  │
  │ w0..w8, spare, quarantine (:8100) │  100.x.y.z  │ UI  :5173   (Vite + browser)    │
- │ (handoff :8400, profile handoff)  │             │ tools/demo.py                   │
+ │ handoff :8400, billing :8600,     │             │ tools/demo.py                   │
+ │ narrator :8700 (compose profiles) │             │                                 │
  └──────────────────────────────────┘             └────────────────────────────────┘
 ```
 
@@ -50,9 +51,20 @@ TENANTGUARD_LAB_URL=http://127.0.0.1:8300 python tools/demo.py --step
 docker compose up -d --build                       # gateway, w0..w8, spare, quarantine, brain
 docker compose --profile lab up -d lab             # + traffic lab
 docker compose --profile handoff up -d handoff     # + Web PS3 handoff bridge (set WEB_URL)
+docker compose --profile billing up -d billing     # + fair billing, SLA credits, "Why was I slow?" (:8600)
+docker compose --profile narrator up -d narrator   # + incident reports (:8700)
 cd ui && npm install && cp .env.example .env && npm run dev
 ```
-Inside compose, every worker listens on 8100 and the gateway and brain find them through `TENANTGUARD_WORKER_URLS`. Only the gateway (8000), brain (8200), lab (8300) and handoff (8400) are published.
+Inside compose, every worker listens on 8100 and the gateway and brain find them through `TENANTGUARD_WORKER_URLS`. Only the gateway (8000), brain (8200), lab (8300), handoff (8400), billing (8600) and narrator (8700) are published. Each host port can be moved with `GATEWAY_PORT`, `BRAIN_PORT`, `LAB_PORT`, `HANDOFF_PORT`, `BILLING_PORT` and `NARRATOR_PORT` (this is how a second stack runs beside the first).
+
+**Relocation proof needs the Docker socket.** Compose mounts `/var/run/docker.sock` into the brain. The brain finds its own spare container by the labels `com.docker.compose.project=<COMPOSE_PROJECT>` and `com.docker.compose.service=spare`, so two stacks on one host never touch each other's spare (`TENANTGUARD_SPARE_CONTAINER` names one exactly). With `TENANTGUARD_PROVER=auto` (the default) the brain uses the socket when it answers; without it, culprits are still named and victims rescued, but no proof is run and no penalising verdict is given.
+
+**Measured scorecard.** With the stack and the lab up, run it inside the lab container so the traffic does not share a laptop with the dashboard:
+```
+docker compose exec lab python -m tenantguard_lab scorecard            # whale, flood x off/industry/tenantguard x 3 runs
+docker compose exec lab python -m tenantguard_lab scorecard --aggregate-only   # re-summarise existing runs
+```
+Each run writes `lab/results/<ts>-<scenario>-<mode>.json`; the summary goes to `lab/results/summary-<ts>.json`. The results stay inside the container until you copy them out (`docker compose cp lab:/app/lab/results ./lab/`). The committed host result is `lab/results/summary-scorecard-host.json`.
 
 ## 3. Local development (no Docker)
 
@@ -64,11 +76,13 @@ cd gateway && pip install -r requirements.txt && python -m tenantguard_gateway
 cd brain   && pip install -r requirements.txt && python -m tenantguard_brain
 cd lab     && pip install -r requirements.txt && python -m tenantguard_lab serve
 cd integrations/handoff && pip install -r requirements.txt && python -m tenantguard_handoff
+cd billing  && pip install -r requirements.txt && python -m tenantguard_billing     # :8600
+cd narrator && pip install -r requirements.txt && python -m tenantguard_narrator    # :8700
 cd ui && npm install && npm run dev     # or npm run dev:mock: no backend at all
 ```
 - Local worker ports are w0..w8 → 8100..8108, spare → 8109, quarantine → 8110.
 - Without the real gateway and workers, `brain/tools/fake_gateway.py` streams a scripted whale scenario, and `gateway/tools/stub_worker.py` is a minimal echo worker.
-- Tests: `python -m pytest` in each service directory; `npm test` in `ui/`.
+- Tests: `python -m pytest` in each service directory (459 tests in all); `npm test` in `ui/` for the unit tests and `npm run e2e` for the Playwright end-to-end suite (see `ui/README.md` for running it against the mock or a live stack).
 
 ## Ports
 | Service | Port | Exposed in compose |
@@ -79,6 +93,8 @@ cd ui && npm install && npm run dev     # or npm run dev:mock: no backend at all
 | brain | 8200 | yes |
 | lab | 8300 | yes (profile `lab`) |
 | handoff bridge | 8400 | yes (profile `handoff`) |
+| billing | 8600 | yes (profile `billing`) |
+| narrator | 8700 | yes (profile `narrator`) |
 | UI (Vite) | 5173 | runs outside Docker |
 
 ## Environment variables
@@ -86,17 +102,21 @@ cd ui && npm install && npm run dev     # or npm run dev:mock: no backend at all
 |---|---|---|
 | `TENANTGUARD_ROOT`, `TENANTGUARD_CONFIG`, `TENANTGUARD_LAYOUT` | all Python | where `tenantguard.yaml` and the layout live |
 | `TENANTGUARD_WORKER_URLS` | gateway, brain | `w0=http://..,w1=..,spare=..` (overrides yaml `workers`) |
-| `TENANTGUARD_GATEWAY_URL`, `TENANTGUARD_BRAIN_URL`, `TENANTGUARD_LAB_URL` | brain, lab, handoff, `tools/demo.py` | peer URLs (default from yaml `services`) |
-| `TENANTGUARD_CONTROL_TOKEN` | gateway, brain, lab, handoff, demo | shared secret for `/admin/*`, `/control/*` and brain `/api/operator` (header `X-TenantGuard-Control-Token`; default `dev`) |
-| `TENANTGUARD_CORS_ORIGINS` / `TENANTGUARD_UI_ORIGINS` | gateway, brain, handoff / worker, lab | allowed UI origins (default `http://127.0.0.1:5173`) |
+| `TENANTGUARD_GATEWAY_URL`, `TENANTGUARD_BRAIN_URL`, `TENANTGUARD_LAB_URL` | brain, lab, handoff, billing, narrator, `tools/demo.py` | peer URLs (default from yaml `services`) |
+| `TENANTGUARD_CONTROL_TOKEN` | gateway, brain, lab, handoff, billing, demo | shared secret for `/admin/*`, `/control/*` and brain `/api/operator` (header `X-TenantGuard-Control-Token`; default `dev`) |
+| `TENANTGUARD_CORS_ORIGINS` / `TENANTGUARD_UI_ORIGINS` | gateway, brain, handoff, billing, narrator / worker, lab | allowed UI origins (default `http://127.0.0.1:5173`) |
 | `TENANTGUARD_UPSTREAM_TIMEOUT_S` | gateway | overrides yaml `gateway.upstream_timeout_s` |
+| `TENANTGUARD_PROVER` | brain | `auto` (default), `docker` or `null`; overrides yaml `brain.prover` |
+| `COMPOSE_PROJECT`, `TENANTGUARD_SPARE_CONTAINER`, `TENANTGUARD_DOCKER_SOCKET` | brain | which spare the prover may resize and relocate to (by compose project label, or an exact container name); socket path (default `/var/run/docker.sock`) |
+| `TENANTGUARD_BRAIN_HOST`, `TENANTGUARD_BRAIN_PORT`, `NARRATOR_HOST`, `NARRATOR_PORT` | brain, narrator | bind address and port |
+| `GATEWAY_PORT`, `BRAIN_PORT`, `LAB_PORT`, `HANDOFF_PORT`, `BILLING_PORT`, `NARRATOR_PORT` | compose | published host ports |
 | `SERVER_NAME`, `WORKER_DATA_DIR`, `CPU_LIMIT_CORES` | worker | identity, per-tenant SQLite dir, CPU limit used for `cpu_pct` |
 | `TENANTGUARD_ADMIN_TOKEN` | worker | `X-Admin-Token` for worker `/admin/fault` (default `dev`) |
 | `TENANTGUARD_LAB_PERSONAS`, `TENANTGUARD_LAB_RATE_SCALE`, `TENANTGUARD_LAB_RESULTS` | lab | persona file, global rate multiplier, results dir |
 | `WEB_URL`, `TENANTGUARD_UI_URL`, `HANDOFF_STATE_PATH`, `HANDOFF_PARTNER_TOKEN` | handoff | partner app, evidence-link host, case-id store, optional inbound token |
-| `VITE_BRAIN_URL`, `VITE_GATEWAY_URL`, `VITE_LAB_URL`, `VITE_CONTROL_TOKEN`, `VITE_MOCK` | UI (`ui/.env`) | backends, token, mock mode |
+| `VITE_BRAIN_URL`, `VITE_GATEWAY_URL`, `VITE_LAB_URL`, `VITE_HANDOFF_URL`, `VITE_CONTROL_TOKEN`, `VITE_MOCK` | UI (`ui/.env`) | backends, token, mock mode (see `ui/.env.example` for the tile and noisy thresholds) |
 
 ## Tokens
-- **Control token** (`TENANTGUARD_CONTROL_TOKEN`). The gateway requires it on every `/admin/*` and `/control/*` call, and the brain on `/api/operator`; missing or wrong gives 401 (compared in constant time). The brain, lab, UI, handoff bridge and demo driver send it. Set a non-default value anywhere other than a closed demo network.
+- **Control token** (`TENANTGUARD_CONTROL_TOKEN`). The gateway requires it on every `/admin/*` and `/control/*` call, and the brain on `/api/operator`; missing or wrong gives 401 (compared in constant time). The brain, lab, UI, handoff bridge, billing and demo driver send it. Set a non-default value anywhere other than a closed demo network.
 - **Tenant API keys.** Each tenant's key is in `layouts/ag23.json` (demo keys `tk_A_demo`…). The gateway keeps only their SHA-256.
 - **Worker admin token** (`TENANTGUARD_ADMIN_TOKEN`). Only for fault injection on a worker, which is never reachable through the gateway: the gateway's path guard keeps every request under `/api/`.
