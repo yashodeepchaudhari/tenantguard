@@ -4,8 +4,9 @@
 
 Polls GET /api/debug once a second. For every server it prints the peer_ratio distribution
 (p50 / p95 / p99 / max) per health source (traffic / canary / none), the share of samples that were
-"slow now", and the excess latency. It also lists every incident opened during the run (GET /api/incidents).
-Exit code 1 if any incident opened: on a quiet (calm or idle) run that is the acceptance test.
+"slow now", and the excess latency. It also lists every incident opened and every ladder level change during
+the run (GET /api/incidents). Exit code 1 if anything opened or moved: on a quiet (calm or idle) run that is
+the acceptance test.
 """
 from __future__ import annotations
 
@@ -61,6 +62,7 @@ def main() -> int:
         time.sleep(1.0)
     evs = [e for e in get(args.brain + "/api/incidents?limit=1000") if e["ts"] >= t0]
     opened = [e for e in evs if e["stage"] == "detected"]
+    moved = [e for e in evs if e["stage"] == "level_change"]
     print(f"\n{'server':10} {'samples':>7} {'source':>8} {'p50':>6} {'p95':>6} {'p99':>6} {'max':>6} "
           f"{'slow_now%':>9} {'excess p95':>10} {'tenants':>7}")
     report = {}
@@ -75,10 +77,13 @@ def main() -> int:
     print(f"\nincidents opened during the run: {len(opened)}")
     for e in opened:
         print(f"  {e['incident_id']} {e.get('tenant') or '-'}: {e['detail'][:200]}")
+    print(f"ladder level changes during the run: {len(moved)}")
+    for e in moved:
+        print(f"  {e['incident_id']} {e.get('tenant')}: {e.get('prev_level')} -> {e.get('level')}: {e['detail'][:160]}")
     if args.json:
         with open(args.json, "w", encoding="utf-8") as f:
             json.dump({"minutes": args.minutes, "servers": report, "incidents": evs}, f, indent=1)
-    return 1 if opened else 0
+    return 1 if (opened or moved) else 0
 
 
 if __name__ == "__main__":
