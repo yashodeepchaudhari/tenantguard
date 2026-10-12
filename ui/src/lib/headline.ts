@@ -67,7 +67,8 @@ export function buildHeadline(
     if (moved) parts.push(`${plural(moved, 'tenant')} moved away`)
     if (!flagged.length) parts.push('no tenant blamed')
   }
-  if (!parts.length) parts.push(scenario.kind === 'idle' ? 'No traffic' : 'No attack')
+  // with the lab offline we cannot know whether an attack is running: say what we observe
+  if (!parts.length) parts.push(scenario.kind === 'idle' ? 'No traffic' : scenario.kind === 'unknown' ? 'No attack detected' : 'No attack')
   parts.push(idle === s.tenants.length ? 'no tenant has traffic' : tail)
 
   const tone: Status =

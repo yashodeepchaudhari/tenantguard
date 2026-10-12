@@ -86,6 +86,11 @@ describe('headline', () => {
     const h = buildHeadline(snap({ A: { level: 'throttle', factor: 0.7 }, B: { level: 'throttle', factor: 0.6 }, G: { level: 'warn' } }), calm, th, {}, null)
     expect(h.text).toBe('3 tenants acted on (A, B, G) · 9 tenants protected')
   })
+  it('lab offline: says what it observes, not what it assumes', () => {
+    const h = buildHeadline(snap(), scenarioOf(null, false, 1000), th, {}, null)
+    expect(h.text).toBe('No attack detected · 12 tenants healthy')
+  })
+
   it('no traffic at all', () => {
     const idle = Object.fromEntries(ALL.map((t) => [t, { p95_ms: 0, rps: 0 }]))
     const h = buildHeadline(snap(idle), scenarioOf(lab({ calm_running: false }), true, 1000), th, {}, null)
