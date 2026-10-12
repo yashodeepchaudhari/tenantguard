@@ -146,6 +146,8 @@ async def _calibrate(cfg: LabConfig, seconds: float) -> int:
 
 
 def main(argv=None) -> int:
+    if (sys.argv[1:] if argv is None else list(argv))[:1] == ["scorecard"]:  # scorecard runner (scorecard.py)
+        from .scorecard import main as scorecard_main; return scorecard_main((sys.argv[1:] if argv is None else list(argv))[1:])  # noqa: E702
     p = argparse.ArgumentParser(prog="tenantguard_lab", description="TenantGuard traffic lab")
     sub = p.add_subparsers(dest="cmd", required=True)
 
