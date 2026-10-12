@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-import asyncio
 import json
-from types import SimpleNamespace
-from typing import List
 
 import pytest
 from fastapi.testclient import TestClient
 from tenantguard_common.config import load_tenants
-from tenantguard_common.contracts import CustomerMessage, IncidentReport, ReportView
+from tenantguard_common.contracts import ReportView
 
-from tenantguard_narrator import grounding, template
-from tenantguard_narrator.ai import SCHEMA, SYSTEM_PROMPT, AIWriter
+from tenantguard_narrator import template
 from tenantguard_narrator.app import create_app
 from tenantguard_narrator.evidence import EvidenceBook, anonymise, hhmmss
 from tenantguard_narrator.service import Narrator
@@ -71,7 +67,7 @@ def test_evidence_pack_contents():
     assert p["affected"] == ["A", "B", "C", "D", "E", "F", "G", "H", "I"]
 
 
-def test_template_report_is_grounded_and_says_the_right_things():
+def test_template_report_says_the_right_things():
     p, anon = pack_of(close=True)
     rep, cust = template.build(p, anon)
     assert rep.headline == "Servers w1, w3, w8 slowed down; KaamKaro (K) named as the cause; closed after 151 s"
@@ -80,8 +76,9 @@ def test_template_report_is_grounded_and_says_the_right_things():
     assert "w1 at 16.93x its peers' latency" in rep.evidence_points
     assert "RouteWeightsCmd 9 tenants ttl=5s" in rep.action_taken
     assert rep.operator_recommendation.startswith("No action needed")
-    ok, why = grounding.check(rep, cust, p, anon, NAMES)
-    assert ok, why                                     # the template itself always passes the checker
+    # every server and tenant the report names comes from the evidence
+    text = " ".join([rep.headline, *rep.timeline, rep.cause, *rep.evidence_points, rep.action_taken])
+    assert "JhatpatMart" not in text and "w5 at" not in text
 
 
 def test_customer_message_is_anonymised():
@@ -104,182 +101,11 @@ def test_tenant_ladder_incident_template():
     n.ingest(ev("closed", 30, "Incident closed after 30 s (worst level: throttle).", iid=iid, tenant="C"))
     v = n.reports[iid]
     assert v.report.headline == "Chitra Studio (C) used more than its fair share (peak level: throttle); closed after 30 s"
-    assert v.evidence["actions"][0]["ttl_s"] == 60.0 and v.ai_status == "disabled" and v.source == "template"
+    assert v.evidence["actions"][0]["ttl_s"] == 60.0 and v.version == 1 and v.trigger_stage == "closed"
     # live-run regression: a ladder incident is about usage, never "named from the pattern of slow servers"
     assert "pattern of slow servers" not in v.report.cause and "usage-share" in v.report.cause
     assert v.evidence["slow_servers"] == []
     assert "Chitra Studio (C) uses 75% of the CPU" in " ".join(v.report.evidence_points)
-
-
-# ---------- grounding ----------
-def _ai_ok(p):
-    rep = IncidentReport(
-        headline="KaamKaro (K) slowed servers w1, w3 and w8; neighbours were rescued",
-        timeline=[f"{hhmmss(T0)} Detected: w1, w3 and w8 were about 17x slower than their peers",
-                  f"{hhmmss(T0 + 0.5)} Rescued: 9 tenants moved to healthy servers",
-                  f"{hhmmss(T0 + 1.0)} Named: KaamKaro (K) with 100% confidence"],
-        cause="A tenant, KaamKaro (K), could not be routed around: all 3 of its servers were slow.",
-        evidence_points=["w1 at 16.9x its peers", "Tenants A, B and E share its servers"],
-        action_taken="Route weights moved 9 tenants away for 5 s, renewed while needed.",
-        operator_recommendation="Review KaamKaro's request pattern before approving any block.")
-    cust = CustomerMessage(message="Some of your requests were slower for a short while because another tenant "
-                                   "used far more than its fair share. Your traffic was moved to healthy servers.")
-    return rep, cust
-
-
-def test_grounding_accepts_a_faithful_ai_report():
-    p, anon = pack_of()
-    rep, cust = _ai_ok(p)
-    assert grounding.check(rep, cust, p, anon, NAMES) == (True, "")
-
-
-@pytest.mark.parametrize("field,bad,reason", [
-    ("cause", "JhatpatMart (J) caused it.", "tenant JhatpatMart"),
-    ("cause", "Tenant L was involved.", "tenant id L"),
-    ("headline", "w6 slowed down", "server w6"),
-    ("headline", "latency rose by 37.5 ms", "number 37.5"),
-    ("headline", "25x slower than peers", "number 25"),
-    ("headline", "about 18x slower", None),
-    ("headline", "at 09:99:99", "time"),
-])
-def test_grounding_rejects_unknown_tenants_servers_numbers_times(field, bad, reason):
-    p, anon = pack_of()
-    rep, cust = _ai_ok(p)
-    rep = rep.model_copy(update={field: bad})
-    ok, why = grounding.check(rep, cust, p, anon, NAMES)
-    if reason is None:                                   # 18 is a rounding of 17.8 from the evidence: allowed
-        assert ok, why
-    else:
-        assert not ok and reason in why, why
-
-
-def test_grounding_rejects_customer_message_naming_anyone():
-    p, anon = pack_of()
-    rep, _ = _ai_ok(p)
-    for msg in ("KaamKaro caused this.", "Tenant K caused this.", "Server w1 was slow."):
-        ok, why = grounding.check(rep, CustomerMessage(message=msg), p, anon, NAMES)
-        assert not ok and why.startswith("customer message"), msg
-
-
-# ---------- AI writer with a stubbed SDK client ----------
-class StubMessages:
-    def __init__(self, outputs: List[dict], delay: float = 0.0):
-        self.outputs, self.delay, self.calls = outputs, delay, []
-
-    async def create(self, **kw):
-        self.calls.append(kw)
-        delay = self.delay[len(self.calls) - 1] if isinstance(self.delay, list) else self.delay
-        if delay:
-            await asyncio.sleep(delay)
-        out = self.outputs.pop(0)
-        if isinstance(out, Exception):
-            raise out
-        return SimpleNamespace(stop_reason=out.get("stop_reason", "end_turn"), model="claude-opus-5-5",
-                               stop_details=SimpleNamespace(category=out.get("category")),
-                               content=[SimpleNamespace(type="text", text=out.get("text", ""))],
-                               usage=SimpleNamespace(input_tokens=10, output_tokens=5, cache_read_input_tokens=0))
-
-
-class StubClient:
-    def __init__(self, outputs, delay=0.0):
-        self.messages = StubMessages(outputs, delay)
-        self.beta = SimpleNamespace(messages=self.messages)
-
-    def with_options(self, **_):
-        return self
-
-
-def ai_json(rep: IncidentReport, cust: CustomerMessage) -> dict:
-    return {"text": json.dumps({"report": rep.model_dump(), "customer_message": cust.model_dump()})}
-
-
-def test_request_shape_cached_system_prompt_effort_schema_fallback():
-    w = AIWriter(StubClient([]), "claude-opus-5-5", "low", 4096, 30)
-    p, anon = pack_of()
-    req = w.request(p, anon)
-    assert req["model"] == "claude-opus-5-5"
-    assert req["system"] == [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
-    assert req["output_config"] == {"effort": "low", "format": {"type": "json_schema", "schema": SCHEMA}}
-    assert req["fallbacks"] == "default" and req["betas"] == ["server-side-fallback-2026-07-01"]
-    assert SCHEMA["properties"]["report"]["additionalProperties"] is False
-    assert req["messages"][0]["content"].startswith("EVIDENCE:\n{")
-    assert w.request(p, anon) == req                     # deterministic: same pack, same bytes (cache-friendly)
-
-
-def run_flow(outputs, delay=0.0, extra=None):
-    async def go():
-        client = StubClient(outputs, delay)
-        n = Narrator(TENANTS, AIWriter(client, "claude-opus-5-5"))
-        seen = []
-        q = asyncio.Queue(maxsize=64)
-        n.subscribers.add(q)
-        server_incident(n)
-        if extra:
-            await asyncio.sleep(0.01)
-            extra(n)
-        await n.drain()
-        while not q.empty():
-            seen.append(ReportView.model_validate_json(q.get_nowait()))
-        return n, seen, client
-    return asyncio.run(go())
-
-
-def test_template_first_then_grounded_ai_version():
-    p, anon = pack_of()
-    n, seen, client = run_flow([ai_json(*_ai_ok(p))])
-    assert [(v.version, v.source, v.ai_status) for v in seen] == [(1, "template", "pending"), (2, "ai", "done")]
-    assert seen[1].grounded and seen[1].model == "claude-opus-5-5"
-    assert seen[1].report.headline.startswith("KaamKaro (K) slowed")
-    assert len(client.messages.calls) == 1
-
-
-def test_ungrounded_ai_output_is_rejected_and_template_kept():
-    p, anon = pack_of()
-    rep, cust = _ai_ok(p)
-    n, seen, _ = run_flow([ai_json(rep.model_copy(update={"cause": "JhatpatMart (J) did it"}), cust)])
-    last = seen[-1]
-    assert last.source == "template" and last.ai_status == "rejected" and "JhatpatMart" in last.ai_detail
-    assert n.stats["ai_rejected"] == 1
-
-
-@pytest.mark.parametrize("out,detail", [
-    ({"stop_reason": "refusal", "category": "cyber"}, "refusal (cyber)"),
-    ({"text": "not json"}, "invalid output"),
-    ({"stop_reason": "max_tokens", "text": "{"}, "truncated"),
-])
-def test_refusal_or_invalid_output_keeps_template(out, detail):
-    n, seen, _ = run_flow([out])
-    assert seen[-1].source == "template" and seen[-1].ai_status == "error" and detail in seen[-1].ai_detail
-
-
-def test_api_error_keeps_template():
-    import anthropic
-    import httpx2
-    err = anthropic.APIConnectionError(request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages"))
-    n, seen, _ = run_flow([err])
-    assert seen[-1].source == "template" and seen[-1].ai_status == "error" and "connection" in seen[-1].ai_detail
-
-
-def test_stale_ai_result_is_dropped_when_incident_changes():
-    p, anon = pack_of()
-    good = ai_json(*_ai_ok(p))
-    # the first AI call is slow; meanwhile the incident closes, so a second (fresh) AI call runs
-    # first call is slow (0.5 s), the second immediate: robust even on a loaded machine
-    n, seen, client = run_flow([good, good], delay=[0.5, 0.0],
-                               extra=lambda n: n.ingest(ev("closed", 151, "Server incident closed after 150 s.")))
-    assert len(client.messages.calls) == 2
-    ai_versions = [v for v in seen if v.source == "ai"]
-    assert len(ai_versions) == 1 and ai_versions[0].trigger_stage == "closed"
-
-
-def test_no_key_mode_is_template_only(monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    s = NarratorSettings.from_dict({"narrator": {"model": "claude-opus-5-5"}})
-    assert s.ai_enabled is False
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    assert NarratorSettings.from_dict({}).ai_enabled is True
-    monkeypatch.setenv("NARRATOR_AI", "0")
-    assert NarratorSettings.from_dict({}).ai_enabled is False
 
 
 def test_replayed_events_do_not_republish():
@@ -302,8 +128,36 @@ def test_api_and_ws():
         one = c.get(f"/reports/{SID}")
         missing = c.get("/reports/nope")
         health = c.get("/healthz").json()
-    assert first.incident_id == SID and first.source == "template"
+    assert first.incident_id == SID and first.version == 1
     assert [r["incident_id"] for r in lst] == [SID]
-    assert one.status_code == 200 and ReportView.model_validate(one.json()).ai_status == "disabled"
+    assert one.status_code == 200 and ReportView.model_validate(one.json()).trigger_stage == "named"
     assert missing.status_code == 404
-    assert health["ai_enabled"] is False and health["reports"] == 1
+    assert health["reports"] == 1 and health["reports_published"] == 1
+
+
+def test_versions_increase_only_when_the_evidence_changes():
+    n = Narrator(TENANTS)
+    server_incident(n)
+    assert n.reports[SID].version == 1 and n.reports[SID].trigger_stage == "named"
+    n.ingest(ev("resolved", 150, "Route weights back to default.", action="RouteWeightsCmd cleared for 9 tenants"))
+    n.ingest(ev("closed", 151, "Server incident closed after 150 s."))
+    v = n.reports[SID]
+    assert v.version == 3 and v.trigger_stage == "closed" and v.created_at <= v.updated_at
+    assert v.report.headline.endswith("closed after 151 s")
+
+
+def test_report_store_is_bounded():
+    n = Narrator(TENANTS, max_reports=2)
+    for i in range(4):
+        iid = f"srv-{i}"
+        n.ingest(ev("detected", i, DETECTED, iid=iid))
+        n.ingest(ev("named", i + 0.5, NAMED, iid=iid, tenant="K", suspects=[{"tenant": "K", "confidence": 1.0}]))
+    assert len(n.reports) == 2
+
+
+def test_bad_messages_are_ignored():
+    n = Narrator(TENANTS)
+    assert n.ingest({"type": "incident", "garbage": True}) is None
+    assert n.ingest("nope") is None
+    assert n.ingest({"type": "state"}) is None
+    assert n.reports == {}

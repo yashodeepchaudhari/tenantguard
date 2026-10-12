@@ -11,11 +11,7 @@ from urllib.parse import urlparse
 class NarratorSettings:
     brain_url: str = "http://127.0.0.1:8200"
     port: int = 8700
-    model: str = "claude-opus-5-5"
-    effort: str = "low"
-    max_tokens: int = 4096
-    timeout_s: float = 30.0
-    ai_enabled: bool = True             # False when no API key is configured (template only)
+    max_reports: int = 200
     cors_origins: List[str] = field(default_factory=lambda: ["http://127.0.0.1:5173", "http://localhost:5173"])
 
     @classmethod
@@ -27,10 +23,6 @@ class NarratorSettings:
         return cls(
             brain_url=env("TENANTGUARD_BRAIN_URL", svc.get("brain", "http://127.0.0.1:8200")),
             port=urlparse(svc.get("narrator", "http://127.0.0.1:8700")).port or 8700,
-            model=env("NARRATOR_MODEL", n.get("model", "claude-opus-5-5")),
-            effort=str(n.get("effort", "low")),
-            max_tokens=int(n.get("max_tokens", 4096)),
-            timeout_s=float(n.get("timeout_s", 30)),
-            ai_enabled=bool(env("ANTHROPIC_API_KEY")) and env("NARRATOR_AI", "1") != "0",
+            max_reports=int(n.get("max_reports", 200)),
             cors_origins=[o.strip() for o in cors.split(",") if o.strip()],
         )

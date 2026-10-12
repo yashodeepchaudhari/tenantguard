@@ -13,4 +13,3 @@ dist/
 .pytest_cache/
 lab/results/*.json
 !lab/results/.gitkeep
-.claude/worktrees/
