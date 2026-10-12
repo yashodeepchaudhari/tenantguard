@@ -489,4 +489,11 @@ Build:
     - (c) run `ssh tg-host "cd /d C:\Users\preeti\tenantguard-deploy && docker compose -p codeastra up -d --build"`, a single SSH session.
   - All 13 containers are healthy. From this laptop: gateway `http://100.112.232.8:8000` (healthz 200, admin 401 without token), brain `:8200`; mode tenantguard, fleet CPU 2% idle.
   - Workers are reachable only inside the Docker network.
+- 2026-10-12 (calm run on the Docker host): the brain flagged servers as slow with NO attack.
+  - Cause 1: the AG(2,3) tier assignment put ALL 4 enterprise tenants on w0 (load 21 vs 10 on w2).
+    - Fix: rebalanced tiers on branch `coord/layout-balance`: A pro, F enterprise, G free, L enterprise; D, J enterprise and K pro kept for the story.
+    - Server load spread is now 11–16 rps; max 2 enterprise per server.
+    - It breaks one tuned brain test, so T12 merges the branch and adapts the test. The lab personas' rps must follow the new tiers (T10).
+  - Cause 2: peer ratios are noisy at low per-tick counts. T12 calibrates on the host.
+- 2026-10-12 (T6, T11 merged): worker isolation allow-list + black-box vendor indexer; handoff bridge (`integrations/handoff`, :8400, compose profile `handoff`).
 - 2026-10-12: Cost bucket is debited with the worker-measured CPU (`X-TenantGuard-Cpu-Ms`) rather than an estimate, so it is a real resource quota, not a request count.
