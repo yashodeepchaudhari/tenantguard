@@ -48,7 +48,7 @@ This page documents every file in `brain/` on this branch. Each code file has:
 | `tools/local_stack.py` | dev tool | Starts real workers + gateway (+ brain) locally without Docker |
 | `tools/traffic.py` | dev tool | Calm traffic + optional whale through the real gateway |
 | `tools/calibrate_health.py` | dev tool | Watches a running brain for N minutes and reports peer-ratio distributions and any incident |
-| `tests/*.py` | tests | 142 test functions in 15 files, 166 tests collected (some parametrised) |
+| `tests/*.py` | tests | 143 test functions in 15 files, 167 tests collected (some parametrised) |
 
 ### 1.1 How the modules depend on each other
 
@@ -275,7 +275,7 @@ Any level returns straight to `normal` (factors 1.0/1.0) through `reset` when th
 - **Holds by ratio, not a strict streak** (`tests/test_ladder.py::test_one_dip_does_not_restart_the_hold`); half-duty flapping never escalates.
 - **A move is never made on a tick that contradicts it.** `Hold.held` requires the current tick to qualify.
 - **Quarantine needs its own threshold** (`test_quarantine_needs_the_quarantine_threshold`).
-- **The ladder's quarantine rung is a limit** (factor 0.1, weight_factor 0.1). Moving work to the quarantine worker is done by the `costly_pattern` verdict (`stage3.py`), not by the ladder. The `TODO(Wave 2)` line in the module docstring refers to the ladder rung only.
+- **The ladder's quarantine rung is a limit** (factor 0.1, weight_factor 0.1). Moving work to the quarantine worker is done by the `costly_pattern` verdict (`stage3.py`), not by the ladder. The module docstring says so.
 
 ---
 
@@ -319,10 +319,10 @@ Each tick in tenantguard mode, `Brain._measure_impact` passes the **threatened**
 | `ImpactMeter` | class | Accumulates avoided / suffered seconds per tenant, revenue protected, innocents | `Brain._measure_impact` (created on the first frame) |
 | `ImpactMeter.__init__` | `(since, sla_ms, revenue_rs)` | Per-tenant SLA p95 and monthly revenue from the layout | `Brain._measure_impact` |
 | `ImpactMeter.tick` | `tick(dt, threatened, p95)` | Suffered if p95 > SLA (100 ms if unknown), else avoided; revenue protected += `monthly_revenue_rs × dt / MONTH_S`. A tenant without completions is skipped | `Brain._measure_impact` |
-| `ImpactMeter.note_action` | `note_action(tenant, score, warn)` | A tightening while the tenant's own score was below `warn` marks it an innocent | `Brain._on_transition` |
+| `ImpactMeter.note_action` | `note_action(tenant, score, warn)` | A tightening while the tenant's own score was below `warn` marks it an innocent (not called for tenants in `Brain.verdict_acted`) | `Brain._on_transition` |
 | `ImpactMeter.view` | `view() -> ImpactView` | `customers_shielded` (more avoided than suffered), SLO seconds avoided / suffered, `revenue_protected_rs`, `innocents_penalised` | `Brain.snapshot` (`StateSnapshot.impact`) |
 
-**Key decision:** `innocents_penalised` must stay empty. `Brain._on_transition` calls `note_action` on every ladder tightening (`escalate` or `step`), and the flag rule means the ladder only tightens a tenant whose score is above `warn`. The module docstring says a proven verdict is not an innocent; note that the `over_plan` path (`force_throttle`) also goes through `_on_transition`, so it is checked against the same score.
+**Key decision:** `innocents_penalised` must stay empty. `Brain._on_transition` calls `note_action` on every ladder tightening (`escalate` or `step`), and the flag rule means the ladder only tightens a tenant whose score is above `warn`. A proven verdict is not an innocent: `force_throttle` (the `over_plan` verdict) adds the tenant to `Brain.verdict_acted`, and `_on_transition` skips `note_action` for it, including the AIMD steps that renew the verdict's throttle, until the tenant's ladder is back to normal.
 
 ---
 
@@ -349,8 +349,7 @@ With the layout's SLAs (40, 50, 80 and 150 ms) the floor is 25 ms on any server 
 | `HealthParams` | `@dataclass` | `window_ticks` 8, `tick_s`, `window_s` 5.0, `slow_peer_ratio` 1.6, `slow_abs_ms` 8, `open_after_ticks` 4, `min_cell_requests` 5, `min_tenants` 2, `min_canaries` 3, `canary_window_s` 6.0, `canary_abs_ms` 8, `open_hold_s` 4, `heal_hold_s` 2, `hold_ratio` 0.8, `level_quantile` 0.3, `min_slow_ms` 25, `sla_fraction` 0.5 | `settings.load` |
 | `HealthParams.from_yaml` | `classmethod from_yaml(health, tick_s)` | Reads `brain.health` (`min_requests` accepted as an older name for `min_cell_requests`) | `settings.load` |
 | `ServerHealth` | `@dataclass` | Per server: `source` (traffic / canary / none), `level_ms`, `peer_ms`, `peer_ratio`, `excess_ms`, `tenants_used`, `slow_now`, `slow`, `streak`, `slow_since`, `canary` and `history` deques | `HealthTracker.servers`; read by `Stage3`, `Brain.readings`, `Brain.snapshot`, `Brain.debug` |
-| `weighted_quantile` | `weighted_quantile(samples, q) -> float` | q-quantile of values weighted by counts | `_cell_levels`, `weighted_median` |
-| `weighted_median` | `weighted_median(samples) -> float` | `weighted_quantile(samples, 0.5)` | Not called on this branch |
+| `weighted_quantile` | `weighted_quantile(samples, q) -> float` | q-quantile of values weighted by counts | `_cell_levels` |
 | `HealthTracker` | class | All servers' health plus per-(tenant, server) cell samples | `Stage3.__init__` |
 | `HealthTracker.__init__` | `(servers, params, barcodes=None, sla_ms=None)` | One `ServerHealth` per server; `fleet` = barcode servers; `floor_ms` per server from the strictest SLA | `Stage3.__init__` |
 | `HealthTracker._h` | `_h(s) -> ServerHealth` | Gets the entry, creating it for a new server | `observe_canary`, `observe` |
@@ -362,7 +361,6 @@ With the layout's SLAs (40, 50, 80 and 150 ms) the floor is 25 ms on any server 
 | `HealthTracker._held` | `_held(h, value, hold, now) -> bool` | `value` in ≥ `hold_ratio` of the ticks of the last `hold` seconds, with the history covering them | `_evaluate` |
 | `HealthTracker._peer` | `_peer(s) -> bool` | True for fleet (barcode) servers | `_evaluate`, `slow_servers`, `Stage3.decoder_ratios` |
 | `HealthTracker.slow_servers` | `slow_servers() -> List[str]` | Sorted open fleet servers | `Stage3.tick`, `Stage3.status`, `Stage3._named` |
-| `HealthTracker.ratios` | `ratios() -> Dict[str, float]` | server → peer ratio | Not called on this branch (`Stage3` uses `decoder_ratios`) |
 
 **Key decisions**
 - **Tenant-relative.** Comparing a tenant with itself cancels workload differences: a search-heavy tenant is slow everywhere, a light one fast everywhere (`tests/test_stage3_pure.py::test_workload_mix_is_not_slowness`).
@@ -724,7 +722,7 @@ Background-job CPU (`TenantUsage.bg_cpu_ms`) is not in the worker's `X-TenantGua
 | `Brain._expire_holds` | `_expire_holds(now)` | Ends expired holds; closes the incident if normal | `tick` |
 | `Brain._evidence` | `_evidence(t) -> str` | Plain-English evidence sentence | `_held_tick`, `_on_transition` |
 | `Brain._action_text` | `_action_text(factor, wf, level) -> str` | "LimitsCmd factor=0.50 weight_factor=1.00 ttl=60s" or "… (override cleared)" | Several |
-| `Brain._on_transition` | `_on_transition(t, tr, now)` | `detected` on the first move, `level_change`, `resolved` on clear, `closed` at normal; notes innocents for the impact meter | `tick`, `force_throttle` |
+| `Brain._on_transition` | `_on_transition(t, tr, now)` | `detected` on the first move, `level_change`, `resolved` on clear, `closed` at normal; notes innocents for the impact meter (never a tenant in `verdict_acted`); clears `verdict_acted` at normal | `tick`, `force_throttle` |
 | `Brain._commands` | `_commands(now) -> List[LimitsCmd]` | §14.2 | `tick` |
 | `Brain._cmd` | `_cmd(t, f, wf, ttl, now) -> LimitsCmd` | Records `Sent`, builds the command | `_commands` |
 | `Brain.mark_sent` | `mark_sent(cmd, ok, now)` | Delivery result; ignores superseded commands | `Runtime._limits_done`, `drive` |
@@ -893,7 +891,7 @@ latency(u) = 12 ms × (1 + 0.6 × u / (1 − u)),  u = min(0.97, server load see
 ## 18. Dev tools (`brain/tools/`)
 
 ### `tools/fake_gateway.py`
-A stand-in gateway and workers for developing the brain alone: streams `Simulator` frames on `WS /internal/telemetry`, serves `/fake/workers/{server}/stats`, `/canary` and `/admin/fault`, and accepts `/control/*` like the real gateway (control token, validation, 400s). Limits, route weights, relocations and drains are applied to the simulation. It has no `/control/charge` route. Run: `python tools/fake_gateway.py --port 8000`; `--print-worker-urls` prints `TENANTGUARD_WORKER_URLS` including `spare` and `quarantine`.
+A stand-in gateway and workers for developing the brain alone: streams `Simulator` frames on `WS /internal/telemetry`, serves `/fake/workers/{server}/stats`, `/canary` and `/admin/fault`, and accepts `/control/*` like the real gateway (control token, validation, 400s). Limits, route weights, relocations and drains are applied to the simulation. Charges are validated, de-duplicated by `charge_id` and logged, but not simulated. Run: `python tools/fake_gateway.py --port 8000`; `--print-worker-urls` prints `TENANTGUARD_WORKER_URLS` including `spare` and `quarantine`.
 
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
@@ -915,6 +913,7 @@ A stand-in gateway and workers for developing the brain alone: streams `Simulato
 | `build_app.parse` | `async parse(request, model)` | Validates the body; 400 on error | Control routes |
 | `build_app.heartbeat` | `POST /control/heartbeat` | Records the heartbeat | Brain |
 | `build_app.control_limits` | `POST /control/limits` | Validates and applies | Brain |
+| `build_app.control_charge` | `POST /control/charge` | 400 for an unknown tenant or negative `cpu_ms`; `ignored: mode` outside tenantguard; `duplicate charge_id` once seen; otherwise recorded in the control log, not simulated | Brain (`_charges`) |
 | `build_app.control_block` | `POST /control/block` | Stored, not simulated | — |
 | `build_app.control_rw` | `POST /control/route_weights` | Validates and applies | Brain |
 | `build_app.control_relocate` | `POST /control/relocate` | Validates the target and applies | Brain |
@@ -958,7 +957,7 @@ Calm traffic for every tenant through the real gateway, plus an optional whale (
 
 ## 19. Tests (`brain/tests/`)
 
-142 test functions in 15 files; 166 tests are collected because some are parametrised (every culprit, every server, three seeds × two calm levels). The pure modules are tested directly; the scenarios drive `Brain` and `Simulator` in lock-step on a virtual clock, and `drive_jobs` runs proofs and drain tests through the simulator.
+143 test functions in 15 files; 167 tests are collected because some are parametrised (every culprit, every server, three seeds × two calm levels). The pure modules are tested directly; the scenarios drive `Brain` and `Simulator` in lock-step on a virtual clock, and `drive_jobs` runs proofs and drain tests through the simulator.
 
 ### `tests/conftest.py`
 | Function / class | What it does |
@@ -977,7 +976,7 @@ Calm traffic for every tenant through the real gateway, plus an optional whale (
 | `test_core.py` | 13 | Quiet fleet, whale detected → throttled → recovered, both factors and TTL on every command, every event explained, renewals, retries, no actions outside tenantguard, mode change clears, skipped empty ticks, worker restart, snapshot contract, stale telemetry, baseline freeze |
 | `test_fairness.py` | 2 | `jain`, `normalized_throughput` |
 | `test_host_noise.py` | 9 (14 collected) | Noisy calm opens nothing (3 seeds × 2 calm levels); whale still found and proved, host fault still found under host noise; fast server never slow; two slow neighbours do not flag; held host not drained; real host fault still drained; deferred drain said once; below-floor server enters the decoder as normal |
-| `test_impact.py` | 4 | Meter maths; whale run shields victims with no innocents; a low-score escalation is an innocent; "recovering" status sentence |
+| `test_impact.py` | 5 | Meter maths; whale run shields victims with no innocents; a low-score escalation is an innocent; a proven `over_plan` throttle below warn (and its renewal step) is not; "recovering" status sentence |
 | `test_ladder.py` | 13 | Holds, hold ratio, full walk up, quarantine threshold, AIMD recovery, hysteresis, legit burst, plain warning, `reset` |
 | `test_operator.py` | 4 | release / extend / resume semantics; endpoint validation (401, 400, 404, 422, 200) |
 | `test_prover.py` | 19 | `DockerProver` confirm / reject / paused culprit / sizing clamp / Docker failure / refused relocation / nothing to prove / restore; `NullProver`; `HostProver` confirm and refused drain; `make_prover` modes; `EngineDocker` label resolution with two stacks, no project, ambiguous spare, explicit name, `NanoCpus` vs `CpuQuota` |

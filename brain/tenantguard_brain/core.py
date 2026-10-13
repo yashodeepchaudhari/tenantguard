@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections import defaultdict, deque
 from statistics import median
 from dataclasses import dataclass, field
-from typing import Deque, Dict, List, Optional, Tuple
+from typing import Deque, Dict, List, Optional, Set, Tuple
 
 from tenantguard_common.contracts import (ChargeCmd, IncidentEvent, LimitsCmd, OperatorCmd, OverridesView, RouteWeightsCmd,
                                           ServerView, StateSnapshot, TelemetryFrame, TenantView, WorkerStats)
@@ -115,6 +115,7 @@ class Brain:
         self.s3 = Stage3(self)
         self.holds: Dict[str, OperatorHold] = {}
         self.impact: Optional[ImpactMeter] = None          # starts with the first frame
+        self.verdict_acted: Set[str] = set()               # tightened by a proven verdict (not innocents)
         self.last_tick_at: Optional[float] = None
         self.cls_base_n: Dict[Tuple[str, str], float] = {}        # calm request rate per (tenant, class)
         self.cls_base_cpu: Dict[Tuple[str, str], float] = {}      # calm CPU rate per (tenant, class)
@@ -527,6 +528,7 @@ class Brain:
         st.level, st.factor, st.changed_at = tr.level, f, now
         st.peak = tr.level if lad.RANK[tr.level] > lad.RANK[st.peak] else st.peak
         self._restart_holds(st, now)
+        self.verdict_acted.add(t)
         return self._on_transition(t, tr, now)
 
     def _measure_impact(self, now: float, agg: Dict[str, "TenantAgg"], acting: bool) -> None:
@@ -688,7 +690,10 @@ class Brain:
         inc.peak = tr.level if lad.RANK[tr.level] > lad.RANK[inc.peak] else inc.peak
         acted = tr.factor != tr.prev_factor or tr.weight_factor != tr.prev_weight_factor
         tightened = tr.factor < tr.prev_factor - lad.EPS or tr.weight_factor < tr.prev_weight_factor - lad.EPS
-        if tightened and tr.kind in ("escalate", "step") and self.impact is not None and t in self.scores:
+        if tr.level == "normal":
+            self.verdict_acted.discard(t)                     # back to its plan: the verdict's action is over
+        elif (tightened and tr.kind in ("escalate", "step") and self.impact is not None and t in self.scores
+              and t not in self.verdict_acted):
             self.impact.note_action(t, self.scores[t].score, self.p.warn)
         action = self._action_text(tr.factor, tr.weight_factor, tr.level) if acted else None
         verb = {"escalate": "Escalated", "step": "Tightened", "recover": "Relaxed", "clear": "Cleared",

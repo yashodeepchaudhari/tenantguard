@@ -174,7 +174,7 @@ This module defines the attack traffic profiles. Each profile is an async functi
 
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
-| `WAVE2` | `{"background_bomb", "blackbox_bomb", "cache_flood", "faulty_server", "honest_spike"}` | Attack names that exist in the contract but have no runner in the lab. They are not included (a decision). The lab answers them with HTTP 501, detail `attack '<name>' ships in Wave 2`. The faulty-server scene is triggered instead through the worker's `/admin/fault` (docker exec on the host). | `core.Lab._validate` |
+| `WAVE2` | `{"background_bomb", "blackbox_bomb", "cache_flood", "faulty_server", "honest_spike"}` | Attack names that exist in the contract but have no runner in the lab. They are not included (a decision). The lab answers them with HTTP 501, detail `attack '<name>' is not included in this build`. The faulty-server scene is triggered instead through the worker's `/admin/fault` (docker exec on the host). | `core.Lab._validate` |
 | `AttackCtx` (dataclass) | `AttackCtx(attack_id: str, engine: Engine, req: AttackReq, stop: asyncio.Event, counts: Dict[str, int] = {"sent": 0, "ok": 0, "r429": 0, "r503": 0, "other_err": 0, "retries": 0, "dropped": 0})` | Per-attack state: id, engine to send through, request, stop event and counters. | `core.Lab.launch`, `isolation._child.main` |
 | `AttackCtx.tenant` (property) | `tenant -> str` | `req.tenant`, asserted not None. | Runners, `core.Lab._supervise` |
 | `AttackCtx.profile` (property) | `profile -> dict` | `engine.cfg.attacks[req.attack]`. | Runners, `_open_loop` |
@@ -284,7 +284,7 @@ This module runs one attack in its own OS process. The module docstring gives th
 | `Lab.__init__` | `__init__(self, cfg: LabConfig, recorder: Optional[Recorder] = None, transport: Optional[httpx.AsyncBaseTransport] = None)` | Creates the recorder, `Engine(cfg, recorder, transport=transport)`, the attack and run maps, and an admin `httpx.AsyncClient(timeout=5.0, transport=transport)` for gateway `/admin/mode` and brain calls. | Same as above |
 | `Lab.start_calm` | `start_calm(self) -> bool` | Delegates to `engine.start_calm()`. | `app.py` lifespan and `POST /lab/calm/start`; `__main__._local_calm`, `_local_attack`, `_calibrate` |
 | `Lab.stop_calm` | `async stop_calm(self) -> bool` | Delegates to `engine.stop_calm()`. | `app.py POST /lab/calm/stop` |
-| `Lab._validate` | `_validate(self, req: AttackReq) -> None` | Raises 501 for the not-included `WAVE2` names (detail text "attack '<name>' ships in Wave 2"), 501 "not implemented" for any other name not in `RUNNERS`, 422 when the tenant is missing, and 404 for an unknown tenant. | `Lab.launch`, `Lab.start_run` |
+| `Lab._validate` | `_validate(self, req: AttackReq) -> None` | Raises 501 for the not-included `WAVE2` names (detail text "attack '<name>' is not included in this build"), 501 "not implemented" for any other name not in `RUNNERS`, 422 when the tenant is missing, and 404 for an unknown tenant. | `Lab.launch`, `Lab.start_run` |
 | `Lab.start_attack` | `async start_attack(self, req: AttackReq) -> str` | `ScenarioDriver` method. Returns `(await launch(req)).attack_id`. | `scenario.run_timeline` |
 | `Lab.isolated` (property) | `isolated -> bool` | True when `client.attack_isolation` (default `"process"`) is `"process"` and no transport was injected. | `Lab.launch`; tests |
 | `Lab.launch` | `async launch(self, req: AttackReq) -> AttackStatus` | Validates, creates an id `atk-<8 hex>` and an `AttackCtx`. If isolated, creates a `ProcessAttack` and awaits `start()`, mapping `RuntimeError` to `LabError(500)`. Builds an `AttackStatus(state="running", ends_at=now + duration_s)`, ensures the lag monitor is running, registers the entry, starts `_supervise`, logs and prunes. | `app.py POST /lab/attack`, `Lab.start_attack`, `__main__._local_attack`; tests |
@@ -523,7 +523,7 @@ Tests the scorecard runner against a mocked lab and brain (`httpx.MockTransport`
 |---|---|---|
 | `T0`, `P99` (constants) | A fixed epoch, and fake victim p99 per mode (off 20/400/30, industry 20/150/25, tenantguard 20/40/21). | n/a |
 | `Clock` (class) | Fake clock: callable for the time, `sleep` advances it. | n/a |
-| `FakeLab` (class) | Mock lab and brain. `POST /lab/run` returns a running view (501 for unregistered scenarios, default `blackbox_bomb`, with detail "ships in Wave 2"; 409 once if `busy_once`). `GET /lab/run/{id}` turns `done` after `polls` polls with marks (+3, +23, +63, +83 s) and a `RunResult`. Also serves `DELETE /lab/run`, `/lab/status`, `/lab/results` and the brain's events (or a connect error when `brain_up=False`). | Stands in for `app.py` and the brain |
+| `FakeLab` (class) | Mock lab and brain. `POST /lab/run` returns a running view (501 for unregistered scenarios, default `blackbox_bomb`, with detail "is not included in this build"; 409 once if `busy_once`). `GET /lab/run/{id}` turns `done` after `polls` polls with marks (+3, +23, +63, +83 s) and a `RunResult`. Also serves `DELETE /lab/run`, `/lab/status`, `/lab/results` and the brain's events (or a connect error when `brain_up=False`). | Stands in for `app.py` and the brain |
 | `runner`, `ev` (helpers) | Build a `Scorecard` on the fake, and an incident-event dict. | n/a |
 | `test_plan_interleaves_modes_inside_each_repetition` | The run order interleaves modes inside each repetition, per scenario. | `scorecard.plan` |
 | `test_runs_every_cell_skips_unregistered_and_aggregates` | Only whale runs (3 reps × 3 modes, interleaved, same knobs). `blackbox_bomb` is skipped and listed. Medians and means per phase, detect and recover medians, attacker 429 medians and run files are correct per cell. | `Scorecard.run`, `run_one`, `summarize_cell`, `phase_stat` |
@@ -659,7 +659,7 @@ Personas after the tier rebalance. Rate follows the tier (enterprise 14, pro 10,
 | L | enterprise | 50 | 14 | 2,500,000 | read heavy (0.40, 0.50, 0.05, 0.05) |
 
 **Key decisions**
-- The header comments state the calibration intent: calm load of about 116 req/s (the rates above now add up to 121 req/s), aimed at about 30% of 4500 CPU-ms/s (9 workers × 0.5 cores). CPU comes mostly from request weight (search `n`), not request count. Recalibrate on the real fleet with `calibrate`.
+- The header comments state the calibration intent: calm load of about 121 req/s (the sum of the rates above), aimed at about 30% of 4500 CPU-ms/s (9 workers × 0.5 cores). CPU comes mostly from request weight (search `n`), not request count. Recalibrate on the real fleet with `calibrate`.
 - Attack profiles are data, so intensities and parameters can be tuned without code changes. Only the five implemented attacks have profiles. The five not-included attacks have none.
 
 ---
@@ -670,15 +670,16 @@ The operator guide for the lab. It covers how to run it, environment variables, 
 | Section | Content |
 |---|---|
 | Intro | 12 tenant personas, Poisson arrivals, attacks, scripted scenarios. Each run writes a `RunResult` to `lab/results/`, and slide numbers come only from these files. |
-| Run | CLI commands (`serve`, `calm`, `attack`, `stop`, `status`, `metrics`, `run`, `calibrate`), `pytest`, `docker compose --profile lab up lab`. Remote-first behaviour and `--local`. |
+| Run | CLI commands (`serve`, `calm`, `attack`, `stop`, `status`, `metrics`, `run`, `calibrate`, `scorecard`), `pytest`, `docker compose --profile lab up lab`. Remote-first behaviour and `--local`. |
 | Env | `TENANTGUARD_GATEWAY_URL`, `TENANTGUARD_BRAIN_URL`, `TENANTGUARD_WORKER_URLS`, `TENANTGUARD_UI_ORIGINS`, `TENANTGUARD_CONTROL_TOKEN`, `TENANTGUARD_LAB_RATE_SCALE`, `TENANTGUARD_LAB_AUTOSTART`, `TENANTGUARD_LAB_PERSONAS`, `TENANTGUARD_LAB_RESULTS`. |
 | API | Endpoint table with status codes (not-included attacks 501, unknown tenant 404, intensity outside 0.1..5 → 422, concurrent run 409, `POST /lab/run` 202). |
-| Traffic | Personas and effective rate, absolute-schedule Poisson, per-tenant and per-attack pools, in-flight caps, process isolation rationale (about 3 ms httpx CPU per request, samples streamed every 250 ms, lag p99 warning above about 20 ms), and attack profiles. Lists the five not-included names (labelled "Wave 2" in the README) as 501. |
+| Traffic | Personas and effective rate, absolute-schedule Poisson, per-tenant and per-attack pools, in-flight caps, process isolation rationale (about 3 ms httpx CPU per request, samples streamed every 250 ms, lag p99 warning above about 20 ms), and attack profiles. Lists the five not-included names as 501, and notes that the faulty-server scene uses the worker's `/admin/fault`. |
+| Scorecard | What `python -m tenantguard_lab scorecard` runs (every scenario x mode, `--runs` each, 501 scenarios skipped), the summary file and its per-cell fields, `--aggregate-only`, and the committed host summary. |
 | Measurement | Timeline (warmup, +10 s if cold, `calm_s`, `attack_s`, `calm_s`), `attack_start` marked once traffic flows (about 4 s spawn on Windows), victim selection and `victim_kinds`, numpy-linear p99, definitions of `time_to_recover_s`, `time_to_detect_s` and `attacker_429/503`. |
 | Calibration | Target about 30% of 4500 CPU-ms/s. One recorded measurement on 9 local workers: 1000 CPU-ms/s against an estimate of 1295, with `calibrate` suggesting `rate_scale` 1.35, described as a CPU-starved laptop. Advises recalibrating on the Docker host and `TENANTGUARD_LAB_RATE_SCALE=0.25` on a single laptop. |
 | Tools | `tools/stub_gateway.py` summary. |
 
-The README does not describe the `scorecard` subcommand; this catalog (`scorecard.py` above) is the reference for it.
+The README gives a short summary of the `scorecard` subcommand; this catalog (`scorecard.py` above) has the full detail.
 
 ---
 

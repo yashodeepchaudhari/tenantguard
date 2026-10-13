@@ -608,13 +608,11 @@ OFF / Industry / TenantGuard comparison from lab `GET /lab/results` (refreshed e
 ## Mock backend (`src/mock`)
 
 ### ui/src/mock/fixture.ts
-Copy of `layouts/ag23.json` tenants (id, name, tier, barcode servers, monthly revenue, protected) and of `tenantguard.yaml` tiers and `brain.noisy`, so the UI and its simulation run with no backend.
-
-Note: the copy predates the tier rebalance. It still has A enterprise, F free, G enterprise, L free (the layout now has A pro, F enterprise, G free, L enterprise) and no `sla_p95_ms`. It only drives the mock and the store's barcode/revenue fallback; against a real stack the gateway's `/admin/tenants` replaces it within the first poll.
+Copy of `layouts/ag23.json` tenants (id, name, tier, barcode servers, monthly revenue, protected, `sla_p95_ms`) and of `tenantguard.yaml` tiers and `brain.noisy`, so the UI and its simulation run with no backend. It follows the rebalanced layout (A pro, F enterprise, G free, L enterprise) and the 5 s warn hold. It only drives the mock and the store's barcode/revenue fallback; against a real stack the gateway's `/admin/tenants` replaces it within the first poll.
 
 | Function / class | Signature | What it does | Used by |
 |---|---|---|---|
-| `FixtureTenant` | interface | layout tenant | `TENANTS` |
+| `FixtureTenant` | interface | layout tenant, including `sla_p95_ms` | `TENANTS` |
 | `SERVERS` | `['w0'..'w8']` | fleet | `sim.ts` |
 | `TENANTS` | `FixtureTenant[]` (12) | A Aarogya Health … L LokVani News | `sim.ts`, `store.ts` fallback |
 | `TIERS` | weight + quota per tier | enterprise 4 / pro 2 / free 1 | `sim.ts` |

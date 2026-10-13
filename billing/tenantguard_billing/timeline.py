@@ -84,12 +84,6 @@ class Timeline:
     def open_at(self, ts: float) -> List[Episode]:
         return [e for e in self.episodes.values() if e.open_at(ts)]
 
-    def blamed_in(self, a: float, b: float) -> Set[str]:
-        out: Set[str] = set()
-        for e in self.overlapping(a, b):
-            out |= e.blamed
-        return out
-
     def prune(self, cutoff: float) -> None:
         for iid in [i for i, e in self.episodes.items() if e.end is not None and e.end < cutoff]:
             del self.episodes[iid]

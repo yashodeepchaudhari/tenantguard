@@ -108,10 +108,6 @@ def weighted_quantile(samples: Sequence[Tuple[float, int]], q: float) -> float:
     return xs[-1][0]
 
 
-def weighted_median(samples: Sequence[Tuple[float, int]]) -> float:
-    return weighted_quantile(samples, 0.5)
-
-
 class HealthTracker:
     def __init__(self, servers: Iterable[str], params: HealthParams,
                  barcodes: Optional[Mapping[str, Sequence[str]]] = None,
@@ -241,6 +237,3 @@ class HealthTracker:
     def slow_servers(self) -> List[str]:
         """Slow fleet servers. (A pool server's slowness is read through `servers[...]`, e.g. by the prover.)"""
         return sorted(s for s, h in self.servers.items() if h.slow and self._peer(s))
-
-    def ratios(self) -> Dict[str, float]:
-        return {s: h.peer_ratio for s, h in self.servers.items()}

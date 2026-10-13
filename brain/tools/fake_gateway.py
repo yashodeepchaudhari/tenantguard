@@ -3,7 +3,7 @@
 Streams TelemetryFrames on WS /internal/telemetry from a scripted scenario
 (calm -> K whale -> calm), serves WorkerStats for every server under /fake/workers/{server}/stats,
 and accepts /control/* exactly like the real gateway (LimitsCmd is applied to the simulation,
-so throttling really changes the next frames).
+so throttling really changes the next frames; ChargeCmd is validated, de-duplicated by charge_id and logged).
 
 Run (from brain/):
     python tools/fake_gateway.py --port 8000
@@ -30,7 +30,7 @@ from fastapi.responses import JSONResponse  # noqa: E402
 from pydantic import ValidationError  # noqa: E402
 
 from tenantguard_common.config import load_settings, load_tenants  # noqa: E402
-from tenantguard_common.contracts import (H_CONTROL_TOKEN, BlockCmd, ControlAck, DrainCmd,  # noqa: E402
+from tenantguard_common.contracts import (H_CONTROL_TOKEN, BlockCmd, ChargeCmd, ControlAck, DrainCmd,  # noqa: E402
                                           FaultReq, Heartbeat, LimitsCmd, ModeBody, OverridesView,
                                           RelocateCmd, RouteWeightsCmd, TelemetryFrame)
 
@@ -213,6 +213,26 @@ def build_app(args) -> FastAPI:
         log.info("CONTROL limits %s factor=%.2f weight_factor=%.2f ttl=%gs incident=%s",
                  cmd.tenant, cmd.factor, cmd.weight_factor, cmd.ttl_s, cmd.incident_id)
         return ControlAck(ok=True, detail="applied")
+
+    charge_ids: Set[str] = set()
+    charged: Dict[str, float] = {}
+
+    @app.post("/control/charge", response_model=ControlAck)
+    async def control_charge(request: Request):
+        cmd: ChargeCmd = await parse(request, ChargeCmd)
+        if cmd.tenant not in {t.id for t in tenants}:
+            raise HTTPException(400, f"unknown tenant {cmd.tenant}")
+        if cmd.cpu_ms < 0:
+            raise HTTPException(400, "cpu_ms must be >= 0")
+        if st["sim"].mode != "tenantguard":
+            return ControlAck(ok=True, detail="ignored: mode")
+        if cmd.charge_id is not None:
+            if cmd.charge_id in charge_ids:
+                return ControlAck(ok=True, detail="duplicate charge_id")
+            charge_ids.add(cmd.charge_id)
+        charged[cmd.tenant] = charged.get(cmd.tenant, 0.0) + cmd.cpu_ms
+        control_log.append({"ts": time.time(), "kind": "charge", **cmd.model_dump()})
+        return ControlAck(ok=True, detail=f"charged {cmd.tenant} {cmd.cpu_ms:.3f} ms (recorded, not simulated)")
 
     @app.post("/control/block", response_model=ControlAck)
     async def control_block(request: Request):

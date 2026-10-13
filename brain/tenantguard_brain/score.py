@@ -10,8 +10,8 @@ score(t) = max(cpu_share / fair_share, queue_share / fair_share) * (1 + victim_i
                      of max(0, p95 / baseline_p95 - 1), clipped to [0, 3]
 - baseline_p95     = per-tenant EWMA, updated only in calm periods (see BaselineTracker)
 
-A tenant is *flagged* only if it over-uses (ratio >= `over_use`, 1.25: at its fair share a busy fleet is
-not over-use) AND its neighbours are hurt, broadly (at least `min_hurt_neighbours` of them, 3: two slow
+A tenant is *flagged* only if it over-uses (ratio >= `over_use`, 1.6 in tenantguard.yaml: at its fair share a busy fleet
+is not over-use) AND its neighbours are hurt, broadly (at least `min_hurt_neighbours` of them, 4: a few slow
 neighbours are more likely their own servers than a noisy neighbour)
 (victim_impact >= min_victim_impact). A heavy tenant whose neighbours are fine is never flagged.
 

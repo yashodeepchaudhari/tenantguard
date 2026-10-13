@@ -54,7 +54,7 @@ class FakeLab:
         if path == "/lab/run" and req.method == "POST":
             body = json.loads(req.content)
             if body["scenario"] in self.unregistered:
-                return httpx.Response(501, json={"detail": f"attack {body['scenario']!r} ships in Wave 2"})
+                return httpx.Response(501, json={"detail": f"attack {body['scenario']!r} is not included in this build"})
             if self.busy_once:
                 self.busy_once = False
                 return httpx.Response(409, json={"detail": "run run-x is in progress"})
@@ -121,7 +121,7 @@ def test_runs_every_cell_skips_unregistered_and_aggregates():
     assert [(p["scenario"], p["mode"]) for p in fake.posted] == [("whale", m) for _ in range(3) for m in sc.MODES_ALL]
     assert all(p["intensity"] == 2.0 and p["calm_s"] == 20 and p["attack_s"] == 40 for p in fake.posted)
     assert [c.mode for c in s.cells] == sc.MODES_ALL and {c.scenario for c in s.cells} == {"whale"}
-    assert s.skipped and "blackbox_bomb: not registered in this lab" in s.skipped[0] and "Wave 2" in s.skipped[0]
+    assert s.skipped and "blackbox_bomb: not registered in this lab" in s.skipped[0] and "not included in this build" in s.skipped[0]
     off, ind, tg = s.cells
     # run numbers n: off = 1,4,7 ; industry = 2,5,8 ; tenantguard = 3,6,9 (attack p99 = base + n)
     assert off.runs == 3 and off.victim_p99_ms_median.attack == 404.0 and off.victim_p99_ms_mean.attack == 404.0
