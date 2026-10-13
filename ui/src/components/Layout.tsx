@@ -56,9 +56,6 @@ export function Layout() {
           <NavLink to="/scorecard" className={tab}>
             Scorecard
           </NavLink>
-          <NavLink to="/challenge" className={tab}>
-            Jury challenge
-          </NavLink>
         </nav>
         <Connection />
         <div className="ml-auto">

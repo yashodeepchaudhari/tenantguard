@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ServerGrid } from '../components/ServerGrid.tsx'
 import { config } from '../config.ts'
 import {
@@ -9,19 +9,25 @@ import {
   eventKey,
   evidence,
   findAnswer,
+  hostFaults,
   innocentsPunished,
   kindInfo,
   newSalt,
+  openIncidents,
   outcome,
   seal,
+  slowServers,
   stillHot,
   type Answer,
   type ChallengeKind,
   type Evidence,
+  type RoundStart,
 } from '../lib/challenge.ts'
+import { useBackend, useLive, useNow, useStore } from '../lib/liveContext.ts'
+import { scenarioOf } from '../lib/scenario.ts'
 import { FLEET } from '../lib/status.ts'
 import { useBarcodes } from '../lib/useBarcodes.ts'
-import { useBackend, useLive, useStore } from '../lib/liveContext.ts'
+import type { TenantView } from '../types.ts'
 
 type Phase = 'pick' | 'hunt' | 'answer' | 'reveal'
 
@@ -32,35 +38,74 @@ interface Round {
   seal: string
   attackId: string
   startedAt: number // browser clock, ms
-  before: Set<string>
+  start: RoundStart
 }
 
-const short = (h: string) => `${h.slice(0, 8)}…${h.slice(-4)}`
-const sameSet = (a: string[], b: string[]) => a.length === b.length && a.every((x) => b.includes(x))
+/** What the reveal shows, frozen the moment the seal is opened (the round's attack is stopped then). */
+interface Frozen {
+  heldBack: TenantView[]
+  top: TenantView | null
+  slow: string[]
+  clears: { tenant: string; verdict: string }[]
+  hosts: string[]
+}
 
 export function Challenge() {
   const backend = useBackend()
   const store = useStore()
-  const { snapshot, incidents, lab } = useLive()
+  const { snapshot, incidents, lab, labReachable, pendingMode } = useLive()
   const barcodes = useBarcodes()
+  const now = useNow()
   const [phase, setPhase] = useState<Phase>('pick')
   const [kind, setKind] = useState<ChallengeKind>('whale')
   const [round, setRound] = useState<Round | null>(null)
   const [answer, setAnswer] = useState<Answer | null>(null)
   const [proof, setProof] = useState<Evidence | null>(null)
   const [foundAfter, setFoundAfter] = useState<number | null>(null)
-  const [watched, setWatched] = useState<number>(0)
+  const [watched, setWatched] = useState(0)
+  const [frozen, setFrozen] = useState<Frozen | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [, tick] = useState(0)
+  // the attack this page started and has not stopped yet (stopped when the seal opens or the page is left)
+  const live = useRef<string | null>(null)
+
+  useEffect(
+    () => () => {
+      if (live.current) backend.stopAttack(live.current).catch(() => null)
+    },
+    [backend],
+  )
 
   const tenants = snapshot?.tenants ?? []
   const warn = snapshot?.noisy_thresholds?.warn ?? config.noisy.warn
   const nameOf = (id: string) => tenants.find((t) => t.tenant === id)?.name ?? id
-  const running = lab?.attacks.filter((a) => a.state === 'running') ?? []
-  const hot = stillHot(tenants)
-  const ready = running.length === 0 && hot.length === 0 && tenants.length > 0
   const info = kindInfo(kind)
+
+  // ---------- is the fleet calm enough for a fair round? ----------
+  const scenario = scenarioOf(lab, labReachable !== false, now)
+  const mode = pendingMode ?? snapshot?.mode ?? null
+  const hot = stillHot(tenants)
+  const open = snapshot ? openIncidents(incidents, snapshot.ts) : []
+  const blocker = !snapshot
+    ? 'Waiting for live data from the brain…'
+    : scenario.kind === 'unknown'
+      ? 'The lab is not answering: rounds are started through the lab.'
+      : lab?.run
+        ? 'A scenario run is in progress (its result goes to the Scorecard). Wait for it to finish.'
+        : scenario.kind === 'attack'
+          ? `${scenario.label}. Stop it first so only the judge's choice is in play.`
+          : scenario.kind !== 'calm'
+            ? "Calm traffic is off, so nobody could be slowed. Start it on the lab first (python -m tenantguard_lab calm, or the lab's /lab/calm/start)."
+            : mode !== 'tenantguard'
+              ? 'Switch the mode to TenantGuard (top right) first.'
+              : hot.length
+                ? `Waiting for the fleet to calm down: ${hot.map((t) => t.tenant).join(', ')} not back to normal yet.`
+                : open.length
+                  ? `Waiting for the brain to close its open incident${open.length > 1 ? 's' : ''} (${open.length}).`
+                  : null
+  const ready = blocker === null
+  const stoppable = scenario.kind === 'attack' && !lab?.run ? scenario.attacks : []
 
   // re-render 4x a second while hunting (timer on screen + the time limit)
   useEffect(() => {
@@ -69,10 +114,10 @@ export function Challenge() {
     return () => clearInterval(id)
   }, [phase])
 
-  // the brain's answer: the first new event that blames a tenant; the numbers behind it are frozen then
+  // the brain's answer: the first event of this round that points at a company; its numbers are frozen then
   useEffect(() => {
     if (phase !== 'hunt' || !round) return
-    const a = findAnswer(incidents, round.before, kindInfo(round.kind).blame ? 'name' : 'blame')
+    const a = findAnswer(incidents, round.start, kindInfo(round.kind).blame ? 'name' : 'blame')
     if (a) {
       const t = (Date.now() - round.startedAt) / 1000
       setAnswer(a)
@@ -84,39 +129,50 @@ export function Challenge() {
   }, [incidents, phase, round, barcodes, store])
 
   const elapsed = round ? (Date.now() - round.startedAt) / 1000 : 0
-  const openSeal = () => {
-    if (phase === 'hunt') setWatched(elapsed)
-    setPhase('reveal')
-  }
-  useEffect(() => {
-    if (phase === 'hunt' && elapsed > HUNT_LIMIT_S) {
-      setWatched(HUNT_LIMIT_S)
-      setPhase('reveal')
-    }
-  }, [phase, elapsed])
 
-  const stopAll = async () => {
+  const openSeal = (watchedS?: number) => {
+    if (!round) return
+    const snap = store.getState().snapshot
+    const ts = snap?.tenants ?? []
+    const evs = store.getState().incidents
+    setFrozen({
+      heldBack: innocentsPunished(ts, kindInfo(round.kind).blame ? round.target : ''),
+      top: busiest(ts),
+      slow: slowServers(snap),
+      clears: cleared(evs, round.start),
+      hosts: hostFaults(evs, round.start),
+    })
+    if (watchedS !== undefined) setWatched(watchedS)
+    setPhase('reveal')
+    if (live.current) {
+      backend.stopAttack(live.current).catch(() => null)
+      live.current = null
+    }
+  }
+
+  useEffect(() => {
+    if (phase === 'hunt' && elapsed > HUNT_LIMIT_S) openSeal(HUNT_LIMIT_S)
+  })
+
+  const stopRunning = async () => {
     setBusy(true)
     try {
-      await Promise.all(running.map((a) => backend.stopAttack(a.attack_id).catch(() => null)))
+      await Promise.all(stoppable.map((a) => backend.stopAttack(a.attack_id)))
       store.setLab(await backend.labStatus())
-    } catch {
-      /* the lab poll catches up */
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
     }
   }
 
   const start = async (target: string) => {
+    if (!ready || !snapshot) return
     setBusy(true)
     setErr(null)
     try {
-      if ((snapshot?.mode ?? null) !== 'tenantguard') {
-        store.setPendingMode('tenantguard')
-        await backend.setMode('tenantguard')
-      }
       const salt = newSalt()
-      const before = new Set(store.getState().incidents.map(eventKey))
+      const roundStart: RoundStart = { before: new Set(store.getState().incidents.map(eventKey)), brainTs: snapshot.ts }
       const onServer = info.target === 'server'
       const st = await backend.startAttack({
         attack: kind,
@@ -125,6 +181,7 @@ export function Challenge() {
         intensity: info.intensity,
         duration_s: 180,
       })
+      live.current = st.attack_id
       setRound({
         target,
         kind,
@@ -132,11 +189,12 @@ export function Challenge() {
         seal: seal(target, kind, salt),
         attackId: st.attack_id,
         startedAt: Date.now(),
-        before,
+        start: roundStart,
       })
       setAnswer(null)
       setProof(null)
       setFoundAfter(null)
+      setFrozen(null)
       setPhase('hunt')
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -145,11 +203,15 @@ export function Challenge() {
     }
   }
 
-  const again = async () => {
-    if (round) await backend.stopAttack(round.attackId).catch(() => null)
+  const again = () => {
+    if (live.current) {
+      backend.stopAttack(live.current).catch(() => null)
+      live.current = null
+    }
     setRound(null)
     setAnswer(null)
     setProof(null)
+    setFrozen(null)
     setPhase('pick')
   }
 
@@ -179,18 +241,12 @@ export function Challenge() {
           </div>
         </div>
         <div className="text-lg text-ink-300">{info.about}</div>
-        {!ready && (
-          <div className="panel flex items-center justify-between gap-4 border-warn">
-            <span className="text-lg text-warn">
-              {tenants.length === 0
-                ? 'Waiting for live data from the brain…'
-                : running.length > 0
-                  ? `${running.length} attack${running.length > 1 ? 's are' : ' is'} still running: stop ${running.length > 1 ? 'them' : 'it'} first so only the judge's choice is in play.`
-                  : `Waiting for the fleet to calm down: ${hot.map((t) => t.tenant).join(', ')} still held back.`}
-            </span>
-            {running.length > 0 && (
-              <button className="btn-ghost whitespace-nowrap" disabled={busy} onClick={stopAll}>
-                Stop running attacks
+        {blocker && (
+          <div className="panel flex items-center justify-between gap-4 border-warn" role="status">
+            <span className="text-lg text-warn">{blocker}</span>
+            {stoppable.length > 0 && (
+              <button className="btn-ghost whitespace-nowrap" disabled={busy} onClick={stopRunning}>
+                Stop {stoppable.map((a) => `${a.attack} on ${a.tenant ?? a.server}`).join(', ')}
               </button>
             )}
           </div>
@@ -231,9 +287,9 @@ export function Challenge() {
           </div>
         )}
         <p className="text-base text-ink-300">
-          Presenter, look away. The moment the judge taps, the choice is sealed with a hash shown on screen and it starts.
-          TenantGuard never sees the tap: it only gets the servers' measurements. If nobody is to blame, the right answer is to
-          blame nobody.
+          Presenter, look away. The moment the judge taps, the choice is sealed as a SHA-256 hash shown in full on screen
+          (photograph it), and it starts. TenantGuard never sees the tap: it only gets the servers' measurements. If nobody is to
+          blame, the right answer is to blame nobody.
         </p>
       </div>
     )
@@ -242,13 +298,15 @@ export function Challenge() {
   // ---------- 2-4. hunt, answer, reveal ----------
   const rk = kindInfo(round.kind)
   const servers = snapshot?.servers ?? []
-  const slow = servers.filter((s) => s.status === 'slow').map((s) => s.server)
   const culprit = answer?.tenant ?? null
-  const result = outcome(round.kind, round.target, answer)
-  const innocents = innocentsPunished(tenants, rk.blame ? round.target : '')
-  const top = busiest(tenants)
-  const checked = seal(round.target, round.kind, round.salt)
-  const clears = cleared(incidents, round.before)
+  const result = frozen
+    ? outcome(
+        round.kind,
+        round.target,
+        answer,
+        frozen.heldBack.map((t) => t.tenant),
+      )
+    : null
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-4">
@@ -258,16 +316,14 @@ export function Challenge() {
           phase === 'hunt'
             ? 'Something is happening. TenantGuard sees only the servers.'
             : phase === 'answer'
-              ? rk.blame
-                ? 'TenantGuard has named a company'
-                : 'TenantGuard has punished a company'
+              ? 'TenantGuard has named a company'
               : 'Open the seal'
         }
       />
-      <div className="panel flex flex-wrap items-baseline gap-x-6 gap-y-1">
-        <span className="text-lg text-ink-300">Judge's sealed choice</span>
-        <code className="text-2xl font-bold text-accent" data-testid="challenge-seal">
-          {short(round.seal)}
+      <div className="panel flex flex-wrap items-center gap-x-6 gap-y-1">
+        <span className="text-lg text-ink-300">Judge's sealed choice (photograph it)</span>
+        <code className="break-all text-lg font-bold text-accent" data-testid="challenge-seal">
+          {round.seal}
         </code>
         {phase === 'hunt' && (
           <span className="ml-auto text-3xl font-black tabular-nums" data-testid="challenge-timer">
@@ -299,7 +355,7 @@ export function Challenge() {
           )}
           {answer && phase !== 'hunt' && (
             <>
-              <div className="text-lg text-ink-300">{rk.blame ? 'TenantGuard names' : 'TenantGuard held back'}</div>
+              <div className="text-lg text-ink-300">TenantGuard names</div>
               <div className="text-4xl font-black" data-testid="challenge-answer">
                 {nameOf(answer.tenant)} <span className="text-ink-300">({answer.tenant})</span>
               </div>
@@ -308,6 +364,7 @@ export function Challenge() {
                 {answer.stage === 'named' && answer.confidence !== null && (
                   <> · decoder {Math.round(answer.confidence * 100)} % sure</>
                 )}
+                {answer.also.length > 0 && <> · also named: {answer.also.map(nameOf).join(', ')}</>}
               </div>
               {proof && (
                 <ul className="space-y-0.5 text-lg" data-testid="challenge-evidence">
@@ -324,9 +381,7 @@ export function Challenge() {
                   {barcodes[answer.tenant] && (
                     <li>
                       Its servers <b className="text-accent">{barcodes[answer.tenant].join(' ')}</b>
-                      {sameSet(barcodes[answer.tenant], slow)
-                        ? ' are exactly the slow ones'
-                        : `; slow now: ${slow.join(' ') || 'none'}`}
+                      {proof.exact ? ' were exactly the slow ones' : `; slow then: ${proof.slow.join(' ') || 'none'}`}
                     </li>
                   )}
                 </ul>
@@ -338,27 +393,32 @@ export function Challenge() {
               )}
             </>
           )}
-          {!answer && phase === 'reveal' && (
+          {!answer && phase === 'reveal' && frozen && (
             <div className="flex flex-col gap-2" data-testid="challenge-answer">
               <div className="text-2xl font-bold">TenantGuard blamed no company in {watched.toFixed(0)} s.</div>
-              {top && (
-                <div className="text-lg text-ink-300">
-                  Busiest company: <b className="text-ink-100">{top.name}</b> ({top.tenant}), noisy score{' '}
-                  <b className="text-ink-100">{top.noisy_score.toFixed(1)}</b> (flagged from {warn}).
+              {frozen.hosts.length > 0 && (
+                <div className="text-lg">
+                  Its verdict: <b>host fault</b> on {frozen.hosts.join(', ')} (a server problem, no company blamed).
                 </div>
               )}
-              <div className="text-lg text-ink-300">Slow servers now: {slow.join(' ') || 'none'}</div>
+              {frozen.top && (
+                <div className="text-lg text-ink-300">
+                  Busiest company: <b className="text-ink-100">{frozen.top.name}</b> ({frozen.top.tenant}), noisy score{' '}
+                  <b className="text-ink-100">{frozen.top.noisy_score.toFixed(1)}</b> (flagged from {warn}).
+                </div>
+              )}
+              <div className="text-lg text-ink-300">Slow servers: {frozen.slow.join(' ') || 'none'}</div>
             </div>
           )}
           {phase === 'answer' && (
-            <button className="btn-accent mt-auto text-xl" onClick={openSeal}>
+            <button className="btn-accent mt-auto text-xl" onClick={() => openSeal()}>
               Open the judge's seal
             </button>
           )}
         </div>
       </div>
 
-      {phase === 'reveal' && (
+      {phase === 'reveal' && frozen && result && (
         <div
           className={`panel flex flex-col gap-3 border-2 ${result.right ? 'border-ok' : 'border-bad'}`}
           data-testid="challenge-reveal"
@@ -372,8 +432,7 @@ export function Challenge() {
                 </>
               ) : rk.blame ? (
                 <>
-                  The judge picked <b>{nameOf(round.target)}</b> ({round.target}
-                  ), {rk.label.toLowerCase()}.
+                  The judge picked <b>{nameOf(round.target)}</b> ({round.target}), {rk.label.toLowerCase()}.
                 </>
               ) : (
                 <>
@@ -383,28 +442,28 @@ export function Challenge() {
             </span>
           </div>
           <div className="text-lg text-ink-300">
-            Seal check: sha256("{round.target}|{round.kind}|{round.salt}") = <code className="text-ok">{short(checked)}</code>{' '}
-            {checked === round.seal ? '✓ same as the seal shown before it started' : '✕ does not match'}
+            The sealed text was <code className="text-ink-100">{`${round.target}|${round.kind}|${round.salt}`}</code>. Check it on
+            any phone: its SHA-256 must equal the hash you photographed.
           </div>
-          {clears.length > 0 && (
+          {frozen.clears.length > 0 && (
             <div className="text-xl">
               Checked and cleared by TenantGuard:{' '}
-              {clears.map((c) => `${nameOf(c.tenant)} (${c.verdict.replace(/_/g, ' ')}, no penalty)`).join(', ')}
+              {frozen.clears.map((c) => `${nameOf(c.tenant)} (${c.verdict.replace(/_/g, ' ')}, no penalty)`).join(', ')}
             </div>
           )}
           <div className="text-xl">
-            Innocent companies held back right now:{' '}
-            <b className={innocents.length ? 'text-bad' : 'text-ok'}>
-              {innocents.length ? innocents.map((t) => `${t.name} (${t.tenant})`).join(', ') : '0'}
+            {rk.blame ? 'Innocent companies held back' : 'Companies held back'} when the seal opened:{' '}
+            <b className={frozen.heldBack.length ? 'text-bad' : 'text-ok'}>
+              {frozen.heldBack.length ? frozen.heldBack.map((t) => `${t.name} (${t.tenant})`).join(', ') : '0'}
             </b>
           </div>
           <button className="btn-accent self-start text-xl" onClick={again}>
-            Stop it · play again
+            Play again
           </button>
         </div>
       )}
       {phase !== 'reveal' && (
-        <button className="btn-ghost self-start" onClick={openSeal}>
+        <button className="btn-ghost self-start" onClick={() => openSeal(phase === 'hunt' ? elapsed : undefined)}>
           Open the seal now
         </button>
       )}

@@ -1,7 +1,12 @@
-// Jury challenge: a judge secretly turns one company into the attacker; TenantGuard must name it from the
-// server measurements alone. The pick is sealed (sha256 of tenant|attack|salt) before the hunt and opened after.
-import type { IncidentEvent, Level, StateSnapshot, TenantView } from '../types.ts'
-import { LEVELS } from '../types.ts'
+// Jury challenge: a judge secretly picks what happens (a company attacks, or nobody is to blame); TenantGuard must
+// name the culprit or blame nobody, from the server measurements alone. The choice is sealed (sha256 of
+// target|kind|salt) and shown in full before the round, so the judges can check it themselves afterwards.
+import type { IncidentEvent, StateSnapshot, TenantView } from '../types.ts'
+import { ACTED } from './impact.ts'
+import { FLEET } from './status.ts'
+import { eventKey } from './store.ts'
+
+export { eventKey }
 
 export type ChallengeKind = 'whale' | 'flood' | 'blackbox_bomb' | 'honest_spike' | 'faulty_server'
 
@@ -16,22 +21,8 @@ export interface KindInfo {
 }
 
 export const CHALLENGE_KINDS: KindInfo[] = [
-  {
-    kind: 'whale',
-    label: 'Heavy searches',
-    about: 'a few very expensive queries',
-    blame: true,
-    target: 'tenant',
-    intensity: 2,
-  },
-  {
-    kind: 'flood',
-    label: 'Flood',
-    about: '10× its normal number of calls',
-    blame: true,
-    target: 'tenant',
-    intensity: 2,
-  },
+  { kind: 'whale', label: 'Heavy searches', about: 'a few very expensive queries', blame: true, target: 'tenant', intensity: 2 },
+  { kind: 'flood', label: 'Flood', about: '10× its normal number of calls', blame: true, target: 'tenant', intensity: 2 },
   {
     kind: 'blackbox_bomb',
     label: 'Hidden work',
@@ -129,61 +120,94 @@ export function seal(tenant: string, attack: string, salt: string): string {
 }
 
 // ---------- reading the brain's answer ----------
-export const eventKey = (e: IncidentEvent) => `${e.incident_id}|${e.stage}|${e.ts}|${e.level ?? ''}`
+/** Verdicts that look at a company (or a server) and clear it: no penalty. */
+export const CLEARING = ['honest_growth', 'host_fault', 'mitigated_no_blame']
+const CLOSED: IncidentEvent['stage'][] = ['resolved', 'explained']
+/** An incident with no event for this long (brain clock) no longer blocks a new round. */
+export const INCIDENT_QUIET_S = 60
 
-const rank = (l: Level | null | undefined) => (l ? LEVELS.indexOf(l) : -1)
-const PUNISHING: Level[] = ['throttle', 'deprioritize', 'quarantine', 'blocked']
+/** Where a round starts: the incident events already seen, and the brain's clock (StateSnapshot.ts) at that moment. */
+export interface RoundStart {
+  before: Set<string>
+  brainTs: number
+}
+
+/** Events of this round: not seen before it started, and stamped by the brain at or after its start (a late
+ *  backfill of old events, or an earlier incident still finishing its proof, is ignored). Newest first. */
+export function roundEvents(events: IncidentEvent[], start: RoundStart): IncidentEvent[] {
+  return events.filter((e) => !start.before.has(eventKey(e)) && e.ts >= start.brainTs - 1)
+}
+
+const isPunishing = (e: IncidentEvent) =>
+  (e.stage === 'verdict' && !!e.verdict && !CLEARING.includes(e.verdict)) ||
+  (e.stage === 'level_change' && !!e.level && ACTED.includes(e.level) && !(e.prev_level && ACTED.includes(e.prev_level)))
 
 export interface Answer {
   tenant: string
   stage: IncidentEvent['stage']
   detail: string
   confidence: number | null
+  /** other companies named in the same event (the decoder can name several culprits; `tenant` is only the first) */
+  also: string[]
 }
 
-/** Verdicts that look at a company and clear it: no penalty. */
-export const CLEARING = ['honest_growth', 'host_fault', 'mitigated_no_blame']
-
-const isPunishing = (e: IncidentEvent) =>
-  (e.stage === 'verdict' && !CLEARING.includes(e.verdict ?? '')) ||
-  (e.stage === 'level_change' && PUNISHING.includes(e.level as Level) && rank(e.level) > rank(e.prev_level))
-
-/** The first event that arrived after the hunt started (not in `before`) and points at a tenant.
- *  mode 'name': the decoder naming it, a proof, a blaming verdict, or the ladder escalating it to throttle or worse.
- *  mode 'blame': only what punishes it (a blaming verdict or that escalation); being named and then cleared is fine.
- *  De-escalations of an earlier incident never count. `events` is newest first, as the store keeps them. */
-export function findAnswer(events: IncidentEvent[], before: Set<string>, mode: 'name' | 'blame' = 'name'): Answer | null {
-  const fresh = events.filter((e) => !before.has(eventKey(e)) && !!e.tenant)
-  for (let i = fresh.length - 1; i >= 0; i--) {
-    const e = fresh[i]
+/** The first event of the round that points at a company.
+ *  mode 'name': the decoder naming it, a proof, a blaming verdict, or the ladder acting on it (throttle or worse).
+ *  mode 'blame': only what punishes it (a blaming verdict or that ladder step); named and then cleared is fine. */
+export function findAnswer(events: IncidentEvent[], start: RoundStart, mode: 'name' | 'blame' = 'name'): Answer | null {
+  const mine = roundEvents(events, start).filter((e) => !!e.tenant)
+  for (let i = mine.length - 1; i >= 0; i--) {
+    const e = mine[i]
     const hit = isPunishing(e) || (mode === 'name' && (e.stage === 'named' || e.stage === 'proving'))
     if (!hit) continue
     const s = e.suspects.find((x) => x.tenant === e.tenant)
-    return {
-      tenant: e.tenant as string,
-      stage: e.stage,
-      detail: e.detail,
-      confidence: s ? s.confidence : null,
-    }
+    const also =
+      e.stage === 'named' ? e.suspects.filter((x) => x.tenant !== e.tenant && x.confidence >= 0.5).map((x) => x.tenant) : []
+    return { tenant: e.tenant as string, stage: e.stage, detail: e.detail, confidence: s ? s.confidence : null, also }
   }
   return null
 }
 
-/** Companies the brain looked at during the round and cleared (honest growth, host fault, no blame). */
-export function cleared(events: IncidentEvent[], before: Set<string>): { tenant: string; verdict: string }[] {
-  return events
-    .filter((e) => !before.has(eventKey(e)) && e.stage === 'verdict' && !!e.tenant && CLEARING.includes(e.verdict ?? ''))
+/** Companies the brain looked at during the round and cleared (honest growth, no blame). */
+export function cleared(events: IncidentEvent[], start: RoundStart): { tenant: string; verdict: string }[] {
+  return roundEvents(events, start)
+    .filter((e) => e.stage === 'verdict' && !!e.tenant && CLEARING.includes(e.verdict ?? ''))
     .map((e) => ({ tenant: e.tenant as string, verdict: e.verdict as string }))
 }
 
-/** Tenants other than the culprit that TenantGuard is holding back right now. */
-export function innocentsPunished(tenants: TenantView[], culprit: string): TenantView[] {
-  return tenants.filter((t) => t.tenant !== culprit && (PUNISHING.includes(t.level) || t.factor < 1))
+/** Servers the brain called a host fault during the round (those verdicts carry a server, no tenant). */
+export function hostFaults(events: IncidentEvent[], start: RoundStart): string[] {
+  const out = roundEvents(events, start)
+    .filter((e) => e.stage === 'verdict' && e.verdict === 'host_fault')
+    .map((e) => (typeof e.report?.server === 'string' ? e.report.server : '?'))
+  return [...new Set(out)]
 }
 
-/** Tenants already held back before a round starts (they would muddy the answer). */
+/** Incidents still open: newest event not resolved/explained and less than INCIDENT_QUIET_S old (brain clock). */
+export function openIncidents(events: IncidentEvent[], brainNow: number): string[] {
+  const latest = new Map<string, IncidentEvent>()
+  for (const e of events) if (!latest.has(e.incident_id)) latest.set(e.incident_id, e) // newest first
+  return [...latest.values()]
+    .filter((e) => !CLOSED.includes(e.stage) && brainNow - e.ts < INCIDENT_QUIET_S)
+    .map((e) => e.incident_id)
+}
+
+/** Held back by TenantGuard: a ladder action, a throttle factor, or moved to the quarantine lane. */
+export const isHeldBack = (t: TenantView) => ACTED.includes(t.level) || t.factor < 1 || t.placement === 'quarantine'
+
+/** Companies other than `culprit` that TenantGuard is holding back ('' = everyone counts as innocent). */
+export function innocentsPunished(tenants: TenantView[], culprit: string): TenantView[] {
+  return tenants.filter((t) => t.tenant !== culprit && isHeldBack(t))
+}
+
+/** Companies not back to normal yet (held back, or moved off their own servers for a proof): no round until calm. */
 export function stillHot(tenants: TenantView[]): TenantView[] {
-  return tenants.filter((t) => PUNISHING.includes(t.level))
+  return tenants.filter((t) => isHeldBack(t) || t.placement !== 'normal')
+}
+
+/** The 9 fleet servers marked slow (not the spare or the quarantine worker). */
+export function slowServers(snap: StateSnapshot | null): string[] {
+  return (snap?.servers ?? []).filter((s) => FLEET.includes(s.server) && s.status === 'slow').map((s) => s.server)
 }
 
 export interface Outcome {
@@ -191,18 +215,24 @@ export interface Outcome {
   title: string
 }
 
-/** Blame kinds: right = the judge's company was named. Nobody kinds: right = no company was blamed. */
-export function outcome(kind: ChallengeKind, target: string, answer: Answer | null): Outcome {
+/** Blame rounds: right = the judge's company is named first and no other company is held back.
+ *  Nobody rounds: right = no company blamed and none held back. `heldBack` = companies held back when the seal opens. */
+export function outcome(kind: ChallengeKind, target: string, answer: Answer | null, heldBack: string[]): Outcome {
   if (kindInfo(kind).blame) {
     if (!answer) return { right: false, title: '✕ Not found' }
-    return answer.tenant === target ? { right: true, title: '✓ Found it' } : { right: false, title: '✕ Wrong company' }
+    if (answer.tenant !== target) {
+      return answer.also.includes(target)
+        ? { right: false, title: `✕ Named ${answer.tenant} first (${target} too)` }
+        : { right: false, title: '✕ Wrong company' }
+    }
+    const others = heldBack.filter((t) => t !== target)
+    return others.length
+      ? { right: false, title: `✕ Found it, but also held back ${others.join(', ')}` }
+      : { right: true, title: '✓ Found it' }
   }
-  return answer
-    ? {
-        right: false,
-        title: `✕ Blamed ${answer.tenant}, but nobody was to blame`,
-      }
-    : { right: true, title: '✓ Blamed nobody' }
+  if (answer) return { right: false, title: `✕ Blamed ${answer.tenant}, but nobody was to blame` }
+  if (heldBack.length) return { right: false, title: `✕ Held back ${heldBack.join(', ')}, but nobody was to blame` }
+  return { right: true, title: '✓ Blamed nobody' }
 }
 
 export interface Evidence {
@@ -213,9 +243,13 @@ export interface Evidence {
   neighbours: number // tenants sharing a server with it
   neighboursOver: number // of those, p95 over the SLO
   sloMs: number
+  slow: string[] // fleet servers slow at that moment
+  exact: boolean // its barcode servers are exactly the slow ones
 }
 
-/** The numbers behind a name, read from one snapshot. */
+const sameSet = (a: string[], b: string[]) => a.length === b.length && a.every((x) => b.includes(x))
+
+/** The numbers behind a name, read from one snapshot (frozen when the company is named). */
 export function evidence(
   snap: StateSnapshot | null,
   barcodes: Record<string, string[]>,
@@ -225,8 +259,9 @@ export function evidence(
 ): Evidence | null {
   const t = snap?.tenants.find((x) => x.tenant === tenant)
   if (!snap || !t) return null
-  const mine = new Set(barcodes[tenant] ?? [])
-  const nbrs = snap.tenants.filter((o) => o.tenant !== tenant && (barcodes[o.tenant] ?? []).some((sv) => mine.has(sv)))
+  const mine = barcodes[tenant] ?? []
+  const nbrs = snap.tenants.filter((o) => o.tenant !== tenant && (barcodes[o.tenant] ?? []).some((sv) => mine.includes(sv)))
+  const slow = slowServers(snap)
   return {
     tenant,
     score: t.noisy_score,
@@ -235,6 +270,8 @@ export function evidence(
     neighbours: nbrs.length,
     neighboursOver: nbrs.filter((o) => o.p95_ms >= sloMs).length,
     sloMs,
+    slow,
+    exact: mine.length > 0 && sameSet(mine, slow),
   }
 }
 

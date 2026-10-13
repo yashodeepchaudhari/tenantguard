@@ -174,13 +174,13 @@ Each step gives **what to click**, **what the judges see**, **what to say** and 
 
 ## Optional: Jury challenge (1–2 min), only after a rehearsal on the Docker host
 
-**Click:** top menu → **Jury challenge**. Wait until the company cards are clickable (no attack running, nobody held back).
+**Open:** **http://127.0.0.1:5173/challenge** in a new tab (it has no menu tab, so the header stays as it is). Mode **TenantGuard**, calm traffic on. Wait until the cards are clickable: the page waits for no attack, no scenario run, nobody held back and no open incident.
 
 **Hand the judge the laptop:** they pick what happens, secretly:
 - **A company attacks:** Heavy searches, Flood or Hidden work, then they tap a company.
 - **Or nobody is to blame:** Honest growth (tap a company) or Broken server (tap w0–w8).
 
-**Judges see:** the choice sealed as a hash, a timer and the 9 servers. TenantGuard either names a company (with its noisy score, CPU share, neighbours over the 150 ms target and the brain's own words) or blames nobody within 45 s. **Open the seal** shows the judge's real choice, re-hashes it next to the sealed one, gives ✓ or ✕, and counts the innocent companies held back.
+**Judges see:** the choice sealed as a full SHA-256 hash (ask a judge to photograph it), a timer and the 9 servers. TenantGuard either names a company (with its noisy score, CPU share, neighbours over the 150 ms target and the brain's own words) or blames nobody within 45 s. **Open the seal** stops the round, shows the judge's real choice and the exact sealed text (the judges can hash it on their own phone), gives ✓ or ✕, and lists any company held back.
 
 **Say:**
 > "We don't choose the attacker, you do. TenantGuard only sees server measurements. And when nobody is to blame, the right answer is to blame nobody."
