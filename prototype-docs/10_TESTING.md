@@ -8,21 +8,21 @@ Every service has its own test suite, which runs with `python -m pytest` in the 
 |---|---|---|---|
 | Gateway | `cd gateway && python -m pytest` | 94 | `test_buckets.py`, `test_scheduler.py`, `test_router.py`, `test_overrides.py`, `test_limiter_retry.py`, `test_api.py`, `test_wave2_api.py`, `test_security.py`, `test_telemetry.py` |
 | Worker | `cd worker && python -m pytest` | 53 + 1 skipped off Linux | `test_isolation.py`, `test_metering.py`, `test_blackbox.py`, `test_limits_fault.py`, `test_calibrate.py`, `test_review_fixes.py`, `test_memory_return.py` |
-| Brain | `cd brain && python -m pytest` | 166 | `test_score.py`, `test_ladder.py`, `test_fairness.py`, `test_core.py`, `test_impact.py`, `test_stage3_pure.py`, `test_stage3_sim.py`, `test_prover.py`, `test_verdicts.py`, `test_t12_sim.py`, `test_t12_regressions.py`, `test_host_noise.py`, `test_operator.py`, `test_runtime.py`, `test_api.py` |
+| Brain | `cd brain && python -m pytest` | 167 | `test_score.py`, `test_ladder.py`, `test_fairness.py`, `test_core.py`, `test_impact.py`, `test_stage3_pure.py`, `test_stage3_sim.py`, `test_prover.py`, `test_verdicts.py`, `test_t12_sim.py`, `test_t12_regressions.py`, `test_host_noise.py`, `test_operator.py`, `test_runtime.py`, `test_api.py` |
 | Lab | `cd lab && python -m pytest` | 49 | `test_poisson.py`, `test_stats.py`, `test_scenario.py`, `test_scorecard.py`, `test_api.py`, `test_isolation.py` |
 | Billing | `cd billing && python -m pytest` | 25 | `test_meter.py`, `test_billing.py`, `test_api.py` |
 | Handoff bridge | `cd integrations/handoff && python -m pytest` | 47 | `test_wire_cases.py`, `test_bridge_api.py`, `test_t20_fixes.py`, `test_t23_tools.py` |
 | Narrator | `cd narrator && python -m pytest` | 9 | `test_narrator.py` |
 | Demo driver | `cd tools && python -m pytest` | 16 | `test_demo.py`, `test_demo_t20.py` |
-| **Total (Python)** | | **459** | |
+| **Total (Python)** | | **460** | |
 | UI unit | `cd ui && npm test` (vitest) | 76 | 12 files: `src/lib/*.test.ts` (backend, case, clarity, flow, impact, quota, scorecard, status, store, thresholds), `src/mock/*.test.ts` (handoff, sim) |
 | UI end-to-end | `cd ui && npm run e2e` (Playwright) | 27 declared, 26 run by default | `e2e/api.spec.ts` (10), `e2e/ui.spec.ts` (10), `e2e/layout.spec.ts` (3 tests × 2 screen sizes = 6), `e2e/live.spec.ts` (1, tagged `@live`, runs only with `E2E_LIVE=1`) |
 
 Python counts are the numbers `pytest --collect-only` reports on `master` (parametrised cases count separately). The worker's skipped test checks glibc allocator behaviour and runs only on Linux. The UI also has `npm run build` (TypeScript type-check plus the production build) and `npm run lint` (zero warnings).
 
 ```mermaid
-pie title Python tests per suite (master, 459)
-  "Brain" : 166
+pie title Python tests per suite (master, 460)
+  "Brain" : 167
   "Gateway" : 94
   "Worker" : 53
   "Lab" : 49
@@ -47,14 +47,14 @@ Tenant B can never read tenant A's data (same key, case-variant ids, unknown ten
 
 **Memory return (`test_memory_return.py`):** after heavy load the process RSS comes back near its baseline; a `/api/memory` hold is released at once; the class meter is bounded per tenant (overflow goes to `other`); the `/admin/memory` endpoints; the SQLite page cache and WAL are bounded; the trim thread runs; the allocator tuning behaves as expected on glibc (Linux only).
 
-### Brain (166)
+### Brain (167)
 - **Stage 2 and Stage 3 (as before):** noisy-score formula and fair shares; a legit burst with no victim impact is never flagged; victim impact is the mean over neighbours, clipped; the time-based baseline is frozen while a neighbour over-uses; the ladder's hold times, hysteresis, AIMD steps and full walk up and back down; recovery after the attack; operator release / extend / resume; leftover overrides adopted after a restart; peer-ratio health with persistence; a fleet-wide slowdown accuses nobody; the rescue moves every neighbour off a slow server and respects the 70% capacity guard; the decoder names every single culprit and **all 66 culprit pairs exactly**, and a single slow server is a host suspect with nobody blamed; the AG(2,3) property; the API, WS backfill, CORS and contract shape.
 - **Prover (`test_prover.py`):** a proof is confirmed when the servers recover and the harm follows; not confirmed when the servers stay slow or the culprit pauses mid-test; nothing to prove when the servers are already fine; the spare size is clamped; a Docker failure still tests on the spare as it is; a refused relocation restores the spare; the `HostProver` confirms a slow idle host and handles a refused drain; `make_prover` picks Docker or null. Safety of the socket: with two stacks on one host the spare is found by project **and** service; no project means no Docker action; an ambiguous or missing spare is refused; an explicit container name overrides; the engine uses `NanoCpus` for compose `cpus:` and `CpuQuota` when the container has one.
 - **Verdicts (`test_verdicts.py`):** each of the five verdicts from its evidence (below the confidence bar, not confirmed, over plan from admission refusals, costly from a low paid share or ledger hints, honest growth); over plan wins over costly; a repeat offender is judged without a confirmed proof; the host verdict; proof evaluation (harm can follow by latency alone); the action budget; offender memory; parameters from the yaml.
 - **End-to-end verdicts on a simulated fleet (`test_t12_sim.py`):** honest growth stays on the spare as a burst lane; costly pattern sends the guilty class to the heavy lane; a culprit pausing mid-test is `mitigated_no_blame`; over plan tightens limits and sends it home; below the confidence bar nothing is proved; a repeat offender gets its last verdict without re-proving; the relocation budget defers a proof.
 - **T12 regressions (`test_t12_regressions.py`):** failed requests (fast 5xx) are not counted as slot usage, so a tenant whose servers are down is not flagged; background CPU is charged once a second in `tenantguard` mode, and not at all outside it.
 - **Host noise (`test_host_noise.py`):** the simulator reproduces the host's calm (1 to 3 s CPU-quota stalls of whole servers, tail spikes on 5% of cells). A noisy calm opens nothing and moves nothing (3 seeds × 2 load levels); a whale and a host fault are still found and proved under that noise; a fast server is never slow whatever its ratio; two slow neighbours do not flag an over-user; a server a hot tenant runs on is not drained as a faulty host, while a real host fault with no hot tenant still is; a deferred drain is said once; a server below its floor enters the decoder as normal.
-- **Impact (`test_impact.py`):** the meter maths; a whale run shields victims and penalises no innocent; a ladder escalation on a low score counts as an innocent; the status sentence says "recovering", not "zero share".
+- **Impact (`test_impact.py`):** the meter maths; a whale run shields victims and penalises no innocent; a ladder escalation on a low score counts as an innocent, but a proven `over_plan` throttle below warn (and the step that renews it) does not; the status sentence says "recovering", not "zero share".
 
 ### Lab (49)
 Poisson arrival counts within ±10% and exponential gaps; percentile maths matching the linear method; the scenario timeline and the result computation (phases from the run marks, time to recover, attacker 429/503 counts); attack lifecycle and validation; the second-wave attacks answering 501; results listed newest first; read/write keys matching the worker's seed.

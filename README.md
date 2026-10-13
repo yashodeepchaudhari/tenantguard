@@ -92,7 +92,7 @@ cd lab     && python -m tenantguard_lab serve                # :8300
 cd lab     && python -m tenantguard_lab scorecard            # OFF / Industry / TenantGuard, 3 runs each
 ```
 
-Every service has `python -m pytest` in its directory: 459 Python tests on master (gateway 94, worker 53 + 1 Linux-only skip, brain 166, lab 49, billing 25, handoff 47, narrator 9, tools 16). The UI has 76 unit tests (`npm test`) and 27 Playwright end-to-end tests (`ui/e2e/`; 26 run by default, the `@live` one needs `E2E_LIVE=1`). All `/admin/*` and `/control/*` calls need the header `X-TenantGuard-Control-Token` (env `TENANTGUARD_CONTROL_TOKEN`, default `dev`).
+Every service has `python -m pytest` in its directory: 460 Python tests on master (gateway 94, worker 53 + 1 Linux-only skip, brain 167, lab 49, billing 25, handoff 47, narrator 9, tools 16). The UI has 76 unit tests (`npm test`) and 27 Playwright end-to-end tests (`ui/e2e/`; 26 run by default, the `@live` one needs `E2E_LIVE=1`). All `/admin/*` and `/control/*` calls need the header `X-TenantGuard-Control-Token` (env `TENANTGUARD_CONTROL_TOKEN`, default `dev`).
 
 ## Run the demo
 ```

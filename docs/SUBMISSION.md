@@ -27,7 +27,7 @@ Status key: **done** = merged on `master` with tests; **measured** = backed by a
 | Incident reports | done | `narrator/` (:8700): a deterministic incident report per incident and an anonymised customer message, republished whenever the evidence changes |
 | Demo | done | `tools/demo.py`: the 4-minute script, driven over HTTP, with live numbers |
 
-Tests: `python -m pytest` in `gateway/`, `worker/`, `brain/`, `lab/`, `billing/`, `integrations/handoff/`, `narrator/` and `tools/` (459 tests: gateway 94, worker 53 + 1 Linux-only skip, brain 166, lab 49, billing 25, handoff 47, narrator 9, tools 16); `npm test` in `ui/` (76 unit tests) and `npm run e2e` (27 Playwright end-to-end tests in `ui/e2e/`, 26 by default; the `@live` one needs `E2E_LIVE=1`). The gateway, handoff, narrator and demo test suites were also checked by mutation: each protected behaviour was broken on purpose, and a test failed every time.
+Tests: `python -m pytest` in `gateway/`, `worker/`, `brain/`, `lab/`, `billing/`, `integrations/handoff/`, `narrator/` and `tools/` (460 tests: gateway 94, worker 53 + 1 Linux-only skip, brain 167, lab 49, billing 25, handoff 47, narrator 9, tools 16); `npm test` in `ui/` (76 unit tests) and `npm run e2e` (27 Playwright end-to-end tests in `ui/e2e/`, 26 by default; the `@live` one needs `E2E_LIVE=1`). The gateway, handoff, narrator and demo test suites were also checked by mutation: each protected behaviour was broken on purpose, and a test failed every time.
 
 ## Measured numbers we quote
 
