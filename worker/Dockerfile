@@ -15,7 +15,6 @@ COPY worker/requirements.txt /app/worker/requirements.txt
 RUN pip install --no-cache-dir -r /app/worker/requirements.txt
 
 COPY tenantguard.yaml /app/tenantguard.yaml
-COPY layouts /app/layouts
 COPY worker/app /app/worker/app
 COPY worker/tools /app/worker/tools
 RUN mkdir -p /data

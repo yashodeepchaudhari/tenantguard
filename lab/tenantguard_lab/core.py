@@ -7,17 +7,17 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import httpx
 
 from tenantguard_common.contracts import H_CONTROL_TOKEN, AttackReq, AttackStatus, LabStatus, RunReq, RunResult
 
-from .attacks import RUNNERS, SERVER_ATTACKS, AttackCtx
+from .attacks import RUNNERS, WAVE2, AttackCtx
 from .engine import Engine
 from .isolation import ProcessAttack
 from .scenario import Marks, ScenarioDriver, Timeline, compute_result, run_timeline
-from .settings import LabConfig
+from .settings import LabConfig, Persona
 from .stats import Recorder, summarize
 
 log = logging.getLogger("tenantguard_lab.core")
@@ -51,13 +51,11 @@ class RunInfo:
     planned_end: float = 0.0
     result: Optional[RunResult] = None
     error: Optional[str] = None
-    marks: Optional[Marks] = None     # actual phase timestamps, set when the timeline finishes
 
     def view(self) -> Dict[str, Any]:
         return {"run_id": self.run_id, "state": self.state, "phase": self.phase, "scenario": self.req.scenario,
                 "mode": self.req.mode, "attacker": self.attacker, "started_at": self.started_at,
                 "planned_end": self.planned_end, "error": self.error,
-                "marks": dict(self.marks.__dict__) if self.marks else None,
                 "result": self.result.model_dump() if self.result else None}
 
 
@@ -72,6 +70,7 @@ class Lab(ScenarioDriver):
         self.current_run: Optional[RunInfo] = None
         self._run_task: Optional[asyncio.Task] = None
         self._admin = httpx.AsyncClient(timeout=5.0, transport=transport)
+        self.added: Set[str] = set()
 
     # ---------- calm ----------
     def start_calm(self) -> bool:
@@ -80,16 +79,30 @@ class Lab(ScenarioDriver):
     async def stop_calm(self) -> bool:
         return await self.engine.stop_calm()
 
+    # ---------- tenants added at runtime (the admin API created them; their key comes with the call) ----------
+    def add_tenant(self, persona: Persona) -> None:
+        if persona.id in self.cfg.personas and persona.id not in self.added:
+            raise LabError(409, f"tenant {persona.id!r} is configured in tenantguard.yaml")
+        self.cfg.personas[persona.id] = persona
+        self.added.add(persona.id)
+        self.engine.start_tenant(persona.id)
+
+    async def remove_tenant(self, tid: str) -> None:
+        if tid not in self.added:
+            raise LabError(404 if tid not in self.cfg.personas else 409,
+                           f"tenant {tid!r} was not added at runtime" if tid in self.cfg.personas else f"unknown tenant {tid!r}")
+        for a in [a for a in self.attacks.values() if a.status.tenant == tid and a.status.state == "running"]:
+            await self.stop_attack(a.status.attack_id)
+        await self.engine.stop_tenant(tid)
+        del self.cfg.personas[tid]
+        self.added.discard(tid)
+
     # ---------- attacks ----------
     def _validate(self, req: AttackReq) -> None:
+        if req.attack in WAVE2:
+            raise LabError(501, f"attack {req.attack!r} ships in Wave 2")
         if req.attack not in RUNNERS:  # pragma: no cover - contract and RUNNERS cover every name
             raise LabError(501, f"attack {req.attack!r} not implemented")
-        if req.attack in SERVER_ATTACKS:
-            if not req.server:
-                raise LabError(422, f"attack {req.attack!r} needs a server")
-            if req.server not in self.cfg.workers:
-                raise LabError(404, f"unknown server {req.server!r}")
-            return
         if not req.tenant:
             raise LabError(422, f"attack {req.attack!r} needs a tenant")
         if req.tenant not in self.cfg.personas:
@@ -100,8 +113,7 @@ class Lab(ScenarioDriver):
 
     @property
     def isolated(self) -> bool:
-        """Attacks run in their own process unless client.attack_isolation is 'inline' (tests, mocks).
-        Server attacks (faulty_server) always run inline: they send two admin calls, no traffic."""
+        """Attacks run in their own process unless client.attack_isolation is 'inline' (tests, mocks)."""
         return self.cfg.client.get("attack_isolation", "process") == "process" and self.engine.transport is None
 
     async def launch(self, req: AttackReq) -> AttackStatus:
@@ -109,7 +121,7 @@ class Lab(ScenarioDriver):
         attack_id = f"atk-{uuid.uuid4().hex[:8]}"
         ctx = AttackCtx(attack_id=attack_id, engine=self.engine, req=req, stop=asyncio.Event())
         proc: Optional[ProcessAttack] = None
-        if self.isolated and req.attack not in SERVER_ATTACKS:
+        if self.isolated:
             proc = ProcessAttack(self.cfg, ctx, self.recorder)
             try:
                 await proc.start()            # returns once the attack traffic is really running
@@ -123,7 +135,7 @@ class Lab(ScenarioDriver):
         self.attacks[attack_id] = entry
         entry.task = asyncio.ensure_future(self._supervise(entry))
         log.info("attack %s started%s: %s on %s x%.2f for %.0fs", attack_id, f" (pid {proc.proc.pid})" if proc else "",
-                 req.attack, req.tenant or req.server, req.intensity, req.duration_s)
+                 req.attack, req.tenant, req.intensity, req.duration_s)
         self._prune_attacks()
         return status
 
@@ -152,8 +164,7 @@ class Lab(ScenarioDriver):
                 runner.cancel()
             except Exception:  # noqa: BLE001 - keep the lab alive, log the attack failure
                 log.exception("attack %s failed", ctx.attack_id)
-            if ctx.req.tenant is not None:
-                await self.engine.close_pool(ctx.tenant, ctx.attack_id)
+            await self.engine.close_pool(ctx.tenant, ctx.attack_id)
             self._finish(entry)
 
     def _finish(self, entry: AttackEntry) -> None:
@@ -252,8 +263,7 @@ class Lab(ScenarioDriver):
     def start_run(self, req: RunReq) -> RunInfo:
         if self.current_run is not None and self.current_run.state == "running":
             raise LabError(409, f"run {self.current_run.run_id} is in progress")
-        # A faulty server has no attacker: every tenant is a victim and nobody should be blamed.
-        attacker = None if req.scenario in SERVER_ATTACKS else (req.tenant or self.cfg.default_attacker)
+        attacker = req.tenant or self.cfg.default_attacker
         self._validate(AttackReq(attack=req.scenario, tenant=attacker, server=req.server, intensity=req.intensity))
         tl = self.timeline(req)
         info = RunInfo(run_id=f"run-{uuid.uuid4().hex[:8]}", req=req, attacker=attacker)
@@ -266,7 +276,6 @@ class Lab(ScenarioDriver):
     async def _run(self, info: RunInfo, tl: Timeline) -> None:
         try:
             marks = await run_timeline(self, info.req, info.attacker, tl)
-            info.marks = marks
             info.phase = "computing"
             ttd = await self.time_to_detect(marks, info.attacker)
             result = compute_result(

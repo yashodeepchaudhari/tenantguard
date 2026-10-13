@@ -47,6 +47,9 @@ export function Layout() {
           <NavLink to="/" end className={tab}>
             Control Room
           </NavLink>
+          <NavLink to="/pool" className={tab}>
+            Pool
+          </NavLink>
           <NavLink to="/tenants" className={tab}>
             Tenants
           </NavLink>

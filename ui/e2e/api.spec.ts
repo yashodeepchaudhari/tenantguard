@@ -33,15 +33,17 @@ test.describe('gateway', () => {
     expect(Number(cpu)).toBeGreaterThanOrEqual(0)
   })
 
-  test('admin tenants list has 12 tenants with barcodes and quotas', async ({ request }) => {
+  test('admin tenants list has the 12 seeded tenants (plus any added), each in one project, with tier quotas', async ({ request }) => {
     const r = await request.get(`${URLS.gateway}/admin/tenants`, { headers: TOKEN_HEADER })
     expect(r.status()).toBe(200)
     const list = await r.json()
-    expect(list).toHaveLength(12)
+    expect((list as { id: string }[]).map((t) => t.id)).toEqual(expect.arrayContaining('ABCDEFGHIJKL'.split('')))
     for (const t of list) {
-      expect(t.servers).toHaveLength(3)
-      for (const k of ['rate_rps', 'burst', 'cost_ms_per_s', 'concurrency']) expect(isNum(t.quota[k]), `${t.id} quota.${k}`).toBe(true)
+      expect(typeof t.project).toBe('string')
+      expect(Array.isArray(t.replicas)).toBe(true)
+      for (const k of ['rate_rps', 'burst', 'concurrency']) expect(isNum(t.quota[k]), `${t.id} quota.${k}`).toBe(true)
       expect(t).not.toHaveProperty('api_key')
+      expect(t).not.toHaveProperty('key_sha256')
     }
   })
 })
@@ -54,7 +56,7 @@ test.describe('brain', () => {
     expect(s.type).toBe('state')
     expect(isNum(s.ts)).toBe(true)
     expect(MODES).toContain(s.mode)
-    expect(s.tenants).toHaveLength(12)
+    expect((s.tenants as { tenant: string }[]).map((t) => t.tenant)).toEqual(expect.arrayContaining('ABCDEFGHIJKL'.split('')))
     for (const t of s.tenants) {
       for (const k of ['p95_ms', 'rps', 'rejected_rps', 'cpu_share', 'noisy_score', 'noisy_norm', 'factor']) expect(isNum(t[k]), `${t.tenant}.${k}`).toBe(true)
       expect(LEVELS).toContain(t.level)
@@ -63,15 +65,37 @@ test.describe('brain', () => {
       expect(t.noisy_norm).toBeGreaterThanOrEqual(0)
       expect(t.noisy_norm).toBeLessThanOrEqual(1)
     }
-    const fleet = s.servers.filter((x: { server: string }) => /^w\d$/.test(x.server))
-    expect(fleet).toHaveLength(9)
-    for (const x of s.servers) expect(['healthy', 'slow', 'drained']).toContain(x.status)
+    // v2: every server is a replica of one project; the pool view names them
+    for (const x of s.servers) {
+      expect(['healthy', 'slow', 'drained']).toContain(x.status)
+      expect(typeof x.project).toBe('string')
+    }
+    expect(s.pool.projects.length).toBeGreaterThanOrEqual(1)
+    expect(new Set(s.tenants.map((t: { project: string }) => t.project))).toEqual(new Set(s.pool.projects.map((p: { id: string }) => p.id).filter((id: string) => s.tenants.some((t: { project: string }) => t.project === id))))
     expect(s.utilization).toBeGreaterThanOrEqual(0)
     expect(s.utilization).toBeLessThanOrEqual(1)
     expect(s.fairness).toBeGreaterThanOrEqual(0)
     expect(s.fairness).toBeLessThanOrEqual(1)
     expect(typeof s.status_sentence).toBe('string')
     expect(typeof s.noisy_thresholds).toBe('object')
+  })
+
+  test('/api/pool: floors within the usable pool, allocation within cap', async ({ request }) => {
+    const r = await request.get(`${URLS.brain}/api/pool`)
+    expect(r.status()).toBe(200)
+    const p = await r.json()
+    expect(p.floors_cpu).toBeLessThanOrEqual(p.usable_cpu + 1e-6)
+    expect(p.usable_cpu).toBeLessThanOrEqual(p.pool.cpu_total)
+    for (const x of p.projects) {
+      expect(x.floor_cpu).toBeLessThanOrEqual(x.cap_cpu)
+      expect(x.alloc_cpu).toBeLessThanOrEqual(x.cap_cpu + 1e-6)
+      for (const rep of x.replicas) expect(['starting', 'ready', 'draining']).toContain(rep.state)
+    }
+  })
+
+  test('brain admin API needs the control token', async ({ request }) => {
+    const r = await request.post(`${URLS.brain}/admin/projects`, { data: { id: 'x', name: 'x', tier: 'free', floor_cpu: 0.1, cap_cpu: 1, warm_min: 1 } })
+    expect(r.status()).toBe(401)
   })
 
   test('/api/incidents is a list of IncidentEvents', async ({ request }) => {

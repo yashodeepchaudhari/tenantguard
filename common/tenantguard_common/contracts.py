@@ -25,56 +25,54 @@ H_REQUEST_ID = "X-Request-Id"
 # Header set by the worker on every response: handler CPU ms spent on this request,
 # as a decimal float string, e.g. "12.375". Background-job CPU is NOT included (Wave 1).
 H_CPU_MS = "X-TenantGuard-Cpu-Ms"
+# Gateway -> worker: the replica id the request was routed to (v2; replicas are created on demand).
+H_REPLICA = "X-TenantGuard-Replica"
 # Required on every gateway /admin/* and /control/* request (brain, UI, lab send it).
 # Value = env TENANTGUARD_CONTROL_TOKEN (default "dev"); compare with hmac.compare_digest. Missing/wrong -> 401.
 H_CONTROL_TOKEN = "X-TenantGuard-Control-Token"
 
 
-# ---------- 0. Tenancy / admin (gateway /admin/*) ----------
+# ---------- 0. Tenancy / admin ----------
 class Quota(BaseModel):
+    """Per-tenant request limits from the project's tier. CPU is limited per project by the replicas'
+    cgroups (v2), so there is no per-tenant CPU bucket."""
     rate_rps: float          # token bucket refill, requests/s
     burst: int               # token bucket capacity, requests
-    cost_ms_per_s: float     # cost bucket refill, CPU-ms per second (capacity = tenantguard.yaml gateway.cost_bucket_s seconds worth)
     concurrency: int         # max in-flight requests
 
 
 class TenantConfig(BaseModel):
-    """Input for POST /admin/tenants and the layout file. Never returned by the API (has api_key)."""
+    """A tenant as seeded from tenantguard.yaml `tenants` (v2). Carries the demo plaintext key, so it is never
+    returned by an API. Tier and quota come from the tenant's project."""
     id: str                  # "A".."L"
     name: str
-    tier: Tier
-    servers: List[str]       # barcode, e.g. ["w0","w1","w2"]
-    api_key: str             # demo plaintext key; gateway stores sha256 only
-    weight: float            # scheduler weight (from tier)
-    quota: Quota             # configured plan quota (PATCH changes this)
+    project: str             # owning project id (exactly one, invariant I1)
+    tier: Tier               # = the project's tier
+    api_key: str             # demo plaintext key; only its sha256 leaves the brain
+    weight: float = 1.0      # DRR weight inside the project (tenants share a project equally)
+    quota: Quota
     monthly_revenue_rs: int = 0
     protected: bool = False
-    sla_p95_ms: float = 100.0  # end-to-end p95 promised to this tenant (layout); used for SLA credits
+    sla_p95_ms: float = 100.0  # end-to-end p95 promised to this tenant; used for SLA credits
 
 
 class TenantAdminView(BaseModel):
-    """Output of GET /admin/tenants (list) and GET /admin/tenants/{id}."""
+    """Output of gateway GET /admin/tenants (list) and GET /admin/tenants/{id}."""
     id: str
     name: str
+    project: str
     tier: Tier
-    servers: List[str]
+    replicas: List[str]              # ready replicas of the tenant's project, rendezvous order for this tenant
     weight: float
-    quota: Quota                     # configured quota (after PATCH)
+    quota: Quota
     effective_quota: Quota           # quota after the active LimitsCmd factor
     factor: float = 1.0
     weight_factor: float = 1.0
     blocked: bool = False
-    placement: str = "normal"        # normal | spare | quarantine | wN (relocation target)
+    pinned_to: Optional[str] = None  # replica the tenant is pinned to during a split test
     override_expires_at: Optional[float] = None
     monthly_revenue_rs: int = 0
     protected: bool = False
-
-
-class QuotaPatch(BaseModel):
-    rate_rps: Optional[float] = None
-    burst: Optional[int] = None
-    cost_ms_per_s: Optional[float] = None
-    concurrency: Optional[int] = None
 
 
 class ModeBody(BaseModel):
@@ -83,7 +81,8 @@ class ModeBody(BaseModel):
 
 # ---------- 1. Telemetry (gateway -> brain, WS /internal/telemetry, every tick_ms) ----------
 class Cell(BaseModel):
-    """Requests of one tenant served by one server during the last tick (server-side latency, excludes queue wait)."""
+    """Requests of one tenant served by one replica during the last tick (server-side latency, excludes queue wait).
+    `server` is the replica id (v2)."""
     tenant: str
     server: str
     count: int
@@ -104,6 +103,8 @@ class QueueStat(BaseModel):
     expired_503: int             # dropped after bounded wait, or batch shed under saturation
     retries: int = 0             # requests identified as retries (repeated Idempotency-Key, or a repeat of a request that failed with 429/503/5xx in the last retry_budget.window_s)
     inflight: int
+    queued_cost_ms: float = 0.0  # sum of the reference cost of the tenant's queued requests now (v2 demand signal)
+    refused_cost_ms: float = 0.0 # reference cost of requests refused or expired during the tick (v2 demand signal)
 
 
 class LimiterStat(BaseModel):
@@ -149,6 +150,7 @@ class WorkerStats(BaseModel):
     started_at: float            # process start; a change means counters reset
     cpu_total_ms: float          # whole process tree, cumulative
     blackbox_cpu_ms: float = 0.0 # unattributed "vendor indexer" CPU, cumulative (Wave 2)
+    docs_by_tenant: Dict[str, int] = Field(default_factory=dict)   # docs handed to the black box per tenant, cumulative (v2 attribution)
     cpu_limit_cores: float = 0.5 # container CPU limit (worker fills from tenantguard.yaml worker.cpus / env), for cpu_pct
     mem_mb: float
     fault: Optional[dict] = None
@@ -162,62 +164,23 @@ class ControlBase(BaseModel):
     ttl_s: float = 60.0           # gateway reverts the override after this many seconds
 
 
-class RouteWeightsCmd(ControlBase):
-    weights: Dict[str, Dict[str, float]]      # tenant -> server -> weight (normalized by gateway)
-
-
-class RelocateCmd(ControlBase):
-    tenant: str
-    cls: Optional[str] = None                 # None = whole tenant
-    target: Optional[str] = None              # "spare" | "quarantine" | "wN"; None = clear relocation
-
-
 class LimitsCmd(ControlBase):
-    """Throttle / deprioritize one tenant.
+    """Throttle / deprioritize one tenant. Travels inside the brain's Snapshot (v2).
 
     - The latest command for a tenant REPLACES the previous one (both factors) and restarts the TTL.
-    - Base = the tenant's current configured quota (after any PATCH), not the tier default.
     - Effective int fields = max(1, round(base * factor)); floats = base * factor.
-    - factor == 1.0 and weight_factor == 1.0 clears the override immediately.
-    - Gateway returns 400 if factor <= 0 or factor > 1, or weight_factor <= 0 or > 1
-      (checked by hand in the handler; do NOT add Field constraints here, they would give 422).
-    - SENDERS MUST ALWAYS SEND BOTH factors from their current state; an omitted field
-      defaults to 1.0 and silently un-throttles that dimension.
+    - factor == 1.0 and weight_factor == 1.0 means no override.
+    - Both factors must be in (0, 1].
     """
     tenant: str
-    factor: float = 1.0                       # multiplies rate, burst, cost and concurrency
-    weight_factor: float = 1.0                # multiplies scheduler weight
-
-
-class DrainCmd(ControlBase):
-    server: str
-    drained: bool = True
+    factor: float = 1.0                       # multiplies rate, burst and concurrency
+    weight_factor: float = 1.0                # multiplies the tenant's DRR weight inside its project
 
 
 class BlockCmd(ControlBase):
+    """Operator block (handoff approval) -> gateway POST /control/block."""
     tenant: str
     blocked: bool = True                      # blocked=false clears immediately
-
-
-class ReferenceCostsCmd(BaseModel):
-    costs: Dict[str, float]                   # cls -> reference CPU ms
-
-
-class ChargeCmd(BaseModel):
-    """Brain -> gateway POST /control/charge: CPU a tenant used OUTSIDE the request path (background jobs), debited from its cost bucket.
-
-    Not an override: no TTL, applied once, only in `tenantguard` mode (otherwise acked with detail "ignored: mode").
-    Gateway returns 400 if cpu_ms < 0 or not finite, or the tenant is unknown.
-    `charge_id` makes resends idempotent (the gateway remembers the last 1024 ids); None = always apply.
-    """
-    tenant: str
-    cpu_ms: float                 # CPU ms to debit
-    period_s: float = 1.0         # interval the charge covers (informational, for metrics)
-    charge_id: Optional[str] = None
-
-
-class Heartbeat(BaseModel):
-    ts: float                                 # sender's clock; gateway uses its OWN receive time for fail-static
 
 
 class ControlAck(BaseModel):
@@ -229,11 +192,10 @@ class OverridesView(BaseModel):
     """Output of gateway GET /admin/overrides."""
     limits: Dict[str, LimitsCmd] = Field(default_factory=dict)        # tenant -> active cmd
     blocks: Dict[str, BlockCmd] = Field(default_factory=dict)
-    relocations: List[RelocateCmd] = Field(default_factory=list)
-    route_weights: Dict[str, Dict[str, float]] = Field(default_factory=dict)
-    drains: Dict[str, DrainCmd] = Field(default_factory=dict)
+    pins: Dict[str, str] = Field(default_factory=dict)                # tenant -> replica (split test)
     expires_at: Dict[str, float] = Field(default_factory=dict)       # "<kind>:<key>" -> epoch s
-    last_heartbeat_age_s: Optional[float] = None
+    snapshot_version: Optional[int] = None
+    last_snapshot_age_s: Optional[float] = None
     fail_static: bool = False
 
 
@@ -250,15 +212,17 @@ class TenantView(BaseModel):
     noisy_norm: float             # 0..1 = min(1, noisy_score / brain.noisy.quarantine), for bars
     level: Level
     factor: float = 1.0           # current throttle factor applied
-    placement: str = "normal"     # normal | spare | quarantine | wN (same values as TenantAdminView)
+    project: str = ""
 
 
 class ServerView(BaseModel):
-    server: str
+    """One replica (v2)."""
+    server: str                   # replica id
     p95_ms: float                 # server-side p95 over the last 2 s
-    peer_ratio: float             # p95 / median p95 of other servers (Wave 2; 1.0 until then)
-    cpu_pct: float                # 0..100 of the container CPU limit (cpu_limit_cores)
-    status: Literal["healthy", "slow", "drained"]
+    peer_ratio: float = 1.0       # p95 / median p95 of the project's other replicas (1.0 if alone)
+    cpu_pct: float                # 0..100 of the replica's CPU cap
+    status: Literal["healthy", "slow", "drained"]   # drained = draining before stop
+    project: str = ""
 
 
 class ImpactView(BaseModel):
@@ -277,12 +241,13 @@ class StateSnapshot(BaseModel):
     mode: Mode
     tenants: List[TenantView]
     servers: List[ServerView]
-    utilization: float            # 0..1 of fleet CPU limit (w0..w8)
+    utilization: float            # 0..1 of the pool's CPU (v2)
     fairness: float               # Jain index 0..1 over per-tenant (completed rps / weight) of active tenants
     status_sentence: str
     brain_ok: bool = True
     impact: Optional[ImpactView] = None
     noisy_thresholds: Dict[str, float] = Field(default_factory=dict)   # e.g. {"warn":1.5,"throttle":2.0,"quarantine":4.0} from brain.noisy; UI must use these, not its own copies
+    pool: Optional["PoolView"] = None   # v2: pool, projects, allocations, replicas
 
 
 Stage = Literal["detected", "level_change", "rescued", "named", "proving",
@@ -488,66 +453,6 @@ class OperatorCmd(BaseModel):
     case_id: Optional[str] = None
 
 
-# ---------- 7. Billing (billing service on :8600, read-only) ----------
-class BillLine(BaseModel):
-    kind: Literal["compute", "background", "db", "unmetered", "sla_credit"]
-    description: str                      # plain English, no other tenant named
-    cpu_ms: float = 0.0
-    rate_rs_per_cpu_s: float = 0.0
-    amount_rs: float                      # negative for credits
-    evidence: dict = Field(default_factory=dict)   # unmetered: {incident_id, confidence, servers, excess_cpu_ms}; sla_credit: {violation_s, pct}
-
-
-class BillView(BaseModel):
-    """Billing GET /bills (list) and GET /bills/{tenant}."""
-    tenant: str
-    name: str
-    tier: Tier
-    period_start: float
-    period_end: float
-    requests: int
-    measured_cpu_ms: float                # handler + bg as measured
-    billed_cpu_ms: float                  # after calm-reference pricing
-    contention_waived_cpu_ms: float       # measured - billed (>= 0): contention we did not charge
-    db_ms: float
-    sla_p95_ms: float
-    sla_violation_s: float
-    sla_credit_pct: float
-    lines: List[BillLine]
-    subtotal_rs: float
-    credits_rs: float                     # <= 0
-    total_rs: float
-    incident_refs: List[str] = Field(default_factory=list)   # own incidents: brain ids; suffered as victim: opaque "ref-<8 hex>"
-
-
-WhyCause = Literal["none", "neighbor", "host_fault", "own_usage", "unknown"]
-
-
-class WhyEpisode(BaseModel):
-    start: float
-    end: float
-    cause: WhyCause
-    servers_affected: int                 # of this tenant's servers
-    servers_total: int
-    worst_p95_ms: float
-    violation_s: float
-    mitigated_after_s: Optional[float] = None   # detected -> rescued (or -> first throttle of the culprit)
-    sentence: str
-
-
-class WhyView(BaseModel):
-    """Billing GET /why/{tenant}. Never names another tenant."""
-    tenant: str
-    window_start: float
-    window_end: float
-    slow: bool
-    sla_p95_ms: float
-    violation_s: float
-    credit_pct: float
-    episodes: List[WhyEpisode]
-    sentence: str
-
-
 # ---------- 8. Incident narrator (narrator :8700, read-only consumer of the brain) ----------
 class IncidentReport(BaseModel):
     """Operator-facing report, built deterministically from the evidence pack."""
@@ -576,3 +481,120 @@ class ReportView(BaseModel):
     created_at: float                             # epoch s
     updated_at: float
 
+
+# ---------- 9. v2: pool, projects, replicas, snapshot (brain admin API and brain -> gateway) ----------
+ReplicaState = Literal["starting", "ready", "draining"]
+
+
+class PoolSpec(BaseModel):
+    """Capacity the admin gives TenantGuard (PUT /admin/pool). No credits: real cores and MB."""
+    cpu_total: float
+    mem_total_mb: int
+    headroom_ratio: float = 0.10
+
+
+class ProjectSpec(BaseModel):
+    """POST /admin/projects. Tier sets the project's weight and its tenants' request quota."""
+    id: str                       # ^[a-z0-9-]{1,32}$
+    name: str
+    tier: Tier
+    floor_cpu: float              # guaranteed cores
+    cap_cpu: float                # max cores
+    warm_min: int = 1             # replicas kept while idle; 0 = may sleep
+
+
+class ProjectPatch(BaseModel):
+    name: Optional[str] = None
+    tier: Optional[Tier] = None
+    floor_cpu: Optional[float] = None
+    cap_cpu: Optional[float] = None
+    warm_min: Optional[int] = None
+
+
+class TenantCreate(BaseModel):
+    """POST /admin/projects/{project}/tenants. api_key None = generate one (returned once)."""
+    id: str
+    name: str
+    api_key: Optional[str] = None
+    monthly_revenue_rs: int = 0
+    protected: bool = False
+    sla_p95_ms: float = 100.0
+
+
+class TenantCreated(BaseModel):
+    tenant: str
+    project: str
+    api_key: str                  # shown once; only the sha256 is stored
+
+
+class ReplicaView(BaseModel):
+    id: str                       # tg-<project>-<n>
+    project: str
+    url: str
+    state: ReplicaState
+    borrowed: bool = False        # above the project's own allowance; drained first when memory is needed
+    nano_cpus: int = 0            # cpu.max (1e9 = one core)
+    cpu_shares: int = 0           # cpu.weight
+    mem_mb: int = 0
+    started_at: float = 0.0
+    tenants: List[str] = Field(default_factory=list)   # tenants this replica was started for (TENANTGUARD_TENANTS)
+
+
+class SnapTenant(BaseModel):
+    id: str
+    name: str
+    project: str
+    tier: Tier
+    key_sha256: str
+    weight: float = 1.0
+    quota: Quota
+    monthly_revenue_rs: int = 0
+    protected: bool = False
+    sla_p95_ms: float = 100.0
+
+
+class Snapshot(BaseModel):
+    """Brain -> gateway POST /control/snapshot, every control tick and on change; GET /snapshot on the brain.
+    The gateway swaps it in atomically. Receiving one also proves the brain is alive (fail-static)."""
+    version: int
+    issued_at: float
+    tenants: List[SnapTenant]
+    replicas: Dict[str, List[ReplicaView]]    # project -> replicas (gateway routes only to state == ready)
+    limits: List[LimitsCmd] = Field(default_factory=list)
+    pins: Dict[str, str] = Field(default_factory=dict)   # tenant -> replica id, only during a split test
+    pin_ttl_s: float = 30.0
+
+
+class WakeCmd(BaseModel):
+    """Gateway -> brain POST /control/wake: a project with no ready replica got a request."""
+    project: str
+
+
+class ProjectView(BaseModel):
+    id: str
+    name: str
+    tier: Tier
+    weight: float
+    floor_cpu: float
+    cap_cpu: float
+    warm_min: int
+    tenants: List[str]
+    demand_cpu: float = 0.0
+    used_cpu: float = 0.0         # measured CPU, cores
+    base_cpu: float = 0.0
+    loan_cpu: float = 0.0
+    alloc_cpu: float = 0.0
+    state: Literal["asleep", "waking", "warm", "busy"] = "warm"
+    replicas: List[ReplicaView] = Field(default_factory=list)
+
+
+class PoolView(BaseModel):
+    pool: PoolSpec
+    usable_cpu: float
+    usable_mem_mb: int
+    floors_cpu: float
+    reserved_mem_mb: int          # memory of running replicas
+    projects: List[ProjectView]
+
+
+StateSnapshot.model_rebuild()

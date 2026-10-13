@@ -27,7 +27,7 @@ describe('status colours', () => {
   })
 
   it('server cells: slow red, hot amber, drained grey', () => {
-    const sv = { server: 'w1', p95_ms: 10, peer_ratio: 1, cpu_pct: 40, status: 'healthy' as const }
+    const sv = { server: 'tg-media-1', project: 'media', p95_ms: 10, peer_ratio: 1, cpu_pct: 40, status: 'healthy' as const }
     expect(serverStatus(sv)).toBe('ok')
     expect(serverStatus({ ...sv, cpu_pct: 90 })).toBe('warn')
     expect(serverStatus({ ...sv, status: 'slow' })).toBe('bad')

@@ -11,7 +11,7 @@ redefines anything it contains. The models themselves are documented field by fi
 | `common/pyproject.toml` | 12 | package metadata |
 | `common/tenantguard_common/__init__.py` | 0 | package marker (empty) |
 | `common/tenantguard_common/config.py` | 42 | load `tenantguard.yaml`, the layout, and worker URLs |
-| `common/tenantguard_common/contracts.py` | 578 | every cross-service message model, header and enumeration |
+| `common/tenantguard_common/contracts.py` | 539 | every cross-service message model, header and enumeration |
 
 ```mermaid
 flowchart LR
@@ -23,7 +23,7 @@ flowchart LR
     ENV -.-> LT
     ENV -.-> WU
     LT --> TC[contracts.TenantConfig + Quota]
-    LS --> SVC[gateway, worker, brain, lab, billing, handoff, narrator, demo driver]
+    LS --> SVC[gateway, worker, brain, lab, handoff, narrator, demo driver]
     LT --> SVC
     WU --> SVC
 ```
@@ -60,9 +60,9 @@ it was installed from) and is overridden by env `TENANTGUARD_ROOT` (every Docker
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
 | `ROOT` (module constant) | `Path` | repository root: env `TENANTGUARD_ROOT`, else `Path(__file__).resolve().parents[2]` | `load_settings`, `load_tenants` |
-| `load_settings` | `load_settings() -> Dict[str, Any]` | reads and parses `tenantguard.yaml` (path override env `TENANTGUARD_CONFIG`) with `yaml.safe_load`, UTF-8 | `worker/app/config.py`, `gateway/tenantguard_gateway/app.py` and `__main__.py`, `brain/tenantguard_brain/settings.py`, `lab/tenantguard_lab/settings.py`, `integrations/handoff/tenantguard_handoff/app.py` and `__main__.py`, `narrator/tenantguard_narrator/app.py` and `__main__.py`, `billing/tenantguard_billing/settings.py`, `tools/demo.py`, and service tools (`brain/tools/fake_gateway.py`, `gateway/tools/prove*.py`) |
-| `load_tenants` | `load_tenants(settings: Dict[str, Any] \| None = None) -> List[TenantConfig]` | reads the layout JSON named by `settings["layout"]` (path override env `TENANTGUARD_LAYOUT`); for each tenant looks up its tier in `settings["tiers"]` and builds a `TenantConfig` with the tier's `weight` and `Quota` filled in. Loads the settings itself when none are given | `worker/app/config.py` (allow-list of tenant ids), gateway (identity, quotas), brain (barcodes, weights, names), lab (personas), handoff (case titles, neighbours), narrator, billing (tenants and per-tenant `sla_p95_ms`); tools `brain/tools/*.py`, `gateway/tools/prove*.py`, `lab/tools/stub_gateway.py` |
-| `worker_urls` | `worker_urls(settings: Dict[str, Any] \| None = None) -> Dict[str, str]` | server name → base URL. Env `TENANTGUARD_WORKER_URLS="w0=http://...,w1=..."` (set by docker-compose to the container names) overrides `settings["workers"]` | gateway (routing), brain (`/stats` and canary polling, server grid), lab, billing, `tools/demo.py` (fault fallback), `lab/tools/stub_gateway.py`, `brain/tools/fake_gateway.py` |
+| `load_settings` | `load_settings() -> Dict[str, Any]` | reads and parses `tenantguard.yaml` (path override env `TENANTGUARD_CONFIG`) with `yaml.safe_load`, UTF-8 | `worker/app/config.py`, `gateway/tenantguard_gateway/app.py` and `__main__.py`, `brain/tenantguard_brain/settings.py`, `lab/tenantguard_lab/settings.py`, `integrations/handoff/tenantguard_handoff/app.py` and `__main__.py`, `narrator/tenantguard_narrator/app.py` and `__main__.py`, `tools/demo.py`, and service tools (`brain/tools/fake_gateway.py`, `gateway/tools/prove*.py`) |
+| `load_tenants` | `load_tenants(settings: Dict[str, Any] \| None = None) -> List[TenantConfig]` | reads the layout JSON named by `settings["layout"]` (path override env `TENANTGUARD_LAYOUT`); for each tenant looks up its tier in `settings["tiers"]` and builds a `TenantConfig` with the tier's `weight` and `Quota` filled in. Loads the settings itself when none are given | `worker/app/config.py` (allow-list of tenant ids), gateway (identity, quotas), brain (barcodes, weights, names), lab (personas), handoff (case titles, neighbours), narrator; tools `brain/tools/*.py`, `gateway/tools/prove*.py`, `lab/tools/stub_gateway.py` |
+| `worker_urls` | `worker_urls(settings: Dict[str, Any] \| None = None) -> Dict[str, str]` | server name → base URL. Env `TENANTGUARD_WORKER_URLS="w0=http://...,w1=..."` (set by docker-compose to the container names) overrides `settings["workers"]` | gateway (routing), brain (`/stats` and canary polling, server grid), lab, `tools/demo.py` (fault fallback), `lab/tools/stub_gateway.py`, `brain/tools/fake_gateway.py` |
 
 **Key decisions**
 - One file for every tunable: services read thresholds, ports and URLs through `load_settings()` instead
@@ -90,9 +90,9 @@ Module constants and type aliases:
 | `Level` | `Literal["normal","warn","throttle","deprioritize","quarantine","blocked"]` | throttle-ladder level | brain, handoff, narrator |
 | `Stage` | `Literal[...]` (9 values) | incident stage | brain, `IncidentEvent`, `ReportView` |
 | `AttackName` | `Literal[...]` (10 values) | lab attack names | lab |
-| `Verdict` | `Literal["costly_pattern","over_plan","honest_growth","host_fault","mitigated_no_blame"]` | incident verdict | brain (`verdicts.py`, `stage3.py`), handoff, narrator |
+| `Verdict` | `Literal[...]` (5 values) | incident verdict | handoff, narrator |
 | `Severity`, `CaseStatus`, `CaseDecision`, `ActionState` | `Literal[...]` | handoff case vocabulary | handoff |
-| `WhyCause` | `Literal["none","neighbor","host_fault","own_usage","unknown"]` | "Why was I slow?" cause | billing |
+| `WhyCause` | `Literal["none","neighbor","host_fault","own_usage","unknown"]` | "Why was I slow?" cause | billing (in progress) |
 | `H_TENANT` | `"X-TenantGuard-Tenant"` | tenant header set by the gateway | gateway, worker, lab |
 | `H_CLASS` | `"X-TenantGuard-Class"` | request-class header | gateway, worker |
 | `H_REQUEST_ID` | `"X-Request-Id"` | correlation header | gateway, lab |
@@ -105,7 +105,7 @@ Models (all subclass `pydantic.BaseModel`; "Called by" = the services that const
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
 | `Quota` | `class Quota(BaseModel)` | rate / burst / cost / concurrency limits of a plan | `config.load_tenants`, gateway |
-| `TenantConfig` | `class TenantConfig(BaseModel)` | one tenant from the layout (includes `api_key`; `sla_p95_ms` default 100, the end-to-end p95 promised to the tenant, used for SLA credits; `layouts/ag23.json` sets it per tenant) | `config.load_tenants`; gateway `POST /admin/tenants`; brain, lab, handoff, narrator, worker (ids) |
+| `TenantConfig` | `class TenantConfig(BaseModel)` | one tenant from the layout (includes `api_key`, `sla_p95_ms` default 100) | `config.load_tenants`; gateway `POST /admin/tenants`; brain, lab, handoff, narrator, worker (ids) |
 | `TenantAdminView` | `class TenantAdminView(BaseModel)` | admin view of a tenant with override state, no key | gateway `/admin/tenants`; UI |
 | `QuotaPatch` | `class QuotaPatch(BaseModel)` | partial quota update | gateway `PATCH /admin/tenants/{id}/quota`; UI |
 | `ModeBody` | `class ModeBody(BaseModel)` | mode get/set body | gateway `/admin/mode`; brain, UI, lab, demo driver |
@@ -123,13 +123,13 @@ Models (all subclass `pydantic.BaseModel`; "Called by" = the services that const
 | `DrainCmd` | `class DrainCmd(ControlBase)` | drain or undrain a server | brain → gateway |
 | `BlockCmd` | `class BlockCmd(ControlBase)` | block or unblock a tenant | brain, handoff → gateway |
 | `ReferenceCostsCmd` | `class ReferenceCostsCmd(BaseModel)` | class → reference CPU table | gateway accepts; no sender on `master` |
-| `ChargeCmd` | `class ChargeCmd(BaseModel)` | one-off CPU debit outside the request path, idempotent by `charge_id` | brain sends each tenant's background CPU once per second (tenantguard mode only) → gateway `POST /control/charge` |
+| `ChargeCmd` | `class ChargeCmd(BaseModel)` | one-off CPU debit outside the request path, idempotent by `charge_id` | gateway accepts; no sender on `master` |
 | `Heartbeat` | `class Heartbeat(BaseModel)` | brain liveness for fail-static | brain (every 500 ms) → gateway |
 | `ControlAck` | `class ControlAck(BaseModel)` | result of a control or operator call | gateway, brain |
 | `OverridesView` | `class OverridesView(BaseModel)` | active overrides + expiries + heartbeat age | gateway `GET /admin/overrides`; brain, UI |
 | `TenantView` | `class TenantView(BaseModel)` | per-tenant live view | brain → UI |
 | `ServerView` | `class ServerView(BaseModel)` | per-server live view | brain → UI |
-| `ImpactView` | `class ImpactView(BaseModel)` | business impact counters | brain `impact.py` fills the optional `StateSnapshot.impact`; the UI does not read it (it keeps its own client-side meter) |
+| `ImpactView` | `class ImpactView(BaseModel)` | business impact counters | defined; optional in `StateSnapshot`, not filled on `master` |
 | `StateSnapshot` | `class StateSnapshot(BaseModel)` | 2 Hz live state (`type="state"`) | brain WS `/ws/events`, `GET /api/state`; UI, handoff, narrator |
 | `Suspect` | `class Suspect(BaseModel)` | named tenant + confidence | brain, inside `IncidentEvent` |
 | `IncidentEvent` | `class IncidentEvent(BaseModel)` | one incident stage (`type="incident"`) | brain; UI, handoff, narrator |
@@ -140,20 +140,18 @@ Models (all subclass `pydantic.BaseModel`; "Called by" = the services that const
 | `RunReq` | `class RunReq(BaseModel)` | scripted calm → attack → calm run | lab `POST /lab/run` |
 | `PhaseP99` | `class PhaseP99(BaseModel)` | p99 per phase | inside `RunResult` |
 | `RunResult` | `class RunResult(BaseModel)` | one measured run, written to `lab/results/*.json` | lab; UI scorecard, demo driver |
-| `CellStats` | `class CellStats(BaseModel)` | one scenario × mode in a scorecard summary: runs, failed runs, victim p99 median and mean per phase, detect / recover medians and counts, attacker 429 / 503 medians, brain-checked and culprit-named runs, innocents penalised (union) and their run count, run files | lab `scorecard.py` |
-| `CrashSummary` | `class CrashSummary(BaseModel)` | `lab/results/summary-<ts>.json` written by `python -m tenantguard_lab scorecard`: lab and brain URLs, scenarios, modes, runs per cell, attacker, intensity, calm / attack seconds (20 / 40 default), `cells`, skipped | lab `scorecard.py` |
 | `CaseContext` | `class CaseContext(BaseModel)` | verdict, affected tenants, evidence link, summary | handoff |
 | `CaseAction` | `class CaseAction(BaseModel)` | one decision request with deadline and state | handoff |
 | `CaseHistoryItem` | `class CaseHistoryItem(BaseModel)` | one history line | handoff |
 | `CaseView` | `class CaseView(BaseModel)` | a handoff case | handoff `GET /cases`; UI |
 | `OperatorCmd` | `class OperatorCmd(BaseModel)` | human release / extend / resume for the ladder | handoff → brain `POST /api/operator` |
-| `BillLine` | `class BillLine(BaseModel)` | one bill line | billing `bill.py` |
-| `BillView` | `class BillView(BaseModel)` | a tenant's bill (includes the tenant's `sla_p95_ms`) | billing `bill.py`; `GET /bills`, `GET /bills/{tenant}` |
-| `WhyEpisode` | `class WhyEpisode(BaseModel)` | one explained slowdown | billing `bill.py` |
-| `WhyView` | `class WhyView(BaseModel)` | anonymised "Why was I slow?" answer (includes `sla_p95_ms`) | billing `bill.py`; `GET /why/{tenant}` |
+| `BillLine` | `class BillLine(BaseModel)` | one bill line | billing service (in progress) |
+| `BillView` | `class BillView(BaseModel)` | a tenant's bill | billing service (in progress) |
+| `WhyEpisode` | `class WhyEpisode(BaseModel)` | one explained slowdown | billing service (in progress) |
+| `WhyView` | `class WhyView(BaseModel)` | anonymised "Why was I slow?" answer | billing service (in progress) |
 | `IncidentReport` | `class IncidentReport(BaseModel)` | operator report | narrator |
 | `CustomerMessage` | `class CustomerMessage(BaseModel)` | anonymised customer message | narrator |
-| `ReportView` | `class ReportView(BaseModel)` | versioned report per incident | narrator `GET /reports`, WS `/ws/reports`; checked by the UI's Playwright API spec (no UI page reads it) |
+| `ReportView` | `class ReportView(BaseModel)` | versioned report per incident | narrator `GET /reports`, WS `/ws/reports`; UI |
 
 The models have no methods of their own; validation comes from field types and a few `Field`
 constraints (`FaultReq`, `AttackReq`, `RunReq`). `LimitsCmd` deliberately has **no** `Field`

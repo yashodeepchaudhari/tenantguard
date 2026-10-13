@@ -29,9 +29,9 @@ def render_metrics(gw: "Gateway") -> str:
     for m in ("off", "industry", "tenantguard"):
         out.append(f"tenantguard_mode{_labels(mode=m)} {int(gw.mode == m)}")
 
-    head("tenantguard_requests_total", "counter", "Requests forwarded and completed, by tenant, server and status class.")
+    head("tenantguard_requests_total", "counter", "Requests forwarded and completed, by tenant, replica and status class.")
     for (tenant, server, code), n in sorted(t.c_requests.items()):
-        out.append(f"tenantguard_requests_total{_labels(tenant=tenant, server=server, code=code)} {n}")
+        out.append(f"tenantguard_requests_total{_labels(tenant=tenant, replica=server, code=code)} {n}")
 
     head("tenantguard_admitted_total", "counter", "Requests admitted into the queue.")
     for tenant, n in sorted(t.c_admitted.items()):
@@ -54,14 +54,10 @@ def render_metrics(gw: "Gateway") -> str:
     for tenant, n in sorted(t.c_retries.items()):
         out.append(f"tenantguard_retries_total{_labels(tenant=tenant)} {n}")
 
-    head("tenantguard_charged_cpu_ms_total", "counter", "Background CPU ms charged by the brain (control/charge).")
-    for tenant, v in sorted(t.c_charged_ms.items()):
-        out.append(f"tenantguard_charged_cpu_ms_total{_labels(tenant=tenant)} {v:.3f}")
-
     head("tenantguard_cpu_header_missing_total", "counter",
-         "Worker responses without a usable CPU header (cost debited 0), by tenant and server.")
+         "Worker responses without a usable CPU header (no cost update), by tenant and replica.")
     for (tenant, server), n in sorted(t.c_cpu_missing.items()):
-        out.append(f"tenantguard_cpu_header_missing_total{_labels(tenant=tenant, server=server)} {n}")
+        out.append(f"tenantguard_cpu_header_missing_total{_labels(tenant=tenant, replica=server)} {n}")
 
     head("tenantguard_request_duration_ms", "histogram", "End-to-end latency (queue + upstream), ms.")
     for tenant, h in sorted(t.h_e2e.items()):
@@ -74,41 +70,38 @@ def render_metrics(gw: "Gateway") -> str:
         out.append(f"tenantguard_request_duration_ms_sum{_labels(tenant=tenant)} {t.h_e2e_sum[tenant]:.3f}")
         out.append(f"tenantguard_request_duration_ms_count{_labels(tenant=tenant)} {cum}")
 
-    head("tenantguard_queue_depth", "gauge", "Requests queued at the gateway, by lane.")
+    head("tenantguard_queue_depth", "gauge", "Requests queued at the gateway, by project and lane.")
     head("tenantguard_tenant_inflight", "gauge", "Requests forwarded upstream and not yet answered.")
-    head("tenantguard_cost_bucket_ms", "gauge", "Current cost-bucket level (CPU ms; negative = in debt).")
     head("tenantguard_throttle_factor", "gauge", "Active LimitsCmd factor (1 = none).")
     ids = gw.registry.ids()
-    for tenant in ids:
-        for lane, sched in gw.lanes.items():
-            out.append(f"tenantguard_queue_depth{_labels(tenant=tenant, lane=lane)} {sched.depth(tenant)}")
+    for project, lanes in sorted(gw.queues.items()):
+        for lane, sched in lanes.items():
+            out.append(f"tenantguard_queue_depth{_labels(project=project, lane=lane)} {sched.total()}")
     for tenant in ids:
         out.append(f"tenantguard_tenant_inflight{_labels(tenant=tenant)} {gw.registry.get(tenant).inflight}")
     for tenant in ids:
-        out.append(f"tenantguard_cost_bucket_ms{_labels(tenant=tenant)} {gw.registry.get(tenant).cost.level_ms:.3f}")
-    for tenant in ids:
         out.append(f"tenantguard_throttle_factor{_labels(tenant=tenant)} {gw.factors(tenant)[0]}")
 
-    head("tenantguard_worker_window", "gauge", "Dispatch concurrency window per worker.")
-    head("tenantguard_worker_inflight", "gauge", "Requests in flight per worker.")
+    head("tenantguard_replica_window", "gauge", "Dispatch concurrency window per replica.")
+    head("tenantguard_replica_inflight", "gauge", "Requests in flight per replica.")
     stats = gw.limiter_stats()
     for ls in stats:
-        out.append(f"tenantguard_worker_window{_labels(server=ls.server)} {ls.window}")
+        out.append(f"tenantguard_replica_window{_labels(replica=ls.server)} {ls.window}")
     for ls in stats:
-        out.append(f"tenantguard_worker_inflight{_labels(server=ls.server)} {ls.inflight}")
-    head("tenantguard_worker_min_rtt_ms", "gauge", "Gradient limiter baseline: min worker-side excess latency.")
+        out.append(f"tenantguard_replica_inflight{_labels(replica=ls.server)} {ls.inflight}")
+    head("tenantguard_replica_min_rtt_ms", "gauge", "Gradient limiter baseline: min replica-side excess latency.")
     for ls in stats:
-        mr = gw.limiters[ls.server].min_rtt
-        if mr is not None:
-            out.append(f"tenantguard_worker_min_rtt_ms{_labels(server=ls.server)} {mr:.3f}")
+        lim = gw.limiters.get(ls.server)
+        if lim is not None and lim.min_rtt is not None:
+            out.append(f"tenantguard_replica_min_rtt_ms{_labels(replica=ls.server)} {lim.min_rtt:.3f}")
 
     head("tenantguard_loop_lag_ms", "gauge", "How late the last telemetry tick woke up (event-loop saturation).")
     out.append(f"tenantguard_loop_lag_ms {gw.loop_lag_ms:.3f}")
 
-    age = gw.overrides.heartbeat_age()
-    head("tenantguard_fail_static", "gauge", "1 when no control heartbeat within fail_static_after_s.")
+    age = gw.overrides.snapshot_age()
+    head("tenantguard_fail_static", "gauge", "1 when no brain snapshot within fail_static_after_s.")
     out.append(f"tenantguard_fail_static {int(gw.overrides.fail_static(gw.s.fail_static_after_s))}")
     if age is not None:
-        head("tenantguard_heartbeat_age_seconds", "gauge", "Seconds since the last control heartbeat.")
-        out.append(f"tenantguard_heartbeat_age_seconds {age:.3f}")
+        head("tenantguard_snapshot_age_seconds", "gauge", "Seconds since the last brain snapshot.")
+        out.append(f"tenantguard_snapshot_age_seconds {age:.3f}")
     return "\n".join(out) + "\n"

@@ -32,9 +32,7 @@ export function worst(statuses: Status[]): Status {
   return statuses.reduce<Status>((a, b) => (rank(b) > rank(a) ? b : a), 'idle')
 }
 
-export const FLEET = ['w0', 'w1', 'w2', 'w3', 'w4', 'w5', 'w6', 'w7', 'w8']
-
-/** Server cell: slow = red, CPU >= 85 % = amber, drained = grey (hatched in the grid). */
+/** Replica cell: slow = red, CPU >= 85 % of its cap = amber, drained (starting / draining) = grey, hatched. */
 export function serverStatus(s: ServerView | undefined): Status {
   if (!s || s.status === 'drained') return 'idle'
   if (s.status === 'slow') return 'bad'
@@ -46,7 +44,7 @@ export function fairnessStatus(f: number): Status {
   return f >= 0.9 ? 'ok' : f >= 0.75 ? 'warn' : 'bad'
 }
 
-/** Fleet CPU utilization 0..1: headroom matters, so high is bad. */
+/** Pool CPU utilization 0..1: headroom matters, so high is bad. */
 export function utilizationStatus(u: number): Status {
   return u < 0.7 ? 'ok' : u < 0.85 ? 'warn' : 'bad'
 }

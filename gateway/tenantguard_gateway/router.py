@@ -1,55 +1,32 @@
-"""Pick one of a tenant's servers. Pure."""
+"""Pick a replica of the tenant's project: split-test pin, else rendezvous (highest random weight) hashing. Pure.
+
+Rendezvous: every (tenant, replica) pair gets a stable 64-bit hash; the tenant goes to the replica with the
+highest one. Adding a replica moves only the tenants that now hash highest to it (about 1/(n+1) of them), a
+removed replica moves only its own tenants, so caches stay warm while the project scales. If the first choice
+has no free slot the request spills to the next replica in the same order.
+"""
 from __future__ import annotations
 
-import random
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
-
-Candidates = List[Tuple[str, float]]
+import hashlib
+from typing import Callable, List, Optional, Sequence
 
 
-def candidates(servers: Sequence[str], known: Iterable[str], weights: Optional[Dict[str, float]] = None,
-               relocation: Optional[str] = None, drained: Optional[Set[str]] = None) -> Candidates:
-    """Weighted candidate servers for one request.
-
-    - relocation target (if a known server) wins outright;
-    - route weights (if given) replace the default equal weights and may include servers outside the barcode;
-    - drained servers are skipped, but a request is never black-holed: if every candidate is drained or
-      zero-weight we fall back to the undrained barcode, then to the whole barcode.
-    """
-    known = set(known)
-    drained = drained or set()
-    if relocation and relocation in known:
-        return [(relocation, 1.0)]
-    base = [s for s in servers if s in known]
-    if weights:
-        order = base + sorted(s for s in weights if s not in base and s in known)
-        w = [(s, float(weights.get(s, 0.0))) for s in order]
-    else:
-        w = [(s, 1.0) for s in base]
-    pos = [(s, x) for s, x in w if x > 0 and s not in drained]
-    if not pos:
-        pos = [(s, 1.0) for s in base if s not in drained]
-    if not pos:
-        pos = [(s, 1.0) for s in base]
-    return pos
+def hash64(tenant: str, replica: str) -> int:
+    return int.from_bytes(hashlib.blake2b(f"{tenant}|{replica}".encode("utf-8"), digest_size=8).digest(), "big")
 
 
-def choose(cands: Candidates, has_capacity: Callable[[str], bool] = lambda s: True,
-           rng: Optional[random.Random] = None) -> Optional[str]:
-    """Weighted random pick among candidates that have dispatch capacity; None if all are full."""
-    free = [(s, w) for s, w in cands if has_capacity(s)]
-    if not free:
-        return None
-    if len(free) == 1:
-        return free[0][0]
-    r = (rng or random).random() * sum(w for _, w in free)
-    for s, w in free:
-        r -= w
-        if r < 0:
-            return s
-    return free[-1][0]
+def rank(tenant: str, replicas: Sequence[str]) -> List[str]:
+    """The tenant's replicas, most preferred first."""
+    return sorted(replicas, key=lambda r: hash64(tenant, r), reverse=True)
 
 
-def normalize(weights: Dict[str, float]) -> Dict[str, float]:
-    tot = sum(weights.values())
-    return {s: w / tot for s, w in weights.items()} if tot > 0 else dict(weights)
+def choose(tenant: str, ready: Sequence[str], has_capacity: Callable[[str], bool],
+           pin: Optional[str] = None) -> Optional[str]:
+    """Pinned replica if it is ready (if full, the request waits for it), else the first replica in rendezvous
+    order with a free slot. None = nothing ready or everything full."""
+    if pin is not None and pin in ready:
+        return pin if has_capacity(pin) else None
+    for r in rank(tenant, ready):
+        if has_capacity(r):
+            return r
+    return None

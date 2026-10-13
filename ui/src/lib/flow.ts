@@ -1,28 +1,27 @@
-// Routing model for the flow view (pure, unit tested): where would the gateway send this
-// tenant's next request? Mirrors gateway routing: relocation first, else route weights
-// (tenantguard mode), else equal weights over the barcode; drained servers are skipped unless
-// every candidate is drained (the gateway never black-holes a tenant).
-import type { Mode, OverridesView, ServerView } from '../types.ts'
+// Routing model for the flow view (pure, unit tested): where does the gateway send this tenant's
+// next request? A tenant only ever goes to its own project's ready replicas. A split-test pin wins;
+// otherwise the gateway's rendezvous hash keeps each tenant on one replica (spilling only when it is
+// full). The UI cannot compute the gateway's blake2b ranking, so it spreads a tenant evenly over its
+// project's ready replicas: the picture shows which replicas a tenant can reach, not the exact one.
+import type { Mode, OverridesView, PoolView, ReplicaView, TenantView } from '../types.ts'
 
 export interface Route {
-  server: string
+  server: string // replica id
   weight: number // normalized 0..1
 }
 
-export function tenantRoutes(tenant: string, barcode: string[], ov: OverridesView | null): Route[] {
-  const reloc = ov?.relocations?.find((r) => r.tenant === tenant && !r.cls && r.target)
-  if (reloc?.target) return [{ server: reloc.target, weight: 1 }]
-  const drained = new Set(Object.entries(ov?.drains ?? {}).filter(([, d]) => d.drained).map(([s]) => s))
-  const rw = ov?.route_weights?.[tenant]
-  let cand: Route[] = rw ? Object.entries(rw).map(([server, weight]) => ({ server, weight })) : barcode.map((server) => ({ server, weight: 1 }))
-  const alive = cand.filter((r) => !drained.has(r.server))
-  if (alive.length && alive.some((r) => r.weight > 0)) cand = alive
-  const total = cand.reduce((a, r) => a + Math.max(0, r.weight), 0)
-  return total > 0 ? cand.map((r) => ({ server: r.server, weight: Math.max(0, r.weight) / total })) : []
+export const ready = (rs: ReplicaView[] = []) => rs.filter((r) => r.state === 'ready')
+
+export function tenantRoutes(tenant: string, replicas: ReplicaView[], pins: Record<string, string> | undefined): Route[] {
+  const ids = ready(replicas).map((r) => r.id)
+  const pin = pins?.[tenant]
+  if (pin && ids.includes(pin)) return [{ server: pin, weight: 1 }]
+  return ids.map((server) => ({ server, weight: 1 / ids.length }))
 }
 
-export function routeTable(tenants: string[], barcodes: Record<string, string[]>, ov: OverridesView | null): Record<string, Route[]> {
-  return Object.fromEntries(tenants.map((t) => [t, tenantRoutes(t, barcodes[t] ?? [], ov)]))
+export function routeTable(tenants: TenantView[], pool: PoolView | null | undefined, ov: OverridesView | null): Record<string, Route[]> {
+  const byProject = new Map((pool?.projects ?? []).map((p) => [p.id, p.replicas]))
+  return Object.fromEntries(tenants.map((t) => [t.tenant, tenantRoutes(t.tenant, byProject.get(t.project) ?? [], ov?.pins)]))
 }
 
 /** Weighted pick with u in [0, 1). */
@@ -35,27 +34,24 @@ export function pickServer(routes: Route[], u: number): string | null {
   return routes.length ? routes[routes.length - 1].server : null
 }
 
-export interface RerouteHint {
-  kind: 'rerouted' | 'refused' | 'off'
+export interface FlowHint {
+  kind: 'split' | 'lending' | 'refused' | 'off'
   text: string
 }
 
-/**
- * Why the flow view does (or does not) show reroute lines right now.
- * During an attack the gateway's limits usually refuse the excess before any server gets slow,
- * so no rescue (rerouting) is needed: say so, instead of letting the missing blue lines look broken.
- */
-export function rerouteHint(ov: OverridesView | null, attacking: boolean, mode: Mode, servers: ServerView[]): RerouteHint | null {
-  const rw = ov?.route_weights ?? {}
-  const steered = new Set([...Object.keys(rw), ...(ov?.relocations ?? []).map((r) => r.tenant)])
-  if (steered.size) {
-    const avoided = new Set<string>()
-    for (const w of Object.values(rw)) for (const [sv, v] of Object.entries(w)) if (v <= 0) avoided.add(sv)
-    if (!avoided.size) for (const x of servers) if (x.status === 'slow') avoided.add(x.server)
-    const around = avoided.size ? ` around ${[...avoided].sort().join(', ')}` : ''
-    return { kind: 'rerouted', text: `↷ ${steered.size} tenant${steered.size === 1 ? '' : 's'} rerouted${around}` }
+/** One line under the flow view that says what the brain is doing to the routing right now. */
+export function flowHint(ov: OverridesView | null, attacking: boolean, mode: Mode, pool: PoolView | null | undefined): FlowHint | null {
+  const pins = Object.entries(ov?.pins ?? {})
+  if (pins.length) {
+    const targets = [...new Set(pins.map(([, r]) => r))].sort()
+    return { kind: 'split', text: `split test: ${pins.length} tenant${pins.length === 1 ? '' : 's'} pinned to ${targets.join(' / ')}` }
+  }
+  const lending = (pool?.projects ?? []).filter((p) => p.loan_cpu > 0.005)
+  if (lending.length) {
+    const what = lending.map((p) => `${p.id} +${p.loan_cpu.toFixed(2)} cores`).join(', ')
+    return { kind: 'lending', text: `idle CPU lent: ${what}` }
   }
   if (!attacking) return null
-  if (mode === 'off') return { kind: 'off', text: 'mode OFF: no limits and no rerouting, the attack reaches the servers' }
-  return { kind: 'refused', text: 'no rerouting needed: the excess is refused at the gateway (red ✕)' }
+  if (mode === 'off') return { kind: 'off', text: 'mode OFF: no limits, the attack reaches its project’s replicas' }
+  return { kind: 'refused', text: 'the excess is refused at the gateway (red ✕); other projects never see it' }
 }

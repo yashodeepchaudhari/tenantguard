@@ -10,6 +10,8 @@ export function NoisyBars({ tenants, thresholds }: { tenants: TenantView[]; thre
     { at: thresholds.throttle / q, label: `throttle ${thresholds.throttle}×`, colour: STATUS_HEX.bad },
   ]
   const sorted = [...tenants].sort((a, b) => b.noisy_norm - a.noisy_norm || a.tenant.localeCompare(b.tenant))
+  // label column fits the longest tenant id (ids added on the Pool page can be longer than one letter), up to 5 characters
+  const idCh = Math.min(5, Math.max(1, ...tenants.map((t) => t.tenant.length)))
   return (
     <div className="flex h-full flex-col">
       <div className="panel-title">Noisy score · × fair share</div>
@@ -20,7 +22,9 @@ export function NoisyBars({ tenants, thresholds }: { tenants: TenantView[]; thre
           const w = Math.max(0, Math.min(1, t.noisy_norm)) * 100
           return (
             <div key={t.tenant} className="flex min-h-0 items-center gap-2 leading-none" data-testid={`noisy-${t.tenant}`}>
-              <span className="w-5 text-base font-bold leading-none text-ink-100">{t.tenant}</span>
+              <span className="shrink-0 truncate text-base font-bold leading-none text-ink-100" style={{ width: `${idCh + 0.6}ch` }} title={t.tenant}>
+                {t.tenant}
+              </span>
               <div className="relative h-3 flex-1 rounded bg-ink-800">
                 <div className="h-full rounded transition-[width] duration-300" style={{ width: `${w}%`, background: colour }} />
                 {marks.map((m) => (

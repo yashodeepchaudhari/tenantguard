@@ -4,6 +4,7 @@ import { LiveProvider } from './lib/live.tsx'
 import { CaseFile } from './pages/CaseFile.tsx'
 import { Cases } from './pages/Cases.tsx'
 import { ControlRoom } from './pages/ControlRoom.tsx'
+import { Pool } from './pages/Pool.tsx'
 import { Scorecard } from './pages/Scorecard.tsx'
 import { Tenants } from './pages/Tenants.tsx'
 
@@ -14,6 +15,7 @@ export default function App() {
         <Routes>
           <Route element={<Layout />}>
             <Route index element={<ControlRoom />} />
+            <Route path="pool" element={<Pool />} />
             <Route path="tenants" element={<Tenants />} />
             <Route path="case" element={<Cases />} />
             <Route path="case/:incidentId" element={<CaseFile />} />

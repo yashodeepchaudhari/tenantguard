@@ -74,7 +74,7 @@ class EvidenceBook:
         me = self.tenants.get(t or "")
         if not me:
             return []
-        return sorted(x.id for x in self.tenants.values() if x.id != me.id and set(me.servers) & set(x.servers))
+        return sorted(x.id for x in self.tenants.values() if x.id != me.id and x.project == me.project)
 
     def pack(self, incident_id: str) -> Optional[dict]:
         inc = self.incidents.get(incident_id)

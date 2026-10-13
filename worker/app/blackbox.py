@@ -18,7 +18,7 @@ import os
 import queue as queue_mod
 import threading
 import time
-from typing import Optional
+from typing import Dict, Optional
 
 import psutil
 
@@ -75,6 +75,7 @@ class BlackBox:
         self._done_before = 0       # docs processed by children that already exited
         self.accepted = 0
         self.dropped = 0
+        self.docs_by_tenant: Dict[str, int] = {}   # docs accepted per tenant (lets the brain split this CPU)
         self.restarts = 0
         self._started_at = 0.0
         self._quick_deaths = 0
@@ -161,13 +162,15 @@ class BlackBox:
             self._monitor.join(timeout=2)
 
     # ---- API ----
-    def submit(self, docs: int) -> dict:
+    def submit(self, docs: int, tenant: str = "") -> dict:
         with self._lock:
             pending = self._enqueued - self._processed.value
             take = max(0, min(docs, self.queue_max - pending))
             if take:
                 self._q.put(take)
                 self._enqueued += take
+                if tenant:
+                    self.docs_by_tenant[tenant] = self.docs_by_tenant.get(tenant, 0) + take
             self.accepted += take
             self.dropped += docs - take
             return {"accepted": take, "dropped": docs - take, "queued": pending + take}

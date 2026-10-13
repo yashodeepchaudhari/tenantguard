@@ -42,7 +42,7 @@ def test_slowdown_and_floor():
 def test_victim_impact_mean_over_neighbours_and_clipped():
     slow = {"A": 1.0, "B": 0.5, "C": 9.0, "K": 0.0}
     vi, victims = victim_impact("K", slow, ["A", "C"])
-    assert vi == 2.0                      # each victim clipped to 3 first: mean(1, 3) = 2
+    assert vi == 3.0                      # mean(1, 9) = 5 clipped to 3
     assert victims[0] == ("C", 9.0)
     vi, _ = victim_impact("K", slow, ["A", "B"])
     assert vi == pytest.approx(0.75)

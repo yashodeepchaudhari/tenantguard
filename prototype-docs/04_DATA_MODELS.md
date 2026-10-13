@@ -16,7 +16,7 @@ Contents
 8. [Fault injection (lab → worker)](#8-fault-injection)
 9. [Traffic lab](#9-traffic-lab)
 10. [Handoff cases (partner convergence)](#10-handoff-cases)
-11. [Billing views](#11-billing-views)
+11. [Billing views (contract on master; service in progress)](#11-billing-views)
 12. [Incident narrator](#12-incident-narrator)
 13. [Configuration shapes: `tenantguard.yaml` and the layout](#13-configuration-shapes)
 14. [Worker storage: per-tenant SQLite, cache, meters](#14-worker-storage)
@@ -79,40 +79,35 @@ flowchart LR
     WK -- "X-TenantGuard-Cpu-Ms on every response" --> GW
     GW -- "TelemetryFrame (WS, every 250 ms)" --> BR[Brain :8200]
     WK -- "WorkerStats (GET /stats, 1 Hz)" --> BR
-    BR -- "LimitsCmd, BlockCmd, RouteWeightsCmd, RelocateCmd, DrainCmd, ChargeCmd, Heartbeat" --> GW
+    BR -- "LimitsCmd, BlockCmd, RouteWeightsCmd, RelocateCmd, DrainCmd, Heartbeat" --> GW
     BR -- "StateSnapshot + IncidentEvent (WS /ws/events)" --> UI[UI :5173]
     BR -- "IncidentEvent + StateSnapshot" --> HO[Handoff bridge :8400]
     BR -- "IncidentEvent + StateSnapshot" --> NR[Narrator :8700]
     HO -- "OperatorCmd" --> BR
     HO -- "BlockCmd" --> GW
     NR -- "ReportView (WS /ws/reports)" --> UI
-    WK -- "WorkerStats (GET /stats)" --> BI[Billing :8600]
-    BR -- "IncidentEvent + StateSnapshot" --> BI
-    GW -- "TenantAdminView (GET /admin/tenants)" --> BI
     UI -- "ModeBody, QuotaPatch, TenantConfig" --> GW
     UI -- "AttackReq, RunReq" --> LAB
     LAB -- "FaultReq (faulty_server)" --> WK
-    LAB -- "RunResult + CrashSummary files" --> RES[(lab/results/*.json)]
+    LAB -- "RunResult files" --> RES[(lab/results/*.json)]
 ```
 
 Which service imports each model on `master` (from the source, tests excluded):
 
 | Model | Producer | Consumers |
 |---|---|---|
-| `TenantConfig`, `Quota` | layout file via `load_tenants()`; UI `POST /admin/tenants` | gateway, brain, lab, handoff, narrator, billing |
-| `TenantAdminView`, `QuotaPatch`, `ModeBody`, `OverridesView` | gateway `/admin/*` | UI, brain (`ModeBody`, `OverridesView`), billing (`TenantAdminView`) |
+| `TenantConfig`, `Quota` | layout file via `load_tenants()`; UI `POST /admin/tenants` | gateway, brain, lab, handoff, narrator |
+| `TenantAdminView`, `QuotaPatch`, `ModeBody`, `OverridesView` | gateway `/admin/*` | UI, brain (`ModeBody`, `OverridesView`) |
 | `TelemetryFrame`, `Cell`, `QueueStat`, `LimiterStat` | gateway | brain |
-| `WorkerStats`, `TenantUsage`, `ClassCost` | worker `/stats` | brain, billing |
+| `WorkerStats`, `TenantUsage`, `ClassCost` | worker `/stats` | brain (billing service in progress) |
 | `LimitsCmd`, `BlockCmd`, `RouteWeightsCmd`, `RelocateCmd`, `DrainCmd`, `Heartbeat`, `ControlAck` | brain (`BlockCmd` also handoff) | gateway |
-| `ChargeCmd` | brain (once per second, `tenantguard` mode only) | gateway |
-| `ReferenceCostsCmd` | defined and accepted by the gateway; no service sends it on `master` | gateway |
-| `StateSnapshot`, `TenantView`, `ServerView`, `IncidentEvent`, `Suspect` | brain | UI, handoff, narrator, billing |
-| `ImpactView` | brain (`impact.py`), inside `StateSnapshot.impact` | UI (keeps its own meter as a fallback when it is missing) |
+| `ReferenceCostsCmd`, `ChargeCmd` | defined and accepted by the gateway; no sender on `master` yet | gateway |
+| `StateSnapshot`, `TenantView`, `ServerView`, `IncidentEvent`, `Suspect` | brain | UI, handoff, narrator |
+| `ImpactView` | defined; `StateSnapshot.impact` is optional and not filled by the brain on `master` | UI (falls back to its own meter) |
 | `FaultReq` | lab / demo driver / tests | worker |
-| `AttackReq`, `AttackStatus`, `LabStatus`, `RunReq`, `PhaseP99`, `RunResult` | lab | UI, demo driver, scorecard runner |
-| `CellStats`, `CrashSummary` | lab scorecard runner (`lab/tenantguard_lab/scorecard.py`) | people and slides (`lab/results/summary-*.json`); the UI Scorecard page groups `RunResult`s itself |
+| `AttackReq`, `AttackStatus`, `LabStatus`, `RunReq`, `PhaseP99`, `RunResult` | lab | UI, demo driver |
 | `CaseView`, `CaseContext`, `CaseAction`, `CaseHistoryItem`, `OperatorCmd` | handoff bridge | UI; brain (`OperatorCmd`) |
-| `BillLine`, `BillView`, `WhyEpisode`, `WhyView` | billing service (`GET /bills`, `/bills/{tenant}`, `/why/{tenant}`) | any HTTP client; the UI does not call billing |
+| `BillLine`, `BillView`, `WhyEpisode`, `WhyView` | billing service (**in progress**, not on `master`) | UI (planned) |
 | `IncidentReport`, `CustomerMessage`, `ReportView` | narrator | UI |
 
 ---
@@ -196,7 +191,7 @@ demo API key, so it is never returned by an API.
 | `quota` | `Quota` | | configured plan quota, filled from the tier; `PATCH` changes it |
 | `monthly_revenue_rs` | int | 0 | what the tenant pays per month (used for impact numbers) |
 | `protected` | bool | False | protected customer (shown in the UI and cases) |
-| `sla_p95_ms` | float | 100.0 | end-to-end p95 promised to this tenant. The layout sets it for every tenant (40 to 150 ms, see §13). Used by billing for SLA credits and by the brain's health floor (`brain.health.sla_fraction` × the strictest SLA on a server) |
+| `sla_p95_ms` | float | 100.0 | end-to-end p95 promised to this tenant (used for SLA credits). The layout on `master` sets no per-tenant value, so every tenant has 100 ms; per-tenant targets are **in progress** on a coordinator branch |
 
 ### `TenantAdminView`
 Output of `GET /admin/tenants` and `GET /admin/tenants/{id}`: the configured tenant plus the state of
@@ -482,8 +477,8 @@ classDiagram
 ### Other control messages
 | Model | Endpoint | Fields | Semantics |
 |---|---|---|---|
-| `ReferenceCostsCmd` | `/control/reference_costs` | `costs`: class → reference CPU ms | the latest table replaces the previous one (values finite and > 0); applied in `tenantguard` mode. No service sends it on `master` |
-| `ChargeCmd` | `/control/charge` | `tenant`, `cpu_ms`, `period_s` (informational), `charge_id` | debit CPU a tenant used outside the request path from its cost bucket. Not an override (no TTL), applied once, only in `tenantguard` mode; `charge_id` makes resends idempotent (the gateway remembers the last 1024). `cpu_ms < 0`, not finite, or unknown tenant → 400. Outside `tenantguard` mode it is acknowledged with detail `ignored: mode`. **Sender:** the brain, once per `brain.charge_s` (1 s), one command per tenant with background-job CPU in that period, `charge_id` = `<tenant>-<epoch s>`; a failed send is folded into the next period's charge |
+| `ReferenceCostsCmd` | `/control/reference_costs` | `costs`: class → reference CPU ms | the latest table replaces the previous one (values finite and > 0); applied in `tenantguard` mode. No sender on `master` yet |
+| `ChargeCmd` | `/control/charge` | `tenant`, `cpu_ms`, `period_s` (informational), `charge_id` | debit CPU a tenant used outside the request path from its cost bucket. Not an override (no TTL), applied once, only in `tenantguard` mode; `charge_id` makes resends idempotent (the gateway remembers the last 1024). `cpu_ms < 0`, not finite, or unknown tenant → 400. No sender on `master` yet |
 | `Heartbeat` | `/control/heartbeat` | `ts` (sender clock) | the brain sends it every 500 ms; the gateway uses its **own** receive time. With no heartbeat for `gateway.fail_static_after_s` (2 s) the gateway keeps its last configuration (fail-static) |
 | `ControlAck` | response of every `/control/*` | `ok`, `detail` | acceptance and a plain-English detail |
 | `OverridesView` | `GET /admin/overrides` | active `limits` and `blocks` (tenant → command), `relocations`, `route_weights`, `drains` (server → command), `expires_at` (`"<kind>:<key>"` → epoch s), `last_heartbeat_age_s`, `fail_static` | the gateway's current override state |
@@ -575,7 +570,7 @@ classDiagram
 | `fairness` | float | 0..1 | Jain's index over per-tenant (completed rps ÷ weight) of active tenants |
 | `status_sentence` | str | | one plain-English line for the dashboard |
 | `brain_ok` | bool | | the brain's own health |
-| `impact` | `ImpactView` or null | | filled by the brain (`impact.py`) |
+| `impact` | `ImpactView` or null | | optional; not filled by the brain on `master` |
 | `noisy_thresholds` | dict | | e.g. `{"warn":1.5,"throttle":2.0,"quarantine":4.0}` from `brain.noisy`; the UI must use these, not copies |
 
 ### `TenantView`
@@ -620,9 +615,9 @@ One stage of an incident. Every action stores its reason in `detail`.
 | `level`, `prev_level` | `Level` or null | new and previous ladder level (`level_change`) |
 | `suspects` | list[`Suspect`] | named culprits with `confidence` 0..1 |
 | `verdict` | str or null | one of `Verdict` when decided |
-| `action` | str or null | the control command taken, in words (e.g. `RelocateCmd target=spare` on `proving`, `DrainCmd w4` for a host test, the verdict's action on `verdict`) |
+| `action` | str or null | the control command taken, in words |
 | `detail` | str | plain-English reason (may name tenants: operator-facing) |
-| `report` | dict or null | structured evidence. On `named`: `{p_slow, confidence, host_suspects, culprits:[{tenant, confidence, covers}]}`, or `{host_suspects: [], held_hosts: {server: [tenants]}}` when a slow server is held for a hot tenant. On a tenant `verdict`: `{verdict, evidence, readings}` (the `Evidence` fields and the proof readings: pre/post slowdown, spare CPU, spare peer ratio, footprint). On a host `verdict`: `{verdict, server, idle_ratio}` |
+| `report` | dict or null | structured evidence, e.g. on `named`: `{p_slow, confidence, host_suspects, culprits:[{tenant, confidence, covers}]}` |
 
 ---
 
@@ -693,69 +688,21 @@ classDiagram
         +int attacker_503 = 0
         +str file = ""
     }
-    class CellStats {
-        +AttackName scenario
-        +Mode mode
-        +int runs
-        +int failed_runs = 0
-        +PhaseP99 victim_p99_ms_median
-        +PhaseP99 victim_p99_ms_mean
-        +float time_to_detect_s_median
-        +int detected_runs = 0
-        +float time_to_recover_s_median
-        +int recovered_runs = 0
-        +float attacker_429_median = 0.0
-        +float attacker_503_median = 0.0
-        +int brain_checked_runs = 0
-        +int culprit_named_runs = 0
-        +List~str~ innocents_penalised
-        +int innocents_penalised_runs = 0
-        +List~str~ run_files
-    }
-    class CrashSummary {
-        +float created_at
-        +str lab_url
-        +str brain_url
-        +List~AttackName~ scenarios
-        +List~Mode~ modes
-        +int runs_per_cell
-        +str attacker
-        +float intensity = 1.0
-        +float calm_s = 20
-        +float attack_s = 40
-        +bool aggregate_only = False
-        +List~CellStats~ cells
-        +List~str~ skipped
-        +str file = ""
-    }
     LabStatus *-- AttackStatus
     RunResult *-- PhaseP99
-    CrashSummary *-- CellStats
-    CellStats *-- PhaseP99
 ```
 
 | Model | Endpoint | Notes |
 |---|---|---|
-| `AttackReq` | `POST /lab/attack` | `intensity` multiplies the attack's default profile (flood: 10× persona rps at 1.0; whale/hog/memory, the bombs, cache_flood, honest_spike: request rate; faulty_server: the fault's latency and CPU burn), valid 0.1..5 else 422; `duration_s` 0 < x ≤ 600; `faulty_server` uses `server` instead of `tenant` (422 when missing, 404 when unknown) |
+| `AttackReq` | `POST /lab/attack` | `intensity` multiplies the attack's default profile (flood: 10× persona rps at 1.0; whale/hog/memory: request rate), valid 0.1..5 else 422; `duration_s` 0 < x ≤ 600; `faulty_server` uses `server` instead of `tenant` |
 | `AttackStatus` | response of `POST /lab/attack`, items of `LabStatus` | `state` ∈ `running`, `stopped`, `done`; `started_at`/`ends_at` epoch s |
 | `LabStatus` | `GET /lab/status` | running attacks, whether calm traffic runs, id of the scenario run in progress |
 | `RunReq` | `POST /lab/run` | scripted calm (`calm_s`) → attack (`attack_s`) → calm, after setting the gateway mode |
 | `PhaseP99` | inside `RunResult` | p99 in ms for the baseline, attack and after phases |
 | `RunResult` | written to `lab/results/<ts>-<scenario>-<mode>.json` | `victim_p99_ms` pooled over all non-attacker tenants; `victim_p99_by_tenant`; `time_to_detect_s` (attack start → first incident event, if the brain is reachable); `time_to_recover_s` (attack start → victim p99 ≤ 1.5× baseline for 5 s); the attacker's 429/503 counts; the file path. Slide numbers come only from these files |
 
-| `CellStats` | one scenario x mode inside a `CrashSummary` | `runs` and `failed_runs`; median and mean victim p99 per phase; median time to detect / recover with the number of runs that detected / recovered; median attacker 429 and 503; `brain_checked_runs` (runs whose brain incidents could be read), `culprit_named_runs` (the brain named the attacker inside the run's marks); `innocents_penalised` (union over runs) and `innocents_penalised_runs`; the run files used |
-| `CrashSummary` | written to `lab/results/summary-<ts>.json` by `python -m tenantguard_lab scorecard` | when and against which lab and brain it ran; the scenarios, modes, runs per cell, attacker, intensity, `calm_s` / `attack_s`; `aggregate_only` (built from existing run files, no new runs); `cells`; `skipped` (scenarios the lab answered 501 for; the current lab runs all ten, so this is only filled against an older lab); the file path |
-
-**Run marks.** `GET /lab/run/{run_id}` returns the run's state, phase and, once the timeline finishes, `marks`:
-the actual epoch timestamps `t0`, `baseline_start`, `attack_start`, `attack_end`, `end`
-(`lab/tenantguard_lab/scenario.py Marks`). This is a lab view, not a contract model. The phase windows of a
-`RunResult` and the scorecard's alignment of brain incidents with a run both use these marks.
-
-Every `AttackName` has a runner in the lab (`RUNNERS` in `lab/tenantguard_lab/attacks.py`). The
-`background_bomb`, `blackbox_bomb`, `cache_flood`, `faulty_server` and `honest_spike` attacks were written
-by the team. `faulty_server` is the one server attack: it needs `server`, sends no tenant traffic and,
-in `POST /lab/run`, has no attacker (`RunResult.attacker` is null, every tenant is a victim). The lab
-answers 501 only for a name it has no runner for (`attack '<name>' not implemented`).
+The `background_bomb`, `blackbox_bomb`, `cache_flood`, `faulty_server` and `honest_spike` attacks are
+defined in `AttackName`, but on `master` the lab answers 501 for them (lab wave 2 is **in progress**).
 
 ---
 
@@ -828,10 +775,8 @@ classDiagram
 
 ## 11. Billing views
 
-The models below are in `contracts.py` (section 7) and are served, read-only, by the billing service
-(`billing/`, :8600): `GET /bills` (list), `GET /bills/{tenant}` and `GET /why/{tenant}`. It builds them from
-every worker's `WorkerStats`, the brain's incidents and state stream, the gateway's `TenantAdminView` list and
-the layout (tiers, barcodes, `sla_p95_ms`).
+The models below are on `master` in `contracts.py` (section 7). The billing service that serves them
+(`billing/`, :8600) is **in progress**: built and tested on its own branch, waiting to merge.
 
 ```mermaid
 classDiagram
@@ -953,9 +898,9 @@ flowchart TD
     Y --> S["services: gateway, brain, lab, handoff, billing, narrator -> base URL"]
     Y --> T["tiers: enterprise / pro / free -> {weight, quota: Quota}"]
     Y --> G["gateway: tick, queue waits, cost bucket, express lane, fail-static, TTL and quota bounds, retry budget, limiter"]
-    Y --> K["worker: cpus, memory, body limit, tenant budget, cache, bg threads, seed rows, blackbox, max_request_s, bg_pending, mem_baseline_mb, memory_trim_s, max_classes_per_tenant"]
-    Y --> B["brain: tick, stats poll, noisy (ladder + victim), health, rescue, proving, verdict thresholds, ttl_s, action_budget, prover, charge_s, decoder, verdicts"]
-    Y --> H["handoff: decision window, block/extend s, push timeout, retention_s, history_wire_max, history_keep, id_map_max"]
+    Y --> K["worker: cpus, memory, body limit, tenant budget, cache, bg threads, seed rows, blackbox, max_request_s, bg_pending, mem_baseline_mb"]
+    Y --> B["brain: tick, stats poll, noisy (ladder), health, rescue, proving, ttl_s, action_budget"]
+    Y --> H["handoff: decision window, block/extend s, push timeout, retention_s, history_wire_max"]
     Y --> BI["billing: poll, bucket, retention, prices per tier, ref_alpha, SLA default, credit table, unmetered confidence"]
     Y --> N["narrator: max_reports"]
 ```
@@ -977,8 +922,6 @@ The `worker:` section, read by `worker/app/config.py load_config()`:
 | `max_request_s` | 30 | `/api/export` estimate bound → 422 |
 | `bg_pending.per_tenant` / `.total` | 200 / 1000 | background backlog caps → 503 `bg_backlog` |
 | `mem_baseline_mb` | 80 | worker-wide cap = memory limit − this → 507 `worker_memory` |
-| `memory_trim_s` | 30 | period of the background `malloc_trim(0)` (glibc only; 0 disables) |
-| `max_classes_per_tenant` | 256 | class meters per tenant; further classes are counted under `other` |
 
 ### Layout file (`layouts/ag23.json`)
 Read by `load_tenants()` (path override env `TENANTGUARD_LAYOUT`), which fills `weight` and `quota`
@@ -990,8 +933,8 @@ from the tier and returns `TenantConfig` objects.
   "note": "...",
   "servers": ["w0", "...", "w8"],
   "tenants": [
-    {"id": "A", "name": "Aarogya Health", "tier": "pro", "servers": ["w0", "w1", "w2"],
-     "api_key": "tk_A_demo", "monthly_revenue_rs": 400000, "protected": true, "sla_p95_ms": 50}
+    {"id": "A", "name": "Aarogya Health", "tier": "enterprise", "servers": ["w0", "w1", "w2"],
+     "api_key": "tk_A_demo", "monthly_revenue_rs": 900000, "protected": true}
   ]
 }
 ```
@@ -1000,23 +943,24 @@ The 12 tenants on `master`. Each tenant's three servers form its **barcode**; th
 guarantees that any two tenants share at most one server, which is what lets the brain name a culprit
 from which servers are slow.
 
-| Id | Name | Tier | Servers | Monthly revenue (₹) | Protected | `sla_p95_ms` |
-|---|---|---|---|---|---|---|
-| A | Aarogya Health | pro | w0, w1, w2 | 400 000 | yes | 50 |
-| B | BazaarKart | pro | w3, w4, w5 | 250 000 | | 80 |
-| C | Chitra Studio | free | w6, w7, w8 | 0 | | 150 |
-| D | DhanSetu Payments | enterprise | w0, w3, w6 | 1 200 000 | yes | 40 |
-| E | Ekalavya Learn | pro | w1, w4, w7 | 200 000 | | 80 |
-| F | FitZone | enterprise | w2, w5, w8 | 700 000 | | 50 |
-| G | GaadiGo | free | w0, w4, w8 | 0 | | 150 |
-| H | HisaabBooks | pro | w1, w5, w6 | 150 000 | | 80 |
-| I | IdliExpress | free | w2, w3, w7 | 0 | | 150 |
-| J | JhatpatMart | enterprise | w0, w5, w7 | 1 500 000 | | 50 |
-| K | KaamKaro | pro | w1, w3, w8 | 180 000 | | 80 |
-| L | LokVani News | enterprise | w2, w4, w6 | 650 000 | | 50 |
+| Id | Name | Tier | Servers | Monthly revenue (₹) | Protected |
+|---|---|---|---|---|---|
+| A | Aarogya Health | enterprise | w0, w1, w2 | 900 000 | yes |
+| B | BazaarKart | pro | w3, w4, w5 | 250 000 | |
+| C | Chitra Studio | free | w6, w7, w8 | 0 | |
+| D | DhanSetu Payments | enterprise | w0, w3, w6 | 1 200 000 | yes |
+| E | Ekalavya Learn | pro | w1, w4, w7 | 200 000 | |
+| F | FitZone | free | w2, w5, w8 | 0 | |
+| G | GaadiGo | enterprise | w0, w4, w8 | 800 000 | |
+| H | HisaabBooks | pro | w1, w5, w6 | 150 000 | |
+| I | IdliExpress | free | w2, w3, w7 | 0 | |
+| J | JhatpatMart | enterprise | w0, w5, w7 | 1 500 000 | |
+| K | KaamKaro | pro | w1, w3, w8 | 180 000 | |
+| L | LokVani News | free | w2, w4, w6 | 0 | |
 
-The tiers are balanced so that every server carries a similar load and no server has more than two
-enterprise tenants (4 enterprise, 5 pro, 3 free).
+A rebalanced layout (tiers spread so no server carries more than two enterprise tenants, plus
+per-tenant `sla_p95_ms`) is **in progress** on a coordinator branch and merges with the brain's
+prover work.
 
 ---
 
@@ -1072,8 +1016,7 @@ and its bytes are recorded in a ledger `(evictor, victim) → bytes`.
 ### Meters (in memory)
 `worker/app/meter.py Meters`: per tenant a `Usage` record (`requests`, `handler_cpu_ms`, `bg_cpu_ms`,
 `db_ms`, `bytes_in`, `bg_jobs`) and per (tenant, class) a `[count, cpu_ms]` pair, all cumulative and
-guarded by one lock. At most `worker.max_classes_per_tenant` (256) classes are kept per tenant; further
-classes are counted under `other`. `Worker.stats()` turns them into `WorkerStats`.
+guarded by one lock. `Worker.stats()` turns them into `WorkerStats`.
 
 ---
 

@@ -6,7 +6,6 @@ RUN pip install --no-cache-dir -e /app/common
 COPY lab/requirements.txt /app/lab/requirements.txt
 RUN pip install --no-cache-dir -r /app/lab/requirements.txt
 COPY tenantguard.yaml /app/tenantguard.yaml
-COPY layouts /app/layouts
 COPY lab /app/lab
 WORKDIR /app/lab
 ENV TENANTGUARD_ROOT=/app PYTHONUNBUFFERED=1

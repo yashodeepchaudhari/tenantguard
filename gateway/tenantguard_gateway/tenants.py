@@ -1,13 +1,13 @@
-"""Tenant identity (sha256 of X-API-Key), request classes and per-tenant admission state."""
+"""Tenant identity (sha256 of X-API-Key, from the brain's snapshot), request classes and per-tenant admission state."""
 from __future__ import annotations
 
 import hashlib
 import math
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Mapping, Optional
 
-from tenantguard_common.contracts import Quota, TenantConfig
+from tenantguard_common.contracts import Quota, SnapTenant
 
-from .buckets import CostBucket, TokenBucket
+from .buckets import TokenBucket
 
 
 def hash_key(api_key: str) -> str:
@@ -23,9 +23,22 @@ def body_bucket(n: int) -> str:
     return "big"
 
 
-def request_class(method: str, path: str, query_keys: Iterable[str], body_len: int) -> str:
-    """sha1(method + path + sorted query keys + body-size bucket)[:8]."""
-    raw = "|".join([method.upper(), path, ",".join(sorted(set(query_keys))), body_bucket(body_len)])
+def size_bucket(query: Mapping[str, str], size_params: Iterable[str]) -> str:
+    """log2 bucket of every numeric size parameter, e.g. 'n=2^16': a big search is a different class."""
+    out = []
+    for k in sorted(size_params):
+        try:
+            x = float(query[k]) if k in query else None
+        except ValueError:
+            x = None
+        if x is not None and math.isfinite(x) and x >= 1:
+            out.append(f"{k}=2^{int(math.log2(x))}")
+    return ",".join(out)
+
+
+def request_class(method: str, path: str, query_keys: Iterable[str], body_len: int, size: str = "") -> str:
+    """sha1(method + path + sorted query keys + body-size bucket + size bucket)[:8]."""
+    raw = "|".join([method.upper(), path, ",".join(sorted(set(query_keys))), body_bucket(body_len), size])
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
 
 
@@ -34,29 +47,13 @@ def scale_quota(q: Quota, factor: float) -> Quota:
     if factor == 1.0:
         return q
     return Quota(rate_rps=q.rate_rps * factor, burst=max(1, round(q.burst * factor)),
-                 cost_ms_per_s=q.cost_ms_per_s * factor, concurrency=max(1, round(q.concurrency * factor)))
-
-
-def quota_problems(q: Quota, maxima: Optional[Dict[str, float]] = None) -> List[str]:
-    """Every field finite, > 0 and <= its maximum (gateway.quota_max)."""
-    errs = []
-    for name in ("rate_rps", "burst", "cost_ms_per_s", "concurrency"):
-        v = getattr(q, name)
-        hi = (maxima or {}).get(name)
-        if not (isinstance(v, (int, float)) and math.isfinite(v) and v > 0):
-            errs.append(f"{name} must be a finite number > 0")
-        elif hi is not None and v > hi:
-            errs.append(f"{name} must be <= {hi:g}")
-    return errs
+                 concurrency=max(1, round(q.concurrency * factor)))
 
 
 class TenantState:
-    def __init__(self, cfg: TenantConfig, cost_bucket_s: float, now: float):
-        self.key_hash = hash_key(cfg.api_key)
-        self.cfg = cfg.model_copy(update={"api_key": ""})   # never keep the plaintext key
-        q = cfg.quota
-        self.tokens = TokenBucket(q.rate_rps, q.burst, now)
-        self.cost = CostBucket(q.cost_ms_per_s, q.cost_ms_per_s * cost_bucket_s, now)
+    def __init__(self, cfg: SnapTenant, now: float):
+        self.cfg = cfg
+        self.tokens = TokenBucket(cfg.quota.rate_rps, cfg.quota.burst, now)
         self.pending = 0      # admitted and not finished (queued + upstream): the concurrency count
         self.inflight = 0     # forwarded upstream right now
 
@@ -64,35 +61,36 @@ class TenantState:
     def id(self) -> str:
         return self.cfg.id
 
-    def configure(self, eff: Quota, cost_bucket_s: float, now: float) -> None:
+    @property
+    def project(self) -> str:
+        return self.cfg.project
+
+    def configure(self, eff: Quota, now: float) -> None:
         if self.tokens.rate != eff.rate_rps or self.tokens.burst != eff.burst:
             self.tokens.configure(eff.rate_rps, eff.burst, now)
-        cap = eff.cost_ms_per_s * cost_bucket_s
-        if self.cost.rate != eff.cost_ms_per_s or self.cost.capacity != cap:
-            self.cost.configure(eff.cost_ms_per_s, cap, now)
 
 
 class Registry:
-    def __init__(self, cost_bucket_s: float):
-        self.cost_bucket_s = cost_bucket_s
+    """Tenants from the latest snapshot. State (buckets, counters) survives a snapshot for tenants that stay."""
+
+    def __init__(self) -> None:
         self.by_id: Dict[str, TenantState] = {}
         self.by_hash: Dict[str, TenantState] = {}
 
-    def add(self, cfg: TenantConfig, now: float) -> TenantState:
-        if cfg.id in self.by_id:
-            raise KeyError(f"tenant {cfg.id} already exists")
-        st = TenantState(cfg, self.cost_bucket_s, now)
-        if st.key_hash in self.by_hash:
-            raise KeyError("api_key already in use")
-        self.by_id[cfg.id] = st
-        self.by_hash[st.key_hash] = st
-        return st
-
-    def remove(self, tenant: str) -> Optional[TenantState]:
-        st = self.by_id.pop(tenant, None)
-        if st:
-            self.by_hash.pop(st.key_hash, None)
-        return st
+    def sync(self, tenants: List[SnapTenant], now: float) -> List[str]:
+        """Adopt the snapshot's tenants; returns the ids that were removed."""
+        keep: Dict[str, TenantState] = {}
+        for t in tenants:
+            st = self.by_id.get(t.id)
+            if st is None:
+                st = TenantState(t, now)
+            else:
+                st.cfg = t
+            keep[t.id] = st
+        gone = [t for t in self.by_id if t not in keep]
+        self.by_id = keep
+        self.by_hash = {st.cfg.key_sha256: st for st in keep.values()}
+        return gone
 
     def lookup(self, api_key: Optional[str]) -> Optional[TenantState]:
         return self.by_hash.get(hash_key(api_key)) if api_key else None

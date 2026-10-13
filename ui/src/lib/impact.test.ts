@@ -2,22 +2,22 @@ import { describe, expect, it } from 'vitest'
 import type { Level, Mode, StateSnapshot, TenantView } from '../types.ts'
 import { emptyImpact, MONTH_S, summarizeImpact, updateImpact, type ImpactContext } from './impact.ts'
 
-const tv = (tenant: string, o: Partial<TenantView> = {}): TenantView => ({
-  tenant, name: tenant, tier: 'pro', p95_ms: 20, rps: 5, rejected_rps: 0, cpu_share: 0.1,
-  noisy_score: 0.5, noisy_norm: 0.1, level: 'normal' as Level, factor: 1, placement: 'normal', ...o,
-})
-const snap = (ts: number, tenants: TenantView[], mode: Mode = 'tenantguard', slow: string[] = []): StateSnapshot => ({
-  type: 'state', ts, mode, tenants,
-  servers: ['w0', 'w1', 'w2'].map((s) => ({ server: s, p95_ms: 10, peer_ratio: 1, cpu_pct: 20, status: slow.includes(s) ? 'slow' : 'healthy' })),
-  utilization: 0.3, fairness: 0.9, status_sentence: '', brain_ok: true,
-})
 const ctx: ImpactContext = {
-  barcodes: { K: ['w1'], A: ['w0', 'w1'], B: ['w2'], C: ['w2'] },
+  projectOf: { K: 'p2', A: 'p2', B: 'p3', C: 'p3', D: 'p1' },
   revenue: { A: 2_592_000, B: 1000, C: 0, K: 5 },
   warn: 1.5,
   sloMs: 150,
   suspected: new Set(),
 }
+const tv = (tenant: string, o: Partial<TenantView> = {}): TenantView => ({
+  tenant, name: tenant, tier: 'pro', p95_ms: 20, rps: 5, rejected_rps: 0, cpu_share: 0.1,
+  noisy_score: 0.5, noisy_norm: 0.1, level: 'normal' as Level, factor: 1, project: ctx.projectOf[tenant] ?? 'x', ...o,
+})
+const snap = (ts: number, tenants: TenantView[], mode: Mode = 'tenantguard', slow: string[] = []): StateSnapshot => ({
+  type: 'state', ts, mode, tenants,
+  servers: ['p1', 'p2', 'p3'].map((p) => ({ server: `tg-${p}-1`, project: p, p95_ms: 10, peer_ratio: 1, cpu_pct: 20, status: slow.includes(p) ? 'slow' : 'healthy' })),
+  utilization: 0.3, fairness: 0.9, status_sentence: '', brain_ok: true,
+})
 
 function run(steps: StateSnapshot[], c = ctx) {
   return steps.reduce((st, s) => updateImpact(st, s, c), emptyImpact())
@@ -27,7 +27,7 @@ describe('impact meter', () => {
   it("counts a neighbour kept within SLO while K is flagged, pro rata on its revenue", () => {
     const k = tv('K', { level: 'throttle', factor: 0.5, noisy_score: 3 })
     const st = run([snap(100, [k, tv('A'), tv('B')]), snap(101, [k, tv('A'), tv('B')]), snap(102, [k, tv('A'), tv('B')])])
-    expect(st.avoidedS).toEqual({ A: 2 }) // B does not share a server with K
+    expect(st.avoidedS).toEqual({ A: 2 }) // B is in another project: K can never reach it
     expect(st.revenueRs).toBeCloseTo((2_592_000 * 2) / MONTH_S) // = 2
     const sum = summarizeImpact(st, ctx.revenue)
     expect(sum.customers).toEqual(['A'])
@@ -68,13 +68,13 @@ describe('impact meter', () => {
     expect(st.innocents).toEqual(['B'])
   })
 
-  it('only a slow server that would breach the SLO threatens its tenants; p95 0 is no data', () => {
+  it('only a slow replica that would breach the SLO threatens its project; p95 0 is no data', () => {
     const breach = (ts: number, p95: number) => {
-      const s = snap(ts, [tv('A'), tv('B', { p95_ms: 0 })], 'tenantguard', ['w0'])
-      s.servers[0].p95_ms = p95
+      const s = snap(ts, [tv('A'), tv('K', { p95_ms: 0 })], 'tenantguard', ['p2'])
+      s.servers[1].p95_ms = p95
       return s
     }
-    expect(run([breach(0, 400), breach(1, 400)]).avoidedS).toEqual({ A: 1 }) // B has no data
+    expect(run([breach(0, 400), breach(1, 400)]).avoidedS).toEqual({ A: 1 }) // K has no data
     expect(run([breach(0, 25), breach(1, 25)]).avoidedS).toEqual({}) // 'slow' at 25 ms threatens nobody
   })
 

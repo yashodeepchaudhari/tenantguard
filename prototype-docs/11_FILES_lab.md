@@ -1,19 +1,18 @@
 # 11 · Files: lab
 
-The lab (`lab/`, package `tenantguard_lab`, HTTP API on :8300) generates the traffic TenantGuard is measured against. It keeps calm traffic running for every tenant persona: open-loop Poisson arrivals with a per-tenant request mix, each tenant sending through its own keep-alive HTTP pool and its own API key. It launches and stops attack profiles against one tenant (or, for `faulty_server`, one server). It also runs scripted scenarios (set the gateway mode, then calm → attack → calm) and writes each measured `RunResult` as JSON to `lab/results/`. `settings` turns `tenantguard.yaml` and `lab/personas.yaml` into a `LabConfig`. `poisson` produces arrival times. `stats` holds the sample recorder and the percentile and recovery math. `engine` owns the HTTP pools and the calm streams. `attacks` defines the attack profiles on top of the engine. `isolation` runs one attack in a separate OS process. `scenario` holds the run timeline and the result math. `core.Lab` ties all of these together, and both the FastAPI app (`app`) and the CLI (`__main__`) are built on it. `scorecard` sits on top of the HTTP API: it runs every scenario in every mode (OFF, Industry, TenantGuard) several times and writes one `summary-*.json` from the measured runs.
+The lab (`lab/`, package `tenantguard_lab`, HTTP API on :8300) generates the traffic TenantGuard is measured against. It keeps calm traffic running for every tenant persona: open-loop Poisson arrivals with a per-tenant request mix, each tenant sending through its own keep-alive HTTP pool and its own API key. It launches and stops attack profiles against one tenant. It also runs scripted scenarios (set the gateway mode, then calm → attack → calm) and writes each measured `RunResult` as JSON to `lab/results/`. `settings` turns `tenantguard.yaml` and `lab/personas.yaml` into a `LabConfig`. `poisson` produces arrival times. `stats` holds the sample recorder and the percentile and recovery math. `engine` owns the HTTP pools and the calm streams. `attacks` defines the attack profiles on top of the engine. `isolation` runs one attack in a separate OS process. `scenario` holds the run timeline and the result math. `core.Lab` ties all of these together, and both the FastAPI app (`app`) and the CLI (`__main__`) are built on it.
 
 Module dependencies (inside the package; `tenantguard_common` is the shared library):
 - `settings` → `tenantguard_common.config`, `tenantguard_common.contracts`, PyYAML
 - `poisson` → standard library only
 - `stats` → standard library only
 - `engine` → `poisson`, `settings`, `stats`, httpx
-- `attacks` → `engine`, `poisson`, `settings`, `tenantguard_common.contracts`, httpx (for the `faulty_server` admin calls)
+- `attacks` → `engine`, `poisson`, `settings`, `tenantguard_common.contracts`
 - `isolation` → `attacks`, `settings`, `stats`, `engine` (imported inside the child process)
 - `scenario` → `stats`, `tenantguard_common.contracts`
 - `core` → `attacks`, `engine`, `isolation`, `scenario`, `settings`, `stats`, httpx
 - `app` → `core`, `settings`, FastAPI
-- `__main__` → `core`, `settings`, `app` (lazy import for `serve`), `scorecard` (lazy import for `scorecard`), httpx, uvicorn (lazy)
-- `scorecard` → `settings`, `tenantguard_common.contracts` (`AttackName`, `CellStats`, `CrashSummary`, `PhaseP99`, `RunReq`, `RunResult`), httpx, pydantic. It talks to the lab only over HTTP and never imports `core`.
+- `__main__` → `core`, `settings`, `app` (lazy import for `serve`), httpx, uvicorn (lazy)
 
 ---
 
@@ -30,7 +29,7 @@ This is the package marker. Its only content is the module docstring: "TenantGua
 ---
 
 ### lab/tenantguard_lab/__main__.py
-This is the command-line interface (`python -m tenantguard_lab ...`). It provides the subcommands `serve`, `calm`, `attack`, `stop`, `status`, `metrics`, `run`, `calibrate` and `scorecard`. `scorecard` is handed straight to `scorecard.main` before argparse runs (see below). The other commands first look for a running lab server at `LabConfig.lab_url`. If one answers `/healthz`, they drive it over HTTP so the dashboard sees the same attacks. Otherwise, or with `--local`, they build a `core.Lab` in-process.
+This is the command-line interface (`python -m tenantguard_lab ...`). It provides the subcommands `serve`, `calm`, `attack`, `stop`, `status`, `metrics`, `run` and `calibrate`. Commands first look for a running lab server at `LabConfig.lab_url`. If one answers `/healthz`, they drive it over HTTP so the dashboard sees the same attacks. Otherwise, or with `--local`, they build a `core.Lab` in-process.
 
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
@@ -43,9 +42,9 @@ This is the command-line interface (`python -m tenantguard_lab ...`). It provide
 | `_local_run` | `async _local_run(cfg: LabConfig, req: RunReq) -> int` | Calls `lab.start_run(req)`, prints the planned duration, awaits `lab.wait_run()`, and prints the `RunResult` as JSON. Returns 0 on success, or 1 with the error if `info.result is None`. | `main()` (`run` with no server or with `--local`) |
 | `_calibrate` | `async _calibrate(cfg: LabConfig, seconds: float) -> int` | Measures real fleet CPU under calm load. Fleet workers are `cfg.workers` minus `spare` and `quarantine`. Starts calm traffic, waits 3 s, snapshots each worker's `GET /stats` → `cpu_total_ms`, waits `seconds`, and snapshots again. Prints the `est_cpu_ms` estimate, measured CPU-ms/s and utilisation over reachable workers, and a suggested `rate_scale = rate_scale × target_fleet_util / util`. Returns 1 if no worker `/stats` was reachable. | `main()` (`calibrate`) |
 | `_calibrate.snap` (inner) | `async snap() -> Dict[str, float]` | Reads `cpu_total_ms` from every fleet worker. Workers that fail with `httpx.HTTPError`, `ValueError` or `KeyError` are skipped. | `_calibrate` |
-| `main` | `main(argv=None) -> int` | If the first argument is `scorecard`, imports `scorecard.main` lazily and returns `scorecard.main(rest_of_argv)` without building its own parser. Otherwise builds the argparse tree and configures logging (INFO for `serve`, WARNING otherwise). Calls `load_config()` and dispatches. `serve` runs `uvicorn.run(create_app(cfg, autostart=False if --no-calm else None), access_log=False)`. `calm`/`attack`/`run` go remote or local as described above. Remote `run` polls `GET /lab/run/{id}` every 2 s until the state is no longer `running`. `stop`/`status`/`metrics` need a server and return 1 without one. Catches `LabError` (prints `error <status>: <detail>`, returns 1) and `KeyboardInterrupt` (returns 130). | Entry point (`if __name__ == "__main__": sys.exit(main())`); Dockerfile `CMD` |
+| `main` | `main(argv=None) -> int` | Builds the argparse tree and configures logging (INFO for `serve`, WARNING otherwise). Calls `load_config()` and dispatches. `serve` runs `uvicorn.run(create_app(cfg, autostart=False if --no-calm else None), access_log=False)`. `calm`/`attack`/`run` go remote or local as described above. Remote `run` polls `GET /lab/run/{id}` every 2 s until the state is no longer `running`. `stop`/`status`/`metrics` need a server and return 1 without one. Catches `LabError` (prints `error <status>: <detail>`, returns 1) and `KeyboardInterrupt` (returns 130). | Entry point (`if __name__ == "__main__": sys.exit(main())`); Dockerfile `CMD` |
 
-CLI arguments and defaults as written: `serve --host 0.0.0.0 --port 8300 --no-calm`; `calm --seconds None --scale None --local`; `attack <attack> <tenant> --intensity 1.0 --duration 60.0 --local`; `stop <attack_id|all>`; `status`; `metrics --window 10.0`; `run <scenario> <mode> --tenant None --intensity 1.0 --calm-s 20.0 --attack-s 40.0 --local`; `calibrate --seconds 20.0`; `scorecard ...` (its own options, listed under `scorecard.py`).
+CLI arguments and defaults as written: `serve --host 0.0.0.0 --port 8300 --no-calm`; `calm --seconds None --scale None --local`; `attack <attack> <tenant> --intensity 1.0 --duration 60.0 --local`; `stop <attack_id|all>`; `status`; `metrics --window 10.0`; `run <scenario> <mode> --tenant None --intensity 1.0 --calm-s 20.0 --attack-s 40.0 --local`; `calibrate --seconds 20.0`.
 
 **Key decisions**
 - Remote first, local as fallback. A short 1 s health probe decides, so CLI-launched attacks appear on the dashboard whenever a server is running.
@@ -53,8 +52,6 @@ CLI arguments and defaults as written: `serve --host 0.0.0.0 --port 8300 --no-ca
 - `calm --scale` sets `cfg.rate_scale` locally and sends `{"rate_scale": X}` to `POST /lab/calm/start` remotely.
 - Calibration diffs the cumulative `cpu_total_ms` counters rather than sampling instantaneous CPU. Utilisation is computed only over workers that answered both snapshots.
 - `serve` imports uvicorn and the app lazily, so the other commands don't load FastAPI.
-- `scorecard` is dispatched before argparse, so `python -m tenantguard_lab scorecard --help` shows the scorecard's own options.
-- The `attack` and `run` commands take a tenant but no server, so `faulty_server` cannot be started from the CLI. It is started through `POST /lab/attack` or `POST /lab/run` with `server` (the UI launcher, the demo driver).
 
 ---
 
@@ -65,17 +62,15 @@ This module loads configuration. It merges the platform settings and tenant list
 |---|---|---|---|
 | `LAB_DIR` | `Path(__file__).resolve().parents[1]` | The `lab/` directory. Base for the default `personas.yaml` and `results/` paths. | `load_config` |
 | `Endpoint` (dataclass) | `Endpoint(method: str, path: str, params: Dict[str, Any] = {}, est_cpu_ms: float = 1.0)` | One request kind (`light`/`read`/`search`/`write`). `est_cpu_ms` is used only by the calibration estimate. | `load_config`; `engine.Engine.build`; `attacks.memory`, `attacks.hog` (build ad-hoc endpoints) |
-| `Persona` (dataclass) | `Persona(tenant: TenantConfig, rps: float, mix: Dict[str, float], end_users: int = 0, note: str = "")` | A tenant's calm behaviour: base rate, request mix and profile fields. Name, tier and SLA are not stored here; they come from `tenant` (the layout). | `load_config`; read by `engine.Engine.start_calm`, `core.Lab.metrics`, `app.py GET /lab/personas` |
+| `Persona` (dataclass) | `Persona(tenant: TenantConfig, rps: float, mix: Dict[str, float], sla_p95_ms: float = 100.0, end_users: int = 0, note: str = "")` | A tenant's calm behaviour: base rate, request mix, SLA and profile fields. | `load_config`; read by `engine.Engine.start_calm`, `core.Lab.metrics`, `app.py GET /lab/personas` |
 | `Persona.id` (property) | `id -> str` | Returns `tenant.id`. | `app.py GET /lab/personas` |
-| `Persona.sla_p95_ms` (property) | `sla_p95_ms -> float` | Returns `float(tenant.sla_p95_ms)`. The layout (`TenantConfig`) is the single source of the per-tenant SLA. | `core.Lab.metrics`, `app.py GET /lab/personas` |
 | `LabConfig` (dataclass) | fields `gateway_url: str, brain_url: str, lab_url: str, ui_origins: List[str], results_dir: Path, workers: Dict[str, str], worker_cpus: float, personas: Dict[str, Persona], endpoints: Dict[str, Endpoint], attacks: Dict[str, Dict[str, Any]], run: Dict[str, Any], client: Dict[str, Any], rate_scale: float = 1.0, autostart: bool = True, default_attacker: str = "K", target_fleet_util: float = 0.30` | The whole lab configuration. It is mutable: `rate_scale` is changed live by `POST /lab/calm/start`, and tests override fields. | Every module |
 | `LabConfig.persona` | `persona(self, tenant: str) -> Persona` | Looks up a persona. Raises `KeyError(f"unknown tenant {tenant!r}")` if it is missing. | `engine.Engine.client`, `attacks.AttackCtx.persona_rate` |
 | `_env_bool` | `_env_bool(name: str, default: bool) -> bool` | Reads a boolean environment variable. Unset gives `default`. `"0"`, `"false"`, `"no"`, `"off"` and `""` (case-insensitive, stripped) give `False`, and anything else gives `True`. | `load_config` (`TENANTGUARD_LAB_AUTOSTART`) |
-| `load_config` | `load_config(personas_path: Optional[Path] = None) -> LabConfig` | Loads settings and tenants, then reads the personas file (`TENANTGUARD_LAB_PERSONAS` wins over `personas_path`, which wins over `lab/personas.yaml`). Builds endpoints and builds one `Persona` per tenant in `tenantguard.yaml`, using `rps` default 5.0, the default `mix`, `end_users` 0 and `note` "". Any `sla_p95_ms` written in `personas.yaml` is not read. Raises `ValueError` when a mix names an unknown request kind. Resolves URLs from env or `services.*` (defaults `http://127.0.0.1:8000`/`8200`/`8300`, trailing `/` stripped). CORS origins come from `TENANTGUARD_UI_ORIGINS` (comma list, default `http://127.0.0.1:5173`). Also resolves `results_dir` (`TENANTGUARD_LAB_RESULTS` or `lab/results`), `workers` from `worker_urls(settings)`, `worker_cpus` from `worker.cpus` (default 0.5), `rate_scale` (`TENANTGUARD_LAB_RATE_SCALE` or yaml), `autostart`, `default_attacker` and `target_fleet_util`. | `__main__.main()`, `app.create_app()` (when no cfg is passed); tests |
+| `load_config` | `load_config(personas_path: Optional[Path] = None) -> LabConfig` | Loads settings and tenants, then reads the personas file (`TENANTGUARD_LAB_PERSONAS` wins over `personas_path`, which wins over `lab/personas.yaml`). Builds endpoints and builds one `Persona` per tenant in `tenantguard.yaml`, using `rps` default 5.0, the default `mix`, `sla_p95_ms` 100.0, `end_users` 0 and `note` "". Raises `ValueError` when a mix names an unknown request kind. Resolves URLs from env or `services.*` (defaults `http://127.0.0.1:8000`/`8200`/`8300`, trailing `/` stripped). CORS origins come from `TENANTGUARD_UI_ORIGINS` (comma list, default `http://127.0.0.1:5173`). Also resolves `results_dir` (`TENANTGUARD_LAB_RESULTS` or `lab/results`), `workers` from `worker_urls(settings)`, `worker_cpus` from `worker.cpus` (default 0.5), `rate_scale` (`TENANTGUARD_LAB_RATE_SCALE` or yaml), `autostart`, `default_attacker` and `target_fleet_util`. | `__main__.main()`, `app.create_app()` (when no cfg is passed); tests |
 | `estimated_fleet_cpu_ms_per_s` | `estimated_fleet_cpu_ms_per_s(cfg: LabConfig) -> float` | Sum over personas of `rps × rate_scale × Σ(est_cpu_ms × normalised mix weight)`. | `__main__._calibrate`, `app.py GET /lab/personas` |
 
 **Key decisions**
-- Tiers and SLAs live in one place, the layout (`layouts/ag23.json`, read through `tenantguard.yaml`). The lab used to keep its own SLA copy in `personas.yaml`; that copy was dropped so the lab and billing (which also reads `sla_p95_ms` from the layout) cannot disagree on a tenant's target.
 - The tenant list comes from `tenantguard.yaml`, not from `personas.yaml`. A tenant missing from `personas.yaml` still gets calm traffic with defaults, and persona entries for tenants not in the layout are ignored.
 - Mixes are validated against the endpoint table at load time, so a typo fails at startup rather than at request time.
 - Environment variables override files for everything a deployment needs to change (URLs, CORS, rate scale, autostart, file locations). This is how `docker-compose.yml` points the lab at `gateway:8000` and `brain:8200`.
@@ -171,20 +166,20 @@ This is the asyncio traffic engine. It owns one keep-alive `httpx.AsyncClient` p
 ---
 
 ### lab/tenantguard_lab/attacks.py
-This module defines the attack traffic profiles. Each profile is an async function that runs until `ctx.stop` is set; `core.py` handles duration. `AttackReq.intensity` (0.1..5, enforced by the contract) multiplies the profile's rate (flood, whale, memory, retry_storm, the two bombs, cache_flood, honest_spike) or concurrency (hog). `faulty_server` is not traffic: it injects a fault on one worker for the attack's duration, and intensity scales the fault. Profile parameters come from `personas.yaml` → `attacks`. All ten contract attacks have a runner; the five second-wave ones (`blackbox_bomb`, `background_bomb`, `cache_flood`, `honest_spike`, `faulty_server`) were written by the team.
+This module defines the attack traffic profiles. Each profile is an async function that runs until `ctx.stop` is set; `core.py` handles duration. `AttackReq.intensity` (0.1..5, enforced by the contract) multiplies the profile's rate (flood, whale, memory, retry_storm) or concurrency (hog). Profile parameters come from `personas.yaml` → `attacks`.
 
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
-| `SERVER_ATTACKS` | `{"faulty_server"}` | Attacks that target a server, not a tenant. They need `AttackReq.server`, always run inline (no process, no traffic pool) and have no attacker in `/lab/run`. | `core.Lab._validate`, `Lab.launch`, `Lab.start_run` |
+| `WAVE2` | `{"background_bomb", "blackbox_bomb", "cache_flood", "faulty_server", "honest_spike"}` | Attack names that exist in the contract but have no runner yet. These are in progress (Wave 2) and the API answers them with 501. | `core.Lab._validate` |
 | `AttackCtx` (dataclass) | `AttackCtx(attack_id: str, engine: Engine, req: AttackReq, stop: asyncio.Event, counts: Dict[str, int] = {"sent": 0, "ok": 0, "r429": 0, "r503": 0, "other_err": 0, "retries": 0, "dropped": 0})` | Per-attack state: id, engine to send through, request, stop event and counters. | `core.Lab.launch`, `isolation._child.main` |
 | `AttackCtx.tenant` (property) | `tenant -> str` | `req.tenant`, asserted not None. | Runners, `core.Lab._supervise` |
 | `AttackCtx.profile` (property) | `profile -> dict` | `engine.cfg.attacks[req.attack]`. | Runners, `_open_loop` |
-| `AttackCtx.tally` | `tally(self, status: int) -> None` | Increments `sent` and one of `ok` (200–399), `r429`, `r503` or `other_err`. | `_open_loop.one`, `hog.worker`, `retry_storm.fire`, `faulty_server` |
-| `AttackCtx.persona_rate` | `persona_rate(self) -> float` | The attacker persona's `rps × rate_scale`. | `flood`, `retry_storm`, `cache_flood`, `honest_spike` |
-| `_open_loop` | `async _open_loop(ctx: AttackCtx, rate: float, make_req: Callable[[], dict], on_fire: Callable[[object], Awaitable[None]] = None) -> None` | Poisson arrivals at a fixed `rate` on the attack's own pool. The cap is the profile's `max_inflight`, or `client.max_inflight_per_attack`. Each arrival sends `make_req()` with `src="attack"` and `kind=req.attack`, or runs `on_fire(client)` instead. Arrivals over the cap increment `counts["dropped"]`. Cancels in-flight requests on exit. | `flood`, `whale`, `memory`, `retry_storm`, `blackbox_bomb`, `background_bomb`, `cache_flood`, `honest_spike` |
+| `AttackCtx.tally` | `tally(self, status: int) -> None` | Increments `sent` and one of `ok` (200–399), `r429`, `r503` or `other_err`. | `_open_loop.one`, `hog.worker`, `retry_storm.fire` |
+| `AttackCtx.persona_rate` | `persona_rate(self) -> float` | The attacker persona's `rps × rate_scale`. | `flood`, `retry_storm` |
+| `_open_loop` | `async _open_loop(ctx: AttackCtx, rate: float, make_req: Callable[[], dict], on_fire: Callable[[object], Awaitable[None]] = None) -> None` | Poisson arrivals at a fixed `rate` on the attack's own pool. The cap is the profile's `max_inflight`, or `client.max_inflight_per_attack`. Each arrival sends `make_req()` with `src="attack"` and `kind=req.attack`, or runs `on_fire(client)` instead. Arrivals over the cap increment `counts["dropped"]`. Cancels in-flight requests on exit. | `flood`, `whale`, `memory`, `retry_storm` |
 | `_open_loop.one` (inner) | `async one() -> None` | Sends one request and tallies it, or delegates to `on_fire`. | `_open_loop.fire` |
 | `_open_loop.fire` (inner) | `fire() -> None` | Gate check, then spawn `one()`. | `poisson.run_poisson` |
-| `_endpoint` | `_endpoint(ctx: AttackCtx, kind: str) -> Endpoint` | `cfg.endpoints[kind]`. | `flood`, `whale`, `retry_storm`, `background_bomb`, `cache_flood`, `honest_spike` |
+| `_endpoint` | `_endpoint(ctx: AttackCtx, kind: str) -> Endpoint` | `cfg.endpoints[kind]`. | `flood`, `whale`, `retry_storm` |
 | `flood` | `async flood(ctx: AttackCtx) -> None` | Open loop on the profile's `endpoint` (default `light`) at `multiplier × persona_rate × intensity`. | `RUNNERS["flood"]` |
 | `whale` | `async whale(ctx: AttackCtx) -> None` | Open loop on the `search` endpoint with the profile `params` merged over the endpoint params, at `rps × intensity`. | `RUNNERS["whale"]` |
 | `memory` | `async memory(ctx: AttackCtx) -> None` | Open loop of `GET` on the profile `path` (default `/api/memory`) with the profile `params`, at `rps × intensity`. | `RUNNERS["memory"]` |
@@ -192,22 +187,15 @@ This module defines the attack traffic profiles. Each profile is an async functi
 | `hog.worker` (inner) | `async worker() -> None` | One closed-loop worker. | `hog` |
 | `retry_storm` | `async retry_storm(ctx: AttackCtx) -> None` | Open loop on the profile `endpoint` (default `read`) at `multiplier × persona_rate × intensity`. Each arrival retries immediately on 429/503, up to `max_retries` (default 50), ignoring `Retry-After`. | `RUNNERS["retry_storm"]` |
 | `retry_storm.fire` (inner) | `async fire(client) -> None` | Sends, tallies, increments `retries` and yields with `sleep(0)` between attempts. Stops on any other status or when `ctx.stop` is set. | `_open_loop` via `on_fire` |
-| `blackbox_bomb` | `async blackbox_bomb(ctx: AttackCtx) -> None` | Open loop of `POST /api/ingest {"docs": docs}` (profile `docs`, default 50) at `rps × intensity`, as the attacker. The handler is cheap and metered (about 0.07 ms); the worker's black-box indexer then burns about 2 ms of unmetered CPU per doc. It stays inside the rate and cost quotas, so a rate limiter lets it through. | `RUNNERS["blackbox_bomb"]` |
-| `background_bomb` | `async background_bomb(ctx: AttackCtx) -> None` | Open loop of the `write` endpoint (`POST /api/write` with the usual key and value) with `index_rounds` (profile, default 8000) added to the body, at `rps × intensity`, as the attacker. The handler stays cheap; the queued background job's CPU is charged to the tenant as `bg_cpu_ms`, not to the request. | `RUNNERS["background_bomb"]` |
-| `background_bomb.make` (inner) | `make() -> dict` | `engine.build(write)` with `json["index_rounds"] = rounds`. | `_open_loop` |
-| `cache_flood` | `async cache_flood(ctx: AttackCtx) -> None` | Open loop of `GET /api/read` at `multiplier × persona_rate × intensity`, as the attacker. Each key is `flood<n>` with `n` drawn from `keyspace` (default 10,000,000), so reads almost never repeat and every one misses the cache. | `RUNNERS["cache_flood"]` |
-| `honest_spike` | `async honest_spike(ctx: AttackCtx) -> None` | Open loop at `multiplier × persona_rate × intensity`; each arrival picks a kind from the tenant's own `mix` (`engine.pick_kind`). Busy but legitimate traffic: the right answer is honest growth, not a throttle. | `RUNNERS["honest_spike"]` |
-| `faulty_server` | `async faulty_server(ctx: AttackCtx) -> None` | No tenant traffic. `POST {workers[req.server]}/admin/fault` with `latency_ms = profile × intensity`, `cpu_burn_pct = min(100, profile × intensity)` and `duration_s = req.duration_s + 5` (a backstop: the worker clears the fault by itself if the lab dies), header `X-Admin-Token` from env `TENANTGUARD_ADMIN_TOKEN` (default `dev`). A transport error or a status of 400 or above sets `ctx.stop` and raises, so the attack ends at once instead of pretending to run. Otherwise it waits for `ctx.stop`, then sends `DELETE /admin/fault`. Both answers are tallied. It uses its own `httpx.AsyncClient` (5 s timeout, the engine's transport). | `RUNNERS["faulty_server"]` |
-| `RUNNERS` | `Dict[str, Callable[[AttackCtx], Awaitable[None]]]` = flood, whale, hog, memory, retry_storm, blackbox_bomb, background_bomb, cache_flood, honest_spike, faulty_server | Registry of implemented attacks: every contract name. | `core.Lab._validate`, `core.Lab._supervise` (inline), `isolation._child.main` |
+| `RUNNERS` | `Dict[str, Callable[[AttackCtx], Awaitable[None]]]` = flood, whale, hog, memory, retry_storm | Registry of implemented attacks. | `core.Lab._validate`, `core.Lab._supervise` (inline), `isolation._child.main` |
 
 **Key decisions**
 - Most attacks are open loop (Poisson, like a real abusive client). `hog` is deliberately closed loop: it holds a fixed number of slow requests in flight to occupy worker capacity.
 - Attacks get their own pool and their own in-flight cap (512 by default, 32 for whale and memory per `personas.yaml`), separate from the victims'.
-- `flood`, `retry_storm`, `cache_flood` and `honest_spike` scale with the attacker's own persona rate. `whale`, `memory` and the two bombs use absolute rates from the profile.
+- `flood` and `retry_storm` scale with the attacker's own persona rate. `whale` and `memory` use absolute rates from the profile.
 - `retry_storm` has no backoff on purpose (it only yields), to model a misbehaving client that ignores `Retry-After`.
 - `hog` sleeps 0.2 s on connection failure so an unreachable gateway does not spin the CPU, and yields on fast answers so it cannot starve the event loop.
-- Every contract attack name has a runner. The two bombs are shaped to stay inside the attacker's request and cost quotas while their real CPU lands elsewhere (unmetered black-box CPU, or background CPU charged after the request). That is the case a rate limiter cannot see.
-- `faulty_server` is a host problem with no tenant behind it. It sends exactly two admin calls (inject, clear), so it needs no process and no traffic pool. The fault's own `duration_s` means even a crashed lab cannot leave a worker faulty for long.
+- Five contract attack names have no runner (in progress, Wave 2) and are rejected before any traffic starts.
 
 ---
 
@@ -286,17 +274,17 @@ This module runs one attack in its own OS process. The module docstring gives th
 | `LabError` | `class LabError(Exception)` | Error carrying an HTTP status and detail. | Raised throughout `Lab`; handled by `app.py` exception handler and `__main__.main()` |
 | `LabError.__init__` | `__init__(self, status: int, detail: str)` | Stores `status` and `detail`. | `Lab._validate`, `Lab.launch`, `Lab.stop_attack`, `Lab.set_mode`, `Lab.start_run` |
 | `AttackEntry` (dataclass) | `AttackEntry(status: AttackStatus, ctx: AttackCtx, task: Optional[asyncio.Task] = None, proc: Optional[ProcessAttack] = None)` | Bookkeeping for one attack. | `Lab.launch` |
-| `RunInfo` (dataclass) | `RunInfo(run_id: str, req: RunReq, attacker: Optional[str], state: str = "running", phase: str = "starting", started_at: float = time.time(), planned_end: float = 0.0, result: Optional[RunResult] = None, error: Optional[str] = None, marks: Optional[Marks] = None)` | State of one scenario run. `state` is one of running, done, failed or cancelled. `marks` holds the run's actual phase timestamps once the timeline has finished. | `Lab.start_run` |
-| `RunInfo.view` | `view(self) -> Dict[str, Any]` | JSON view: run_id, state, phase, scenario, mode, attacker, started_at, planned_end, error, `marks` (`{t0, baseline_start, attack_start, attack_end, end}` as epoch seconds, or None while the timeline is still running) and result (dumped, or None). | `app.py POST /lab/run`, `GET /lab/run/{run_id}`, `DELETE /lab/run`; `scorecard.Scorecard.run` reads `marks` to align brain events with the run |
+| `RunInfo` (dataclass) | `RunInfo(run_id: str, req: RunReq, attacker: Optional[str], state: str = "running", phase: str = "starting", started_at: float = time.time(), planned_end: float = 0.0, result: Optional[RunResult] = None, error: Optional[str] = None)` | State of one scenario run. `state` is one of running, done, failed or cancelled. | `Lab.start_run` |
+| `RunInfo.view` | `view(self) -> Dict[str, Any]` | JSON view: run_id, state, phase, scenario, mode, attacker, started_at, planned_end, error, and result (dumped, or None). | `app.py POST /lab/run`, `GET /lab/run/{run_id}`, `DELETE /lab/run` |
 | `Lab` | `class Lab(ScenarioDriver)` | The lab. | `app.create_app` lifespan, `__main__` local helpers; tests |
 | `Lab.__init__` | `__init__(self, cfg: LabConfig, recorder: Optional[Recorder] = None, transport: Optional[httpx.AsyncBaseTransport] = None)` | Creates the recorder, `Engine(cfg, recorder, transport=transport)`, the attack and run maps, and an admin `httpx.AsyncClient(timeout=5.0, transport=transport)` for gateway `/admin/mode` and brain calls. | Same as above |
 | `Lab.start_calm` | `start_calm(self) -> bool` | Delegates to `engine.start_calm()`. | `app.py` lifespan and `POST /lab/calm/start`; `__main__._local_calm`, `_local_attack`, `_calibrate` |
 | `Lab.stop_calm` | `async stop_calm(self) -> bool` | Delegates to `engine.stop_calm()`. | `app.py POST /lab/calm/stop` |
-| `Lab._validate` | `_validate(self, req: AttackReq) -> None` | 501 `attack '<name>' not implemented` for a name not in `RUNNERS` (none today: every contract name has a runner). For a `SERVER_ATTACKS` name: 422 `needs a server` when `server` is missing, 404 `unknown server` when it is not in `cfg.workers`, and no tenant check. Otherwise 422 when the tenant is missing, and 404 for an unknown tenant. | `Lab.launch`, `Lab.start_run` |
+| `Lab._validate` | `_validate(self, req: AttackReq) -> None` | Raises 501 for `WAVE2` names ("ships in Wave 2"), 501 for names not in `RUNNERS`, 422 when the tenant is missing, and 404 for an unknown tenant. | `Lab.launch`, `Lab.start_run` |
 | `Lab.start_attack` | `async start_attack(self, req: AttackReq) -> str` | `ScenarioDriver` method. Returns `(await launch(req)).attack_id`. | `scenario.run_timeline` |
-| `Lab.isolated` (property) | `isolated -> bool` | True when `client.attack_isolation` (default `"process"`) is `"process"` and no transport was injected. Server attacks run inline anyway (checked in `launch`). | `Lab.launch`; tests |
-| `Lab.launch` | `async launch(self, req: AttackReq) -> AttackStatus` | Validates, creates an id `atk-<8 hex>` and an `AttackCtx`. If isolated and the attack is not a server attack, creates a `ProcessAttack` and awaits `start()`, mapping `RuntimeError` to `LabError(500)`. Builds an `AttackStatus(state="running", ends_at=now + duration_s)`, ensures the lag monitor is running, registers the entry, starts `_supervise`, logs and prunes. | `app.py POST /lab/attack`, `Lab.start_attack`, `__main__._local_attack`; tests |
-| `Lab._supervise` | `async _supervise(self, entry: AttackEntry) -> None` | Process path: `pump_until(ctx.stop, duration_s)`. On timeout the state becomes `done`. In a `finally`, sets stop, calls `proc.stop()` and `_finish`. Inline path: runs `RUNNERS[attack](ctx)` and waits for stop or `duration_s` (timeout → `done`). Then sets stop, waits for the runner up to `client.timeout_s + 2` (cancelling it if needed), logs runner exceptions without crashing, closes the attack pool (only when there is a tenant; a server attack has none) and calls `_finish`. | Task created in `Lab.launch` |
+| `Lab.isolated` (property) | `isolated -> bool` | True when `client.attack_isolation` (default `"process"`) is `"process"` and no transport was injected. | `Lab.launch`; tests |
+| `Lab.launch` | `async launch(self, req: AttackReq) -> AttackStatus` | Validates, creates an id `atk-<8 hex>` and an `AttackCtx`. If isolated, creates a `ProcessAttack` and awaits `start()`, mapping `RuntimeError` to `LabError(500)`. Builds an `AttackStatus(state="running", ends_at=now + duration_s)`, ensures the lag monitor is running, registers the entry, starts `_supervise`, logs and prunes. | `app.py POST /lab/attack`, `Lab.start_attack`, `__main__._local_attack`; tests |
+| `Lab._supervise` | `async _supervise(self, entry: AttackEntry) -> None` | Process path: `pump_until(ctx.stop, duration_s)`. On timeout the state becomes `done`. In a `finally`, sets stop, calls `proc.stop()` and `_finish`. Inline path: runs `RUNNERS[attack](ctx)` and waits for stop or `duration_s` (timeout → `done`). Then sets stop, waits for the runner up to `client.timeout_s + 2` (cancelling it if needed), logs runner exceptions without crashing, closes the attack pool and calls `_finish`. | Task created in `Lab.launch` |
 | `Lab._finish` | `_finish(self, entry: AttackEntry) -> None` | If the state is still `running`, sets it to `done`. Clamps `ends_at` to now and logs the counts. | `Lab._supervise` |
 | `Lab.stop_attack` | `async stop_attack(self, attack_id: str) -> AttackStatus` | 404 if unknown. If running, sets the state to `stopped` and signals stop, then awaits the supervisor task. Returns the status. | `app.py DELETE /lab/attack/{attack_id}`, `Lab.stop_all_attacks`, `scenario.run_timeline` (as driver); tests |
 | `Lab.stop_all_attacks` | `async stop_all_attacks(self) -> List[AttackStatus]` | Stops every running attack in turn. | `app.py DELETE /lab/attacks`, `Lab.aclose` |
@@ -310,13 +298,13 @@ This module runs one attack in its own OS process. The module docstring gives th
 | `Lab.restore_calm` | `async restore_calm(self, was_running: bool) -> None` | Stops calm traffic if it was not running before the run. | `scenario.run_timeline` |
 | `Lab.on_phase` | `on_phase(self, name: str) -> None` | Sets `current_run.phase` and logs it. | `scenario.run_timeline` |
 | `Lab.timeline` | `timeline(self, req: RunReq) -> Timeline` | `Timeline(warmup_s=run.warmup_s (default 3), calm_s=req.calm_s, attack_s=req.attack_s, cold_start_s=run.cold_start_s (default 0))`. | `Lab.start_run` |
-| `Lab.start_run` | `start_run(self, req: RunReq) -> RunInfo` | 409 if a run is in progress. The attacker is `req.tenant`, or `cfg.default_attacker`; for a server attack (`faulty_server`) it is None, so every tenant counts as a victim and nobody should be blamed. The attack (with `req.server`) is validated through `_validate`. Creates `RunInfo(run_id="run-<8 hex>")` with `planned_end = started_at + tl.end` (+ `cold_start_s` if calm is off) and schedules `_run`. | `app.py POST /lab/run`, `__main__._local_run`; tests |
-| `Lab._run` | `async _run(self, info: RunInfo, tl: Timeline) -> None` | Runs `run_timeline`, stores the returned `Marks` on `info.marks`, sets the phase to `computing`, gets `time_to_detect`, calls `compute_result` with the `run.*` settings (`recover_ratio` 1.5, `recover_hold_s` 5 and `bucket_s` 1.0 as defaults, plus `victim_kinds`), writes the result, and sets the state to `done`. Cancellation sets the state to `cancelled` and re-raises. `LabError` or any other exception sets the state to `failed` with the error. | Task created in `Lab.start_run` |
+| `Lab.start_run` | `start_run(self, req: RunReq) -> RunInfo` | 409 if a run is in progress. The attacker is `req.tenant`, or `cfg.default_attacker`, and is validated through `_validate`. Creates `RunInfo(run_id="run-<8 hex>")` with `planned_end = started_at + tl.end` (+ `cold_start_s` if calm is off) and schedules `_run`. | `app.py POST /lab/run`, `__main__._local_run`; tests |
+| `Lab._run` | `async _run(self, info: RunInfo, tl: Timeline) -> None` | Runs `run_timeline`, sets the phase to `computing`, gets `time_to_detect`, calls `compute_result` with the `run.*` settings (`recover_ratio` 1.5, `recover_hold_s` 5 and `bucket_s` 1.0 as defaults, plus `victim_kinds`), writes the result, and sets the state to `done`. Cancellation sets the state to `cancelled` and re-raises. `LabError` or any other exception sets the state to `failed` with the error. | Task created in `Lab.start_run` |
 | `Lab.wait_run` | `async wait_run(self) -> None` | Awaits the run task, swallowing exceptions. | `__main__._local_run`; tests |
 | `Lab.cancel_run` | `async cancel_run(self) -> Optional[RunInfo]` | Cancels the run task if it is active and returns the run, or returns None. | `app.py DELETE /lab/run`, `Lab.aclose` |
 | `Lab.time_to_detect` | `async time_to_detect(self, m: Marks, attacker: Optional[str]) -> Optional[float]` | `GET {brain_url}/api/incidents?limit=5000[&tenant=attacker]` with a 2.0 s timeout. Accepts a list, or a dict with `incidents` or `events`. Keeps events with a numeric `ts` in `[attack_start, end]` whose `tenant` is None or the attacker. Returns `round(min(ts) - attack_start, 3)`. Returns None when the brain is unreachable, the response is not valid JSON, or nothing matches. | `Lab._run` |
 | `Lab.write_result` | `write_result(self, result: RunResult, m: Marks) -> RunResult` | Creates `results_dir` and writes `<YYYYmmdd-HHMMSS of t0>-<scenario>-<mode>.json` (indent 2), with `file` set to `lab/results/<name>`. | `Lab._run` |
-| `Lab.list_results` | `list_results(self, scenario: Optional[str] = None, mode: Optional[str] = None) -> List[RunResult]` | Parses every `*.json` in `results_dir` as a `RunResult`, skipping files that do not parse with a warning (this includes the scorecard's `summary-*.json` files). Filters by scenario and mode, and sorts by `started_at`, newest first. | `app.py GET /lab/results` |
+| `Lab.list_results` | `list_results(self, scenario: Optional[str] = None, mode: Optional[str] = None) -> List[RunResult]` | Parses every `*.json` in `results_dir`, skipping unreadable files with a warning. Filters by scenario and mode, and sorts by `started_at`, newest first. | `app.py GET /lab/results` |
 | `Lab.aclose` | `async aclose(self) -> None` | Cancels the run, stops all attacks, closes the engine and the admin client. | `app.py` lifespan, `__main__` local helpers; tests |
 
 **Key decisions**
@@ -324,8 +312,7 @@ This module runs one attack in its own OS process. The module docstring gives th
 - Errors carry HTTP status codes (`LabError`). The API maps them directly, and the CLI prints them.
 - Process isolation is the default and is skipped automatically when a mock transport is injected, so tests can stay in-process.
 - Attack state machine: `running` → `stopped` (explicit stop) or `done` (duration elapsed or runner ended). `ends_at` is clamped to the real end time.
-- Only one scenario run at a time (409). The run validates the attacker and attack before any traffic starts, so a bad tenant or server is refused before anything is sent.
-- Run marks are exposed in the run view. Anyone reading the brain's incidents afterwards (the scorecard does) can use the real attack window, not the planned one.
+- Only one scenario run at a time (409). The run validates the attacker and attack before any traffic starts, so Wave-2 scenarios get 501 at `POST /lab/run`.
 - Time-to-detect is optional by design: if the brain is unreachable the result is still written, with `time_to_detect_s = null`.
 - Result filenames start with the run's start timestamp, so files sort chronologically on disk. Listing sorts by `started_at` regardless of filename.
 - Finished attacks are pruned to 20 to keep `/lab/status` bounded.
@@ -348,14 +335,14 @@ This is the FastAPI app for the traffic lab on :8300. It creates one `Lab` per a
 | `personas` | `GET /lab/personas` → `Dict[str, Any]` | `rate_scale`, `estimated_fleet_cpu_ms_per_s` (1 dp), and per persona: tenant, name, tier, rps, effective_rps, mix, sla_p95_ms, end_users, note, `monthly_revenue_rs`, `protected`. | FastAPI route |
 | `calm_start` | `POST /lab/calm/start` (body `Optional[CalmBody]`) → `LabStatus` | If `rate_scale` is given, sets `cfg.rate_scale` (read live by every Poisson stream). Starts calm traffic and returns the status. | FastAPI route; `__main__` `calm` |
 | `calm_stop` | `POST /lab/calm/stop` → `LabStatus` | Stops calm traffic and returns the status. | FastAPI route |
-| `attack` | `POST /lab/attack` (body `AttackReq`) → `AttackStatus` | `Lab.launch(req)`. The contract validates the attack name and `intensity` 0.1..5 (422). `LabError` gives 404 (unknown tenant or server), 422 (missing tenant or server), 500, or 501 for a name with no runner. | FastAPI route; `__main__` `attack` |
+| `attack` | `POST /lab/attack` (body `AttackReq`) → `AttackStatus` | `Lab.launch(req)`. The contract validates the attack name and `intensity` 0.1..5 (422). `LabError` gives 501, 404, 422 or 500. | FastAPI route; `__main__` `attack` |
 | `stop_attack` | `DELETE /lab/attack/{attack_id}` → `AttackStatus` | `Lab.stop_attack`. | FastAPI route; `__main__` `stop <id>` |
 | `stop_all` | `DELETE /lab/attacks` → `List[AttackStatus]` | `Lab.stop_all_attacks()`. | FastAPI route; `__main__` `stop all` |
 | `metrics` | `GET /lab/metrics?window_s=` (`Query(10.0, gt=0, le=900)`) → `Dict[str, Any]` | `Lab.metrics(window_s)`. | FastAPI route; `__main__` `metrics` |
 | `run` | `POST /lab/run` (body `RunReq`), status 202 → `Dict[str, Any]` | `Lab.start_run(req).view()`. | FastAPI route; `__main__` `run` |
-| `run_status` | `GET /lab/run/{run_id}` → `Dict[str, Any]` | The run view (including `marks` once the timeline has finished), or 404 `unknown run`. | FastAPI route; `__main__` `run` polling; `scorecard.Scorecard.run_one` polling |
+| `run_status` | `GET /lab/run/{run_id}` → `Dict[str, Any]` | The run view, or 404 `unknown run`. | FastAPI route; `__main__` `run` polling |
 | `cancel_run` | `DELETE /lab/run` → `Dict[str, Any]` | Cancels the active run and returns its view, or 404 `no run in progress`. | FastAPI route |
-| `results` | `GET /lab/results?scenario=&mode=` (`Optional[AttackName]`, `Optional[Mode]`) → `List[RunResult]` | `Lab.list_results(scenario, mode)`, newest first. Invalid enum values give 422. | FastAPI route (the UI Scorecard reads it); `scorecard.Scorecard.aggregate_only` |
+| `results` | `GET /lab/results?scenario=&mode=` (`Optional[AttackName]`, `Optional[Mode]`) → `List[RunResult]` | `Lab.list_results(scenario, mode)`, newest first. Invalid enum values give 422. | FastAPI route (the UI Scorecard reads it) |
 | `app_factory` | `app_factory() -> FastAPI` | Configures INFO logging and returns `create_app()`. Intended for `uvicorn tenantguard_lab.app:app_factory --factory`. | Entry point (uvicorn factory); no in-repo caller |
 
 **Key decisions**
@@ -365,49 +352,6 @@ This is the FastAPI app for the traffic lab on :8300. It creates one `Lab` per a
 - Query and body validation is delegated to the shared contracts (`AttackReq`, `RunReq`, `AttackName`, `Mode`), so the API and the CLI reject the same inputs.
 - `POST /lab/run` returns 202 immediately. Progress is polled through `GET /lab/run/{id}`.
 - `/lab/metrics` caps `window_s` at 900, matching the recorder's default retention.
-
----
-
-### lab/tenantguard_lab/scorecard.py
-The scorecard runner: the OFF / Industry / TenantGuard summary. It runs the lab's existing scenarios in every mode, several times each, and summarises only measured runs. It drives the lab purely over its HTTP API (`POST /lab/run`, `GET /lab/run/{id}`, `DELETE /lab/run`, `GET /lab/status`, `GET /lab/results`) and reads the brain's `GET /api/incidents`. It sends no traffic and starts no attack itself. Runs are sequential, and modes are interleaved inside each repetition (off, industry, tenantguard, off, ...) so slow drift on the host does not favour one mode. Run it as `python -m tenantguard_lab scorecard ...`.
-
-| Function / class | Signature | What it does | Called by |
-|---|---|---|---|
-| `ACTED_LEVELS` | `{"throttle", "deprioritize", "quarantine", "blocked"}` | Ladder levels that count as "the brain acted on this tenant". | `check_brain` |
-| `MODES_ALL` | `["off", "industry", "tenantguard"]` | Default and allowed modes. | `main`; tests |
-| `BrainCheck` (pydantic) | `BrainCheck(reachable: bool, culprit_named: bool = False, first_named_after_s: Optional[float] = None, wrongly_named: List[str] = [], innocents_penalised: List[str] = [])` | What the brain did inside one run's `[attack_start, end]` window. Internal; the summary itself uses the contract models. | `check_brain`, `summarize_cell`, `Scorecard.run` |
-| `median` | `median(xs: Sequence[float]) -> Optional[float]` | `statistics.median` rounded to 3 decimals, or None for no values. | `phase_stat`, `summarize_cell` |
-| `mean` | `mean(xs: Sequence[float]) -> Optional[float]` | `statistics.fmean` rounded to 3 decimals, or None. | `summarize_cell` (through `phase_stat`) |
-| `phase_stat` | `phase_stat(results: Sequence[RunResult], fn) -> Optional[PhaseP99]` | Applies `fn` to the baseline, attack and after victim p99 of a set of runs. None if there are no runs. | `summarize_cell` |
-| `check_brain` | `check_brain(events: Optional[list], attacker: Optional[str], marks: Optional[dict]) -> BrainCheck` | Aligns brain incident events (dicts) with one run's `marks`. `reachable=False` when `events` is None. Keeps events with a numeric `ts` in `[attack_start, end]`. A tenant counts as named when it is the tenant of a usage-ladder incident (`inc-*`), a listed suspect, or (on a `named` stage) a culprit in `report.culprits`. Non-attackers named go to `wrongly_named`. Non-attackers at an `ACTED_LEVELS` level go to `innocents_penalised`. `first_named_after_s` is the first naming time minus `attack_start`. | `Scorecard.run`; tests |
-| `summarize_cell` | `summarize_cell(scenario: str, mode: str, results: List[RunResult], checks: List[BrainCheck], failed: int = 0) -> CellStats` | One cell of the summary: runs, failed runs, median and mean victim p99 per phase, median time to detect and to recover (with the counts of runs that had a value), median attacker 429 and 503, brain-checked runs, culprit-named runs, the union of innocents penalised and how many runs had any, and the run file names. | `Scorecard.run`, `Scorecard.aggregate_only` |
-| `plan` | `plan(scenarios, modes, runs) -> List[Tuple[str, str, int]]` | Run order: per scenario, repetitions outermost and modes interleaved inside each repetition. | `Scorecard.run`, `main`; tests |
-| `Scorecard` | `class Scorecard` | The HTTP-only runner. | `main`; tests |
-| `Scorecard.__init__` | `__init__(self, lab_url: str, brain_url: str, client: Optional[httpx.Client] = None, sleep=time.sleep, clock=time.time, out=print, poll_s: float = 2.0, cooldown_s: float = 10.0, grace_s: float = 120.0)` | Stores the URLs (trailing `/` stripped), an `httpx.Client(timeout=15.0)` unless one is injected, and injectable sleep, clock and output so tests run on a fake clock. | `main`; tests |
-| `Scorecard._wait_idle` | `_wait_idle(self, timeout_s: float) -> bool` | Polls `GET /lab/status` every `poll_s` until `run` is empty, or gives up at `timeout_s`. | `run_one` |
-| `Scorecard.run_one` | `run_one(self, req: RunReq) -> Tuple[str, Optional[dict]]` | Posts one run. A 409 (another run in progress) waits up to 600 s and retries once. 501 gives `"unregistered"`, a transport error `"unreachable"`, any other status of 300 or above `"failed"`. Then polls `GET /lab/run/{id}` every `poll_s`. If the run passes `planned_end - started_at + grace_s`, it calls `DELETE /lab/run` and returns `"failed"`. Returns `"done"` only when the state is `done` and a result is present. | `run` |
-| `Scorecard.brain_events` | `brain_events(self) -> Optional[list]` | `GET {brain}/api/incidents?limit=5000` with a 5 s timeout. None if the brain is unreachable or the body is not a list. | `run` |
-| `Scorecard.run` | `run(self, scenarios, modes, runs, attacker=None, intensity=1.0, calm_s=20, attack_s=40) -> CrashSummary` | Walks `plan(...)`. A scenario answered 501 is skipped for the rest of the plan and listed in `skipped`. An unreachable lab stops the whole run. Each done run is parsed as a `RunResult` and checked against the brain with its `marks`. Prints one line per run (victim p99 baseline → attack → after, attacker 429, named, innocents). Sleeps `cooldown_s` between runs so brain incidents can close. Builds one `CellStats` per scenario × mode that was not skipped. | `main`; tests |
-| `Scorecard.aggregate_only` | `aggregate_only(self, scenarios, modes, runs) -> CrashSummary` | Runs nothing. Reads `GET /lab/results` (newest first) and summarises the newest `runs` results per cell, with no brain alignment. Sets `aggregate_only=True`. | `main`; tests |
-| `_detail` | `_detail(r: httpx.Response) -> str` | The `detail` field of an error body (or the raw text), cut to 200 characters. | `run_one` |
-| `table` | `table(s: CrashSummary) -> str` | Fixed-width text table: scenario, mode, runs, p99 base / attack / after, detect s, recover s, attacker 429, named (`k/n`), innocents (`none` if empty), then one `skipped:` line each. | `main` |
-| `write` | `write(summary: CrashSummary, results_dir: Path, out: Optional[str] = None) -> CrashSummary` | With `out="-"`, prints the JSON to stdout. Otherwise writes `out`, or `results_dir/summary-<YYYYmmdd-HHMMSS of created_at>.json`, and returns the summary with `file` set to that path. | `main` |
-| `main` | `main(argv=None, cfg: Optional[LabConfig] = None, client: Optional[httpx.Client] = None) -> int` | Parses the options below and validates them (modes must be in `MODES_ALL`, `--runs >= 1`, scenarios must be contract `AttackName` values; otherwise argparse exits). Uses `cfg.lab_url` and `cfg.brain_url`. With `--out -`, progress goes to stderr so stdout is pure JSON. Runs or aggregates, writes, prints the table and the file path. Returns 0 if any cell has runs, else 1. | `__main__.main` (`scorecard` subcommand); tests |
-
-CLI options and defaults as written: `--scenarios whale,flood`, `--modes off,industry,tenantguard`, `--runs 3`, `--tenant None` (the lab's `default_attacker`), `--intensity 1.0`, `--calm-s 20.0`, `--attack-s 40.0`, `--cooldown-s 10.0`, `--aggregate-only`, `--out None` (default `lab/results/summary-<ts>.json`, or `-` for stdout).
-
-Output shape (`summary-*.json`, the shared `CrashSummary` contract):
-- Top level: `created_at`, `lab_url`, `brain_url`, `scenarios`, `modes`, `runs_per_cell`, `attacker`, `intensity`, `calm_s`, `attack_s`, `aggregate_only`, `skipped` (list of strings), `file`, and `cells`.
-- Each cell (`CellStats`): `scenario`, `mode`, `runs`, `failed_runs`, `victim_p99_ms_median` and `victim_p99_ms_mean` (each `{baseline, attack, after}`), `time_to_detect_s_median`, `detected_runs`, `time_to_recover_s_median`, `recovered_runs`, `attacker_429_median`, `attacker_503_median`, `brain_checked_runs`, `culprit_named_runs`, `innocents_penalised`, `innocents_penalised_runs`, `run_files`.
-
-**Key decisions**
-- HTTP only. The scorecard uses exactly the API the UI and operators use, so it measures the same lab runs they see.
-- Modes are interleaved per repetition rather than run in blocks, so host drift during a long scorecard spreads across all three modes.
-- Medians are the headline (with means alongside), so one noisy run does not move a cell.
-- A brain that is down never blocks the summary: the cell still gets its p99 numbers, and `brain_checked_runs` shows that no brain check was made.
-- A scenario a lab answers 501 for (an older lab without that runner) is skipped and listed, never faked. The current lab runs all ten.
-- The scorecard's default scenarios are whale and flood. It sends no `server`, so `--scenarios faulty_server` would be refused with 422 and counted as failed runs.
-- The summary models (`CellStats`, `CrashSummary`) live in the shared contracts, not in the lab (a test checks the lab uses those exact classes).
 
 ---
 
@@ -438,8 +382,6 @@ This is a stand-in gateway for lab development. Its docstring describes it as "a
 ### lab/tests/conftest.py
 This is the pytest bootstrap. It inserts `lab/` at the front of `sys.path` so `tenantguard_lab` imports without installing the package.
 
-The lab suite has 57 tests (run `python -m pytest` in `lab/`): `test_api.py` 7, `test_isolation.py` 2, `test_poisson.py` 6 (one test parametrised over 3 rates), `test_scenario.py` 10, `test_scorecard.py` 16 (one test parametrised over 3 bad argument sets), `test_stats.py` 7 and `test_wave2_attacks.py` 9.
-
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
 | (module statement) | `sys.path.insert(0, str(Path(__file__).resolve().parents[1]))` | Makes `lab/` importable. | pytest (auto-loaded) |
@@ -457,6 +399,7 @@ These are HTTP API tests through FastAPI's `TestClient`, with a `httpx.MockTrans
 | `ORIGIN` (constant) | `"http://127.0.0.1:5173"`, the allowed CORS origin. | n/a |
 | `client` (fixture) | Builds `create_app(load_config(), autostart=False, transport=MockTransport(handler))`. The handler records `(X-API-Key, path)` and answers 429 to every other `/api/light` call from `tk_K_demo`, and 200 otherwise. | `app.create_app` |
 | `test_status_starts_idle` | A fresh lab reports `{"attacks": [], "calm_running": False, "run": None}`. | `app.py GET /lab/status`, `core.Lab.status` |
+| `test_wave2_attacks_are_501` | All five Wave-2 attack names give 501 on `POST /lab/attack`, and `blackbox_bomb` gives 501 on `POST /lab/run`. | `core.Lab._validate`, `attacks.WAVE2`, `core.Lab.start_run` |
 | `test_attack_validation` | Intensity 6 and 0.05 give 422, an unknown attack name gives 422, unknown tenant `Z` gives 404, a missing tenant gives 422, and deleting an unknown attack gives 404. | `AttackReq` contract, `core.Lab._validate`, `core.Lab.stop_attack` |
 | `test_attack_lifecycle_and_metrics` | A flood on K returns `running` with `ends_at > started_at`. After 1 s the status is still running, metrics show attack samples and 429s for K, and the attack's `sent` count is above 0. Stopping returns `stopped`. Only K's API key was used. | `core.Lab.launch`, `_supervise`, `metrics`, `stop_attack`; `attacks.flood`; `engine.Engine.client` |
 | `test_attack_ends_by_itself_as_done` | A 0.5 s hog on B ends with state `done` and hit `/api/export`. | `core.Lab._supervise`, `_finish`; `attacks.hog` |
@@ -513,7 +456,7 @@ Tests the scenario timeline on a fake clock, the result math on synthetic record
 | `_rec_with` (helper) | `_rec_with(phases, attacker="K")` builds a `Recorder` with 20 Hz calm samples for A, B and the attacker (attacker latency 1.0). | n/a |
 | `test_compute_result_phases_recovery_and_attacker_counts` | Victim p99 is 10, 200 and 10 ms for baseline, attack and after. The attacker is excluded from per-tenant results. `time_to_recover_s` is 10.0. Attacker 429/503 = (30, 1), counting only within `[attack_start, end)`. Attack-source samples on a victim are ignored. | `scenario.compute_result`, `stats.bucketize`, `stats.time_to_recover` |
 | `test_compute_result_never_recovers` | Victims degraded through the end give `time_to_recover_s is None`. | `scenario.compute_result` |
-| `test_lab_run_end_to_end_writes_runresult` | A real `Lab` run with a mock gateway and brain. The gateway's `/admin/mode` requires control token `dev`. The brain returns an incident 0.5 s after the first whale request. Whale requests from K get 429. Proves: the run ends `done`, the mode is set to `tenantguard`, exactly one `*-whale-tenantguard.json` file is written with `file` = `lab/results/<name>`, `attacker_429 > 0`, baseline > 0, K is excluded from victims, `time_to_detect_s` is in [0, 1.5), and calm returns to off. The run view exposes `marks` in order (`t0 <= baseline_start < attack_start < attack_end < end`) with an attack window of at least 1.5 s. | `core.Lab.start_run`, `_run`, `set_mode`, `time_to_detect`, `write_result`, `ensure_calm`/`restore_calm`, `RunInfo.view` (`marks`); `scenario.run_timeline`, `compute_result` |
+| `test_lab_run_end_to_end_writes_runresult` | A real `Lab` run with a mock gateway and brain. The gateway's `/admin/mode` requires control token `dev`. The brain returns an incident 0.5 s after the first whale request. Whale requests from K get 429. Proves: the run ends `done`, the mode is set to `tenantguard`, exactly one `*-whale-tenantguard.json` file is written with `file` = `lab/results/<name>`, `attacker_429 > 0`, baseline > 0, K is excluded from victims, `time_to_detect_s` is in [0, 1.5), and calm returns to off. | `core.Lab.start_run`, `_run`, `set_mode`, `time_to_detect`, `write_result`, `ensure_calm`/`restore_calm`; `scenario.run_timeline`, `compute_result` |
 | `test_attack_start_marked_after_attack_is_running` | With a 4 s spawn delay, `attack_start` = 1027 and `attack_end` = 1067. The attack window is the full 40 s, and the baseline absorbs the delay (24 s). | `scenario.run_timeline` |
 | `test_cold_start_extends_warmup_only_when_calm_was_off` | `cold_start_s=10` makes warmup 13 s when calm was off and 3 s when it was on. | `scenario.run_timeline` |
 | `test_victim_kinds_filter` | With fast `light` (5 ms) and slow `search` (400 ms) calm samples, `victim_kinds=["light", "read"]` gives baseline p99 5.0, and no filter gives 400.0. | `scenario.compute_result`, `stats.Recorder.window` (`kinds`) |
@@ -521,35 +464,6 @@ Tests the scenario timeline on a fake clock, the result math on synthetic record
 
 **Key decisions**
 - The fake clock makes the timeline tests instant and exact. Only the end-to-end test uses real time (short calm and attack windows, warmup 0.2 s).
-
----
-
-### lab/tests/test_scorecard.py
-Tests the scorecard runner against a mocked lab and brain (`httpx.MockTransport`) on a fake clock. No real sleeping and no network.
-
-| Test | What it proves | Target (production code exercised) |
-|---|---|---|
-| `T0`, `P99` (constants) | A fixed epoch, and fake victim p99 per mode (off 20/400/30, industry 20/150/25, tenantguard 20/40/21). | n/a |
-| `Clock` (class) | Fake clock: callable for the time, `sleep` advances it. | n/a |
-| `FakeLab` (class) | Mock lab and brain. `POST /lab/run` returns a running view (501 for unregistered scenarios, default `blackbox_bomb`, with detail "not implemented", playing an older or trimmed lab; 409 once if `busy_once`). `GET /lab/run/{id}` turns `done` after `polls` polls with marks (+3, +23, +63, +83 s) and a `RunResult`. Also serves `DELETE /lab/run`, `/lab/status`, `/lab/results` and the brain's events (or a connect error when `brain_up=False`). | Stands in for `app.py` and the brain |
-| `runner`, `ev` (helpers) | Build a `Scorecard` on the fake, and an incident-event dict. | n/a |
-| `test_plan_interleaves_modes_inside_each_repetition` | The run order interleaves modes inside each repetition, per scenario. | `scorecard.plan` |
-| `test_runs_every_cell_skips_unregistered_and_aggregates` | Only whale runs (3 reps × 3 modes, interleaved, same knobs). `blackbox_bomb` is skipped and listed. Medians and means per phase, detect and recover medians, attacker 429 medians and run files are correct per cell. | `Scorecard.run`, `run_one`, `summarize_cell`, `phase_stat` |
-| `test_brain_alignment_names_culprit_and_finds_innocents` | K is counted as named. A, throttled inside the window, is an innocent penalised. Events before the attack or after the run are ignored. | `check_brain`, `Scorecard.run` |
-| `test_check_brain_uses_named_report_and_window` | Suspects and `report.culprits` both count. `first_named_after_s` is 50.0. E is wrongly named. Events outside the window and junk are ignored. `None` events mean unreachable. | `check_brain` |
-| `test_brain_down_still_produces_a_summary` | With the brain down, every cell still has its run, `brain_checked_runs` is 0, and the output says "brain unreachable". | `Scorecard.brain_events`, `run` |
-| `test_busy_lab_is_waited_for_then_retried` | A 409 makes the runner wait on `/lab/status` and retry, and the run counts. | `Scorecard.run_one`, `_wait_idle` |
-| `test_overrunning_run_is_cancelled_and_counted_failed` | A run that never finishes is cancelled with `DELETE /lab/run` and counted as failed. | `Scorecard.run_one` |
-| `test_unreachable_lab_stops_cleanly` | A lab that refuses connections gives zero-run cells and a "lab unreachable" skip entry. | `Scorecard.run` |
-| `test_aggregate_only_takes_newest_runs_per_cell` | Only the newest `runs` results per cell are used, an empty cell has no p99, and nothing is posted. | `Scorecard.aggregate_only` |
-| `test_main_writes_summary_file_and_table` | `main` writes exactly one `summary-*.json` that parses as `CrashSummary` with `file` set, and prints the table and "wrote". | `scorecard.main`, `write`, `table` |
-| `test_main_stdout_mode_is_pure_json` | With `--out -`, stdout is a valid `CrashSummary` and progress goes to stderr. | `scorecard.main`, `write` |
-| `test_main_rejects_bad_arguments` (parametrised: bad mode, `--runs 0`, unknown scenario) | Each exits through argparse. | `scorecard.main` |
-| `test_cli_hook_dispatches_scorecard` | `python -m tenantguard_lab scorecard --aggregate-only` reaches `scorecard.main(["--aggregate-only"])`. | `__main__.main` |
-| `test_summary_models_come_from_contracts` | `CrashSummary` and `CellStats` are the contract classes. | `scorecard` imports |
-
-**Key decisions**
-- The fake clock and mock transport make the 9-run plans instant, while still exercising the real polling, cooldown and overrun logic.
 
 ---
 
@@ -568,30 +482,6 @@ Unit tests for the percentile, summary, recorder, bucketing and recovery math.
 
 **Key decisions**
 - The cases document each edge case of the recovery definition used in `RunResult.time_to_recover_s`.
-
----
-
-### lab/tests/test_wave2_attacks.py
-Tests for the five second-wave attacks against a mock fleet: what each one sends, as whom, and how `faulty_server` cleans up. A transport is injected, so attacks run inline. These tests check the requests, not the effect on a real fleet.
-
-| Test | What it proves | Target (production code exercised) |
-|---|---|---|
-| `lab` (fixture) | Sets `TENANTGUARD_ADMIN_TOKEN=s3cret` and builds `create_app(load_config(), autostart=False, transport=MockTransport(handler))`. The handler records every request and answers 202 for `/api/ingest`, 200 otherwise, or 401 for `/admin/fault` when `lab.refuse_fault` is set. | `app.create_app` |
-| `run_for` (helper) | Starts an attack (intensity 1, 30 s), sleeps, stops it and checks the state is `stopped`. | n/a |
-| `sent` (helper) | The recorded requests for one path. | n/a |
-| `test_blackbox_bomb_sends_cheap_ingests_as_the_attacker` | At least 3 `POST /api/ingest`, each with the profile's `docs`; only K's API key is used; `/lab/metrics` counts them as K's attack traffic. | `attacks.blackbox_bomb`, `core.Lab.metrics` |
-| `test_background_bomb_writes_with_heavy_indexing` | At least 3 `/api/write` calls, each with the profile's `index_rounds` and a key and value; only K's key. | `attacks.background_bomb` |
-| `test_cache_flood_reads_keys_that_never_repeat` | At least 20 reads (4 × K's 10 req/s), every key starts with `flood`, at most one repeat; only K's key. | `attacks.cache_flood` |
-| `test_honest_spike_is_the_tenants_own_mix` | Only J's key; every path is in J's mix, with at least two kinds; at least 25 requests in 1.5 s (about 3 × J's 14 req/s). | `attacks.honest_spike` |
-| `test_faulty_server_injects_then_clears_the_fault` | `server` w4, `tenant` None. Exactly one `POST /admin/fault` to w4's port, with the admin token and no API key, body latency 150, CPU burn 30, `duration_s` ≥ 30. No `DELETE` while it runs; one `DELETE` to w4 with the token after the stop. Two requests in all: no tenant traffic. | `attacks.faulty_server`, `core.Lab.launch` (inline for server attacks), `_supervise` |
-| `test_faulty_server_intensity_scales_the_fault` | Intensity 2 on w2 sends latency 300 and CPU burn 60. | `attacks.faulty_server` |
-| `test_faulty_server_refused_ends_at_once` | A worker that answers 401 ends the attack as `done` within a second, not left `running` for 30 s with no fault in place. | `attacks.faulty_server`, `core.Lab._supervise`, `_finish` |
-| `test_wave2_validation` | `faulty_server` with no server, or with only a tenant, gives 422; server `w99` gives 404. The other four give 422 with no tenant and 404 for tenant `Z`. The demo's preflight probe (tenant and server `__probe__`) gets 404, not 501, for all five. Nothing is started and nothing is sent. | `core.Lab._validate` |
-| `test_runs_accept_wave2_and_faulty_server_blames_nobody` | `POST /lab/run` `blackbox_bomb` gives 202 with attacker K. `faulty_server` on w4 gives 202 with attacker None. `faulty_server` without a server gives 422. | `core.Lab.start_run`, `RunInfo.view` |
-
-**Key decisions**
-- The mock records every request, so each test can check the exact path, body and API key, and that a server attack sends no tenant traffic.
-- The validation test pins the contract the demo driver's preflight relies on: a shipped attack answers 4xx to the probe, never 501.
 
 ---
 
@@ -661,44 +551,21 @@ The single file holding every lab tunable: calm personas, request kinds, client 
 | `client.keyspace` | `1000` | `/api/read` and `/api/write` keys `k0000`..`k0999` (comment: matches worker `seed_rows`). |
 | `endpoints` | `light` GET `/api/light` (est 0.8 ms); `read` GET `/api/read` (1.0); `search` GET `/api/search` `n: 200000` (70.0); `write` POST `/api/write` (7.0) | Request kinds. `est_cpu_ms` is only used for the calibration estimate. |
 | `mix` | `light 0.45, read 0.30, search 0.15, write 0.10` | Default request mix (weights, normalised). |
-| `personas` | A–L: `rps`, `end_users` and `note` per tenant; B, D, H and L override `mix`. No tier or SLA here. | Calm behaviour per tenant. Names, tiers and `sla_p95_ms` come from the layout (see the table below). |
+| `personas` | A–L. rps 14/10/5 by tenant. `sla_p95_ms` 40–150. `end_users` and `note` per tenant. B, D, H and L override `mix`. | Calm behaviour per tenant. Names and tiers come from the layout. |
 | `attacks.flood` | `multiplier: 10, endpoint: light` | 10 × persona rps of `/api/light`. |
 | `attacks.whale` | `rps: 2.0, params: {n: 1500000}, max_inflight: 32` | Few, very heavy searches (comment: about 525 ms CPU each). |
 | `attacks.hog` | `concurrency: 24, path: /api/export, params: {rows: 1000, chunk: 50, pause_ms: 50}` | Closed loop of slow exports (comment: about 1 s each). |
 | `attacks.memory` | `rps: 4.0, params: {mb: 24, hold_ms: 1000}, max_inflight: 32` | Overlapping holds that exceed the 32 MB tenant budget (per the comment). Path defaults to `/api/memory` in code. |
 | `attacks.retry_storm` | `multiplier: 3, endpoint: read, max_retries: 50` | Immediate retries on 429/503, ignoring Retry-After. |
-| `attacks.blackbox_bomb` | `rps: 10, docs: 60` | About 120 ms of unmetered black-box CPU per cheap `/api/ingest` (per the comment). |
-| `attacks.background_bomb` | `rps: 8, index_rounds: 20000` | About 140 ms of background indexing per cheap `/api/write` (per the comment). |
-| `attacks.cache_flood` | `multiplier: 4, keyspace: 10000000` | 4 × persona rps of `/api/read`, every key new (all misses). |
-| `attacks.honest_spike` | `multiplier: 3` | 3 × the tenant's own mix: busy but within its plan. |
-| `attacks.faulty_server` | `latency_ms: 150, cpu_burn_pct: 30` | The fault put on `AttackReq.server`; cleared when the attack stops. |
 | `run.warmup_s` | `3` | Discarded warmup. |
 | `run.cold_start_s` | `10` | Extra warmup if calm traffic was off (comment: fresh connections take about 9 s to settle on Windows). |
 | `run.recover_ratio` / `run.recover_hold_s` | `1.5` / `5` | Recovered when victim p99 ≤ 1.5 × baseline for 5 consecutive seconds. |
 | `run.bucket_s` | `1.0` | Recovery bucket width. |
 | `run.victim_kinds` | `[light, read]` | Interactive request kinds that define victim SLO latency. `[]` means every calm request. |
 
-Personas after the tier rebalance. Rate follows the tier (enterprise 14, pro 10, free 5 req/s). Tier and SLA are read from `layouts/ag23.json`, the rest from `personas.yaml`.
-
-| Tenant | Tier (layout) | `sla_p95_ms` (layout) | `rps` | `end_users` | Mix |
-|---|---|---|---|---|---|
-| A | pro | 50 | 10 | 900,000 | default |
-| B | pro | 80 | 10 | 900,000 | search heavy (light 0.35, read 0.30, search 0.25, write 0.10) |
-| C | free | 150 | 5 | 40,000 | default |
-| D | enterprise | 40 | 14 | 3,000,000 | write heavy (0.50, 0.25, 0.05, 0.20) |
-| E | pro | 80 | 10 | 600,000 | default |
-| F | enterprise | 50 | 14 | 1,800,000 | default |
-| G | free | 150 | 5 | 40,000 | default |
-| H | pro | 80 | 10 | 300,000 | write heavy (0.40, 0.25, 0.10, 0.25) |
-| I | free | 150 | 5 | 50,000 | default |
-| J | enterprise | 50 | 14 | 5,000,000 | default |
-| K | pro | 80 | 10 | 250,000 | default (the usual attacker) |
-| L | enterprise | 50 | 14 | 2,500,000 | read heavy (0.40, 0.50, 0.05, 0.05) |
-
 **Key decisions**
-- The header comments state the calibration intent: calm load of about 121 req/s (the sum of the rates above), aimed at about 30% of 4500 CPU-ms/s (9 workers × 0.5 cores). CPU comes mostly from request weight (search `n`), not request count. Recalibrate on the real fleet with `calibrate`.
-- Attack profiles are data, so intensities and parameters can be tuned without code changes. All ten attacks have a profile.
-- The five second-wave profiles are starting points sized from `worker/calibration.json` (2 ms CPU per black-box doc, about 7 µs per index round). The comment's goal: the bombs push the attacker's servers past about 80% CPU while its request rate and metered cost stay inside the pro quota (50 req/s, 300 cost-ms/s). They have not been measured on the Docker host yet and are to be re-checked there.
+- The header comments state the calibration intent: calm load of about 116 req/s, aimed at about 30% of 4500 CPU-ms/s (9 workers × 0.5 cores). CPU comes mostly from request weight (search `n`), not request count. Recalibrate on the real fleet with `calibrate`.
+- Attack profiles are data, so intensities and parameters can be tuned without code changes. Only the five implemented attacks have profiles. The Wave-2 attacks are in progress and have none.
 
 ---
 
@@ -708,41 +575,19 @@ The operator guide for the lab. It covers how to run it, environment variables, 
 | Section | Content |
 |---|---|
 | Intro | 12 tenant personas, Poisson arrivals, attacks, scripted scenarios. Each run writes a `RunResult` to `lab/results/`, and slide numbers come only from these files. |
-| Run | CLI commands (`serve`, `calm`, `attack`, `stop`, `status`, `metrics`, `run`, `calibrate`, `scorecard`), `pytest`, `docker compose --profile lab up lab`. Remote-first behaviour and `--local`. |
+| Run | CLI commands (`serve`, `calm`, `attack`, `stop`, `status`, `metrics`, `run`, `calibrate`), `pytest`, `docker compose --profile lab up lab`. Remote-first behaviour and `--local`. |
 | Env | `TENANTGUARD_GATEWAY_URL`, `TENANTGUARD_BRAIN_URL`, `TENANTGUARD_WORKER_URLS`, `TENANTGUARD_UI_ORIGINS`, `TENANTGUARD_CONTROL_TOKEN`, `TENANTGUARD_LAB_RATE_SCALE`, `TENANTGUARD_LAB_AUTOSTART`, `TENANTGUARD_LAB_PERSONAS`, `TENANTGUARD_LAB_RESULTS`. |
-| API | Endpoint table with status codes (unknown tenant, or server for `faulty_server`, 404; missing one 422; intensity outside 0.1..5 → 422; concurrent run 409; `POST /lab/run` 202). |
-| Traffic | Personas and effective rate, absolute-schedule Poisson, per-tenant and per-attack pools, in-flight caps, process isolation rationale (about 3 ms httpx CPU per request, samples streamed every 250 ms, lag p99 warning above about 20 ms), and attack profiles, including the five second-wave ones (`faulty_server`: `POST /admin/fault` on the chosen worker with `X-Admin-Token`, `DELETE` when the attack stops, `duration_s` backstop, runs inline, no attacker in `/lab/run`). Notes that the second-wave profiles are starting points sized from `worker/calibration.json`, to re-check on the real fleet. |
-| Scorecard | What `python -m tenantguard_lab scorecard` runs (every scenario x mode, `--runs` each, scenarios a lab answers 501 for skipped and listed), the summary file and its per-cell fields, `--aggregate-only`, and the committed host summary. |
+| API | Endpoint table with status codes (Wave-2 attacks 501, unknown tenant 404, intensity outside 0.1..5 → 422, concurrent run 409, `POST /lab/run` 202). |
+| Traffic | Personas and effective rate, absolute-schedule Poisson, per-tenant and per-attack pools, in-flight caps, process isolation rationale (about 3 ms httpx CPU per request, samples streamed every 250 ms, lag p99 warning above about 20 ms), and attack profiles. Lists the Wave-2 names as 501. |
 | Measurement | Timeline (warmup, +10 s if cold, `calm_s`, `attack_s`, `calm_s`), `attack_start` marked once traffic flows (about 4 s spawn on Windows), victim selection and `victim_kinds`, numpy-linear p99, definitions of `time_to_recover_s`, `time_to_detect_s` and `attacker_429/503`. |
 | Calibration | Target about 30% of 4500 CPU-ms/s. One recorded measurement on 9 local workers: 1000 CPU-ms/s against an estimate of 1295, with `calibrate` suggesting `rate_scale` 1.35, described as a CPU-starved laptop. Advises recalibrating on the Docker host and `TENANTGUARD_LAB_RATE_SCALE=0.25` on a single laptop. |
 | Tools | `tools/stub_gateway.py` summary. |
 
-The README gives a short summary of the `scorecard` subcommand; this catalog (`scorecard.py` above) has the full detail.
-
 ---
 
-### lab/results/
-The measured results. Scenario runs write `<YYYYmmdd-HHMMSS>-<scenario>-<mode>.json` files here (`core.Lab.write_result`), and `GET /lab/results` and the UI Scorecard read them (`core.Lab.list_results`). The scorecard writes its `summary-*.json` here too. On this branch the folder holds `.gitkeep`, 18 `RunResult` files and one summary, all from the scorecard run on the Docker host.
+### lab/results/.gitkeep
+An empty file that keeps the `lab/results/` folder in git. Scenario runs write `<YYYYmmdd-HHMMSS>-<scenario>-<mode>.json` files here (`core.Lab.write_result`), and `GET /lab/results` and the UI Scorecard read them (`core.Lab.list_results`). The result data files are not catalogued here.
 
 | Item | Value | Purpose |
 |---|---|---|
 | `.gitkeep` | empty | Keeps the default `results_dir` (`LAB_DIR / "results"`, overridable with `TENANTGUARD_LAB_RESULTS`) present in a fresh checkout. |
-| `20261012-2204xx` … `20261012-2231xx-*.json` | 18 `RunResult` files: whale × {off, industry, tenantguard} × 3 runs, then flood × the same × 3 runs, interleaved by mode | One measured run each: `run_id`, `scenario`, `mode`, `attacker` (K), `started_at`, `victim_p99_ms` (baseline, attack, after), `victim_p99_by_tenant`, `time_to_detect_s`, `time_to_recover_s`, `attacker_429`, `attacker_503`, `file`. |
-| `summary-scorecard-host.json` | One `CrashSummary`: scenarios whale and flood, modes off / industry / tenantguard, `runs_per_cell` 3, attacker K, intensity 1.0, `calm_s` 20, `attack_s` 40, nothing skipped | The six cells built from the 18 files above. It was run inside the lab container (`lab_url` `http://127.0.0.1:8300`, `brain_url` `http://brain:8200`). Its `file` field reads `/tmp/summary.json` because it was written with `--out` and then copied here. `GET /lab/results` skips it, since it is not a `RunResult`. |
-
-Measured medians from `summary-scorecard-host.json` (3 runs per cell, attacker K, 20 s calm / 40 s attack):
-
-| Scenario | Mode | Victim p99 baseline → attack → after (ms) | Attacker 429 (median) | Culprit named by the brain | Innocents penalised |
-|---|---|---|---|---|---|
-| whale | off | 149 → 691 → 254 | 0 | 0 of 3 | none |
-| whale | industry | 157 → 176 → 165 | 315 | 0 of 3 | none |
-| whale | tenantguard | 158 → 183 → 154 | 321 | 0 of 3 | none |
-| flood | off | 200 → 162 → 186 | 0 | 0 of 3 | none |
-| flood | industry | 166 → 164 → 163 | 3133 | 0 of 3 | none |
-| flood | tenantguard | 143 → 144 → 175 | 2977 | 0 of 3 | none |
-
-How to read it:
-- No innocent tenant was penalised in any run.
-- Whale and flood are contained by the gateway limits that both protected modes share, so Industry and TenantGuard score about the same here. The brain named no culprit in these runs, because the gateway limits contained the attacker first. `time_to_detect_s` is null in every file: no brain incident for the attacker fell inside any attack window.
-- The brain's own value (naming, relocation proof, verdicts, host faults) is shown by the host acceptance run (2026-10-13, in the lab container on the host), not by this table: calm gave 0 ladder moves and no tenant blamed; the K big-plan whale was named at 99%, proved with R = 0.88, verdict `honest_growth`; a w4 fault gave `host_fault` with no tenant blamed.
-- Anomaly: one OFF-mode flood run (`20261012-222805-flood-off.json`) recorded 1,522 refused requests (`attacker_429`), which OFF mode should not produce. This is likely a mode-switch carry-over from the run before it. Another OFF flood run (`20261012-222323-flood-off.json`) recorded 6,415 `attacker_503`. The medians above still show 0 for OFF because the other runs recorded none.

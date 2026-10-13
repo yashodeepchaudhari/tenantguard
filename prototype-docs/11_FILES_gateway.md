@@ -390,8 +390,8 @@ FastAPI wiring: the `/api/*` proxy, health, telemetry WebSocket, metrics, the ad
 | `create_app.control_route_weights` | `POST /control/route_weights` | Validates tenants, servers and finite non-negative weights (at least one positive); applies | brain (rescue) |
 | `create_app.control_relocate` | `POST /control/relocate` | Validates the target; applies or clears | brain |
 | `create_app.control_drain` | `POST /control/drain` | Validates the server; drains or undrains | brain |
-| `create_app.control_charge` | `POST /control/charge` | Validates finite cpu_ms ≥ 0; calls `gw.charge` | brain `_charges` (each tenant's background CPU, once per second, tenantguard mode only) |
-| `create_app.control_reference_costs` | `POST /control/reference_costs` | Replaces the reference-cost table (finite, > 0) | no other service sends it on this branch (exercised by `tests/test_wave2_api.py`) |
+| `create_app.control_charge` | `POST /control/charge` | Validates finite cpu_ms ≥ 0; calls `gw.charge` | brain (reserved) |
+| `create_app.control_reference_costs` | `POST /control/reference_costs` | Replaces the reference-cost table (finite, > 0) | brain (reserved) |
 | `create_app.get_reference_costs` | `GET /admin/reference_costs` | Pushed table + measured EWMAs | operators |
 | `app` | module attribute | `create_app()` | uvicorn |
 

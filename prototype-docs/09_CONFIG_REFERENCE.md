@@ -1,15 +1,14 @@
 # 09: Configuration reference
 
-Every tunable value lives in `tenantguard.yaml`, read through `common/tenantguard_common/config.py` (`load_settings()`, `load_tenants()`, `worker_urls()`). The traffic lab's own tunables live in `lab/personas.yaml`. Environment variables are only for deployment concerns (URLs, ports, tokens, paths, the prover switch). This page lists every yaml key, environment variable, port and token on `master`.
+Every tunable value lives in `tenantguard.yaml`, read through `common/tenantguard_common/config.py` (`load_settings()`, `load_tenants()`, `worker_urls()`). Environment variables are only for deployment concerns (URLs, ports, tokens, paths). This page lists every yaml key, environment variable, port and token on `master`.
 
 ```mermaid
 flowchart LR
   Y["tenantguard.yaml"] --> C["common/config.py<br/>load_settings · load_tenants · worker_urls"]
   L["layouts/ag23.json"] --> C
   E["environment variables"] --> C
-  P["lab/personas.yaml"] --> LB
-  C --> GW["gateway"] & WK["worker"] & BR["brain"] & LB["lab"] & HO["handoff"] & BI["billing"] & NA["narrator"]
-  E --> GW & WK & BR & LB & HO & BI & NA
+  C --> GW["gateway"] & WK["worker"] & BR["brain"] & LB["lab"] & HO["handoff"] & NA["narrator"]
+  E --> GW & WK & BR & LB & HO & NA
   V["ui/.env (VITE_*)"] --> UI["ui"]
 ```
 
@@ -18,7 +17,7 @@ flowchart LR
 ### Top level
 | Key | Value | Used by | Meaning |
 |---|---|---|---|
-| `layout` | `layouts/ag23.json` | all Python services (`load_tenants`) | The tenant layout: id, name, tier, 3 servers, demo API key, monthly revenue, protected flag, `sla_p95_ms` (see the layout section below) |
+| `layout` | `layouts/ag23.json` | all Python services (`load_tenants`) | The tenant layout: id, name, tier, 3 servers, demo API key, monthly revenue, protected flag |
 | `workers.<name>` | `w0..w8` → `http://127.0.0.1:8100..8108`, `spare` → `:8109`, `quarantine` → `:8110` | gateway, brain, lab, billing | Worker base URLs for local runs; `TENANTGUARD_WORKER_URLS` overrides them in compose |
 | `services.<name>` | gateway `:8000`, brain `:8200`, lab `:8300`, handoff `:8400`, billing `:8600`, narrator `:8700` | every service and `tools/demo.py` | Default peer URLs and each service's own port |
 
@@ -67,100 +66,30 @@ flowchart LR
 | `max_classes_per_tenant` | 256 | Distinct request classes metered per tenant; further classes are counted under `other`, so a client cannot grow the meter without bound |
 
 ### `brain`
-Read by `brain/tenantguard_brain/settings.py` and the `from_yaml` methods of `LadderParams`, `HealthParams`, `DecoderParams`, `VerdictParams`, `ProverParams` and `ActionBudget`. Every key has a code default, used when the key is missing.
-
-**Loop**
-
 | Key | Value | Meaning |
 |---|---|---|
-| `tick_ms` | 250 | Brain loop period |
-| `stats_poll_s` | 1.0 | Worker `/stats` poll period |
-
-**`noisy`: Stage 2 detector, victims and ladder**
-
-| Key | Value | Meaning |
-|---|---|---|
-| `noisy.warn` / `.throttle` / `.quarantine` | 1.5 / 2.0 / 4.0 | Noisy-score thresholds of the ladder (also sent to the UI as `noisy_thresholds`) |
+| `tick_ms` / `stats_poll_s` | 250 / 1.0 | Brain loop period; worker `/stats` poll period |
+| `noisy.warn` / `.throttle` / `.quarantine` | 1.5 / 2.0 / 4.0 | Noisy-score thresholds of the ladder |
 | `noisy.recover_below` | 1.0 | Score under which recovery starts |
-| `noisy.hold_s` | warn 5, throttle 2, deprioritize 4, quarantine 6, recover 10 | How long a condition must hold before a level change |
-| `noisy.throttle_factor` / `.recover_step` | 0.5 / 0.1 | AIMD: multiply quota by 0.5 per throttle step; add 0.1 per recovery tick. `throttle_factor` is also the cut applied on an `over_plan` verdict |
+| `noisy.hold_s` | warn 2, throttle 2, deprioritize 4, quarantine 6, recover 10 | How long a condition must hold before a level change |
+| `noisy.throttle_factor` / `.recover_step` | 0.5 / 0.1 | AIMD: multiply quota by 0.5 per throttle step; add 0.1 per recovery tick |
 | `noisy.min_victim_impact` | 0.2 | Neighbours must be hurt at least this much before anyone is flagged |
-| `noisy.baseline_alpha` | 0.05 | Legacy per-frame EWMA, superseded by `baseline_half_life_s` (not read) |
+| `noisy.baseline_alpha` | 0.05 | Legacy per-frame EWMA (superseded by the half-life) |
 | `noisy.baseline_half_life_s` | 60 | Time-based EWMA of the calm baseline p95; frozen while a neighbour over-uses |
 | `noisy.hold_ratio` | 0.8 | A level holds if at least this share of ticks in the hold window are above threshold |
 | `noisy.recover_tick_s` | 1.0 | Recovery step period |
 | `noisy.throttle_floor` | 0.25 | Lowest AIMD factor before deprioritize |
 | `noisy.deprioritize_weight` | 0.25 | Weight factor at deprioritize |
 | `noisy.quarantine_factor` / `.quarantine_weight` | 0.1 / 0.1 | Quota and weight factors at quarantine |
-| `noisy.victim_window_s` | 5.0 | Victim latency is a sustained statistic over this window |
-| `noisy.victim_quantile` | 0.3 | Quantile of the per-tick p95 in that window (robust to short CPU-quota stalls) |
-| `noisy.victim_min_ticks` | 4 | Ticks with completions needed in the window |
-| `noisy.victim_abs_ms` | 8.0 | A victim must be at least this many ms above its baseline |
-| `noisy.over_use` | 1.6 | A tenant is flagged only above this multiple of its fair share; also the per-server "hot tenant" test for held hosts |
-| `noisy.min_hurt_neighbours` | 4 | ... and only when at least this many of its neighbours are hurt |
-
-**`health`: Stage 3 server health and canaries**
-
-| Key | Value | Meaning |
-|---|---|---|
-| `health.probe_window_ticks` | 8 | Ticks of history for server health (also sets the victim detection window) |
-| `health.slow_peer_ratio` / `.slow_abs_ms` | 1.6 / 8 | A server is slow if its level is ≥ 1.6× its peers and ≥ 8 ms above them. `slow_peer_ratio` is also the decoder's centre and the default `verdicts.harm_follow_ratio` |
-| `health.open_after_ticks` | 4 | Legacy; persistence is now `open_hold_s` |
-| `health.window_s` | 5.0 | Window of per-tick p95 samples for a server's level |
-| `health.level_quantile` | 0.3 | Cell level = this quantile of per-tick p95 over `window_s` |
-| `health.open_hold_s` / `.heal_hold_s` | 4.0 / 2.0 | A server opens (heals) only after this long with ≥ `hold_ratio` slow (healthy) ticks |
-| `health.hold_ratio` | 0.8 | Share of ticks needed for open / heal |
-| `health.min_slow_ms` | 25.0 | A server is never slow below this absolute level ... |
-| `health.sla_fraction` | 0.5 | ... nor below this fraction of the strictest tenant SLA (`sla_p95_ms`) on the server |
-| `health.min_cell_requests` | 5 | Requests a (tenant, server) cell needs to count |
-| `health.min_tenants` | 2 | Tenants a server needs to be judged on traffic |
-| `health.canary_s` | 1.0 | Canary probe period |
-| `health.min_canaries` / `.canary_window_s` | 3 / 6.0 | Canary samples and window when a server has too little traffic |
-| `health.canary_abs_ms` | 8.0 | Canaries can keep a slow server open, never open one |
-
-**Rescue, proof and verdicts**
-
-| Key | Value | Meaning |
-|---|---|---|
+| `health.probe_window_ticks` | 8 | Ticks of history for server health |
+| `health.slow_peer_ratio` / `.slow_abs_ms` | 1.6 / 8 | A server is slow if its p95 ≥ 1.6× the median of its peers and ≥ 8 ms above it |
+| `health.open_after_ticks` | 4 | Debounce before a server incident opens and before naming |
 | `rescue_capacity_guard` | 0.7 | Rescue never pushes a healthy server over 70% CPU |
-| `confidence_to_prove` | 0.8 | Minimum culprit confidence to start a relocation proof; below it the verdict is `mitigated_no_blame`. Also the handoff bridge's "named" threshold |
-| `spare_sizing` | 1.25 | The spare is resized to this × the suspect's CPU footprint (clamped to 0.25 to 4 cores) |
-| `prove_settle_s` / `prove_window_s` | 2 / 6 | Wait after the relocation (or drain), then measuring window |
-| `recovery_R` | 0.5 | Proof confirmed only if R = 1 − post/pre slowdown ≥ this (and the harm followed) |
-| `paid_share_costly` | 0.35 | Paid share of the footprint below this → `costly_pattern` |
-| `host_idle_ratio` | 1.5 | A drained, idle server still ≥ this × its peers → `host_fault` |
-| `ttl_s.relocate` / `.quarantine` / `.throttle` | 120 / 120 / 60 | TTL of relocations and drains (also the proof's relocation) / quarantine relocations and ladder quarantine / ladder throttle |
-| `ttl_s.probation` | 300 | Present in the yaml; not read by any service on `master` |
-| `action_budget.relocations_per_min` | 6 | Relocation proofs per minute; more are deferred |
-| `action_budget.quarantine_every_s` | 30 | At most one quarantine per this many seconds |
-| `action_budget.max_drained` | 1 | Servers drained at once |
-| `action_budget.drain_peer_busy` | 0.75 | A drain test runs only while the other servers are below this utilisation |
-| `prover` | `auto` | `auto` (Docker prover when the socket answers and a compose project is set, else none), `docker` (must work, else the brain fails at start), `null` (no proof: culprits are named only). Env `TENANTGUARD_PROVER` wins |
-| `charge_s` | 1.0 | Period of the background-CPU `ChargeCmd` to the gateway |
-
-**`decoder`: barcode decoder** (`brain/tenantguard_brain/decoder.py`)
-
-| Key | Value | Meaning |
-|---|---|---|
-| `k` | 8 | Logistic steepness of p(server slow) around `health.slow_peer_ratio` |
-| `w_min` / `w_mean` / `w_stuck` / `w_ledger` | 4 / 2 / 1 / 2 | Evidence weights: all of a tenant's servers slow; share of unexplained slowness covered; every server it can use is slow; ledger hints (background CPU, evictions, black-box growth, over fair share) |
-| `w_host` / `w_none` | 4 / 3 | Weights of the "host fault" and "nothing is slow" options |
-| `temperature` | 1.0 | Softmax temperature for the confidences |
-| `min_confidence` | 0.5 | Tenants together must hold at least this to accept a tenant |
-| `max_culprits` | 2 | Explain-away rounds (names up to two culprits) |
-| `host_p` | 0.5 | Residual p(slow) above this makes a server a host suspect |
-
-**`verdicts`** (`brain/tenantguard_brain/verdicts.py`)
-
-| Key | Value | Meaning |
-|---|---|---|
-| `over_plan_rejected_share` | 0.2 | Admission refusing ≥ this share of its requests → `over_plan` |
-| `harm_follow_share` | 0.3 | Harm followed if the spare's CPU rose by ≥ this share of the footprint ... |
-| `harm_follow_ratio` | 1.6 | ... or the spare's latency reached this peer ratio |
-| `evidence_hint` | 0.3 | A black-box or eviction hint above this counts as `costly_pattern` evidence |
-| `repeat_count` / `repeat_window_s` | 3 / 600 | Named this many times within this window = repeat offender (last verdict applied again without a new proof) |
-
-Keys read with a code default but not written in the yaml: `verdicts.prove_sample_s` (0.5 s sampling during a proof), `verdicts.min_spare_cores` / `max_spare_cores` (0.25 / 4.0), and `ttl_s.rescue` (falls back to `ttl_s.relocate`).
+| `confidence_to_prove` | 0.6 | Minimum culprit confidence to start a proof; also the handoff bridge's "named" threshold |
+| `spare_sizing`, `prove_settle_s`, `prove_window_s`, `recovery_R` | 1.25, 2, 6, 0.5 | Relocation prover parameters (**in progress**, T12) |
+| `paid_share_costly`, `host_idle_ratio` | 0.35, 1.5 | Verdict thresholds (**in progress**, T12) |
+| `ttl_s` | relocate 120, quarantine 120, throttle 60, probation 300 | TTL of each kind of brain action |
+| `action_budget` | relocations_per_min 6, quarantine_every_s 30, max_drained 1 | Rate limits on drastic actions |
 
 ### `handoff`
 | Key | Value | Meaning |
@@ -174,66 +103,13 @@ Keys read with a code default but not written in the yaml: `verdicts.prove_sampl
 | `history_keep` | 500 | History items kept per case in memory (older ones counted, not kept) |
 | `id_map_max` | 2000 | incident_id → case_id entries kept and persisted (live cases always keep their ids) |
 
-### `billing`
-Read by `billing/tenantguard_billing/settings.py` (code defaults in `DEFAULTS` are the same values).
-
-| Key | Value | Meaning |
-|---|---|---|
-| `poll_s` | 5 | Period of the worker `/stats`, brain `/api/incidents` and gateway `/admin/tenants` poll |
-| `bucket_s` | 60 | Metering bucket length |
-| `retention_h` | 24 | Buckets and history kept |
-| `price_rs_per_cpu_s` | enterprise 0.40, pro 0.60, free 0.80 | Price per CPU second by tier |
-| `db_price_rs_per_s` | 0.0 | Price per second of SQLite time (0 = the `db` line is informational) |
-| `ref_alpha` | 0.2 | EWMA weight of a calm bucket in the calm reference cost per (tenant, class) and per class |
-| `sla_default_p95_ms` | 100 | SLA for a tenant the layout does not know (layout tenants use their own `sla_p95_ms`) |
-| `sla_credit_table` | 2 s → 2%, 10 s → 4%, 60 s → 10%, 300 s → 25% | Credit (percent of the period's usage subtotal) by seconds of SLA violation |
-| `unmetered_min_confidence` | 0.6 | A named culprit gets the "unmetered" true-cost line only at or above this confidence |
-
-### Layout fields used as configuration (`layouts/ag23.json`)
-| Field | Meaning |
-|---|---|
-| `tier` | `enterprise` (D, F, J, L), `pro` (A, B, E, H, K), `free` (C, G, I); sets weight and quota from `tiers`. No server carries more than two enterprise tenants |
-| `sla_p95_ms` | Per-tenant end-to-end p95 target: D 40; A, F, J, L 50; B, E, H, K 80; C, G, I 150. Used by billing (credits, "Why was I slow?"), the brain's health floor (`health.sla_fraction`) and the lab personas |
-| `monthly_revenue_rs`, `protected` | Impact numbers and the protected badge |
+### `billing` (**in progress**, T17: keys exist; the service code is not on master)
+`poll_s` 5, `bucket_s` 60, `retention_h` 24, `price_rs_per_cpu_s` (enterprise 0.40, pro 0.60, free 0.80), `db_price_rs_per_s` 0.0, `ref_alpha` 0.2, `sla_default_p95_ms` 100, `sla_credit_table` (2 s → 2%, 10 s → 4%, 60 s → 10%, 300 s → 25%), `unmetered_min_confidence` 0.6.
 
 ### `narrator`
 | Key | Value | Meaning |
 |---|---|---|
 | `max_reports` | 200 | Reports kept in memory (oldest evicted) |
-
-### Lab (`lab/personas.yaml`, read by `lab/tenantguard_lab/settings.py`)
-`tenantguard.yaml` has no `lab:` section. The lab reads `services`, `workers` and `worker.cpus` from it, and everything else from its own file (path override `TENANTGUARD_LAB_PERSONAS`).
-
-| Key | Value | Meaning |
-|---|---|---|
-| `rate_scale` | 1.0 | Multiplies every persona's rate (env `TENANTGUARD_LAB_RATE_SCALE` wins) |
-| `autostart` | true | Start calm traffic when the lab server boots (env `TENANTGUARD_LAB_AUTOSTART=0` disables) |
-| `default_attacker` | K | Tenant used by `/lab/run` when `RunReq.tenant` is empty |
-| `target_fleet_util` | 0.30 | Calibration target (share of fleet CPU at calm) |
-| `client.timeout_s` | 10.0 | Per-request timeout |
-| `client.max_inflight_per_tenant` | 64 | Calm traffic: arrivals beyond this are counted as `client_dropped` |
-| `client.max_inflight_per_attack` | 512 | In-flight cap per attack |
-| `client.attack_isolation` | `process` | Each attack in its own process (`inline` = same loop, for tests) |
-| `client.keyspace` | 1000 | `/api/read` and `/api/write` keys `k0000..k0999` (matches `worker.seed_rows`) |
-| `endpoints.<kind>` | light, read, search (`n` 200000), write | Method, path, params and `est_cpu_ms` (for the calibration printout only) |
-| `mix` | light 0.45, read 0.30, search 0.15, write 0.10 | Default request mix (normalised) |
-| `personas.<id>` | `rps` 5 to 14, `end_users`, optional `mix`, `note` | Per-tenant calm behaviour; names, tiers and SLA come from the layout |
-| `attacks.flood` | multiplier 10, endpoint light | 10× persona rps of `/api/light` |
-| `attacks.whale` | rps 2.0, `n` 1500000, max_inflight 32 | Few, very heavy `/api/search` |
-| `attacks.hog` | concurrency 24, `/api/export` rows 1000, chunk 50, pause_ms 50 | Closed-loop long exports |
-| `attacks.memory` | rps 4.0, mb 24, hold_ms 1000, max_inflight 32 | Overlapping holds over the 32 MB tenant budget |
-| `attacks.retry_storm` | multiplier 3, endpoint read, max_retries 50 | Retries at once on 429/503, ignoring `Retry-After` |
-| `attacks.blackbox_bomb` | rps 10, docs 60 | `POST /api/ingest`: a cheap metered handler, about 120 ms of unmetered black-box CPU each |
-| `attacks.background_bomb` | rps 8, index_rounds 20000 | `POST /api/write`: cheap handler, about 140 ms of background indexing each (charged as `bg_cpu_ms`) |
-| `attacks.cache_flood` | multiplier 4, keyspace 10000000 | 4× persona rps of `/api/read`, every key new (all cache misses) |
-| `attacks.honest_spike` | multiplier 3 | 3× the tenant's own request mix: busy but within its plan |
-| `attacks.faulty_server` | latency_ms 150, cpu_burn_pct 30 | Fault put on `AttackReq.server` through `/admin/fault`, cleared when the attack stops |
-| `run.warmup_s` / `.cold_start_s` | 3 / 10 | Discarded warm-up; extra warm-up if calm traffic was off |
-| `run.recover_ratio` / `.recover_hold_s` | 1.5 / 5 | Recovered when victim p99 ≤ 1.5× baseline for 5 s |
-| `run.bucket_s` | 1.0 | Latency bucket for the run timeline |
-| `run.victim_kinds` | `[light, read]` | Request kinds whose latency counts as the victims' SLO (`[]` = every calm request) |
-
-The five second-wave profiles (`blackbox_bomb` to `faulty_server`) are starting points sized from `worker/calibration.json` (2 ms CPU per black-box doc, about 7 µs per index round). They have not been measured on the Docker host yet; re-check them there. The bombs should push the attacker's servers past about 80% CPU while its request rate and metered cost stay inside the pro quota (50 req/s, 300 cost-ms/s).
 
 ## 2. Environment variables
 
@@ -242,28 +118,23 @@ The five second-wave profiles (`blackbox_bomb` to `faulty_server`) are starting 
 | `TENANTGUARD_ROOT` | `common/config.py` | repo root | Where `tenantguard.yaml` and `layouts/` live (`/app` in containers) |
 | `TENANTGUARD_CONFIG` | `common/config.py` | `$ROOT/tenantguard.yaml` | Alternative config file |
 | `TENANTGUARD_LAYOUT` | `common/config.py` | `$ROOT/<layout>` | Alternative layout file |
-| `TENANTGUARD_WORKER_URLS` | `common/config.py` → gateway, brain, lab, billing, demo driver | yaml `workers` | `w0=http://..,w1=..,spare=..` |
-| `TENANTGUARD_GATEWAY_URL` | brain, lab, handoff, billing, `tools/demo.py`, gateway tools | yaml `services.gateway` | Gateway URL |
-| `TENANTGUARD_BRAIN_URL` | lab, handoff, narrator, billing, `tools/demo.py` | yaml `services.brain` | Brain URL |
+| `TENANTGUARD_WORKER_URLS` | `common/config.py` → gateway, brain, lab | yaml `workers` | `w0=http://..,w1=..,spare=..` |
+| `TENANTGUARD_GATEWAY_URL` | brain, lab, handoff, `tools/demo.py`, gateway tools | yaml `services.gateway` | Gateway URL |
+| `TENANTGUARD_BRAIN_URL` | lab, handoff, narrator, `tools/demo.py` | yaml `services.brain` | Brain URL |
 | `TENANTGUARD_LAB_URL` | lab CLI, `tools/demo.py` | yaml `services.lab` | Lab URL |
-| `TENANTGUARD_CONTROL_TOKEN` | gateway, brain, lab, handoff, billing, `tools/demo.py`, gateway and brain tools | `dev` | Shared control token (see Tokens) |
-| `TENANTGUARD_CORS_ORIGINS` | gateway, brain, handoff, narrator, billing | `http://127.0.0.1:5173,http://localhost:5173` (billing: `http://127.0.0.1:5173`) | Allowed UI origins |
-| `TENANTGUARD_UI_ORIGINS` | worker, lab; billing (fallback when `TENANTGUARD_CORS_ORIGINS` is unset); compose (host-side value passed to every service as its CORS origin) | `http://127.0.0.1:5173` | Allowed UI origins |
+| `TENANTGUARD_CONTROL_TOKEN` | gateway, brain, lab, handoff, `tools/demo.py` | `dev` | Shared control token (see Tokens) |
+| `TENANTGUARD_CORS_ORIGINS` | gateway, brain, handoff, narrator | `http://127.0.0.1:5173,http://localhost:5173` | Allowed UI origins |
+| `TENANTGUARD_UI_ORIGINS` | worker, lab | `http://127.0.0.1:5173` | Allowed UI origins |
 | `TENANTGUARD_UPSTREAM_TIMEOUT_S` | gateway | yaml `gateway.upstream_timeout_s` | Forwarding timeout |
 | `TENANTGUARD_GATEWAY_HOST` / `_PORT` | gateway `__main__` | `0.0.0.0` / yaml port | Bind address |
 | `TENANTGUARD_BRAIN_HOST` / `_PORT` | brain | `0.0.0.0` / yaml port | Bind address |
-| `TENANTGUARD_PROVER` | brain | yaml `brain.prover` (`auto`) | `auto`, `docker` or `null`; overrides the yaml |
-| `TENANTGUARD_DOCKER_SOCKET` | brain prover | `/var/run/docker.sock` | Docker Engine socket (compose mounts the host's socket into the brain) |
-| `COMPOSE_PROJECT` | brain prover | unset (compose sets it to `${COMPOSE_PROJECT_NAME:-codeastra}`) | Compose project whose `spare` the prover may resize; unset → no Docker action (`auto`) or a start error (`docker`) |
-| `TENANTGUARD_SPARE_CONTAINER` | brain prover | unset | Exact spare container name; overrides the label lookup |
 | `SERVER_NAME` | worker (and `gateway/tools/stub_worker.py`) | `stub` / required | The worker's name (`w0`…, `spare`, `quarantine`) |
 | `WORKER_DATA_DIR` | worker | `./data/<server>` (`/data` in Docker) | Per-tenant SQLite directory |
 | `CPU_LIMIT_CORES` | worker | cgroup `cpu.max`, else yaml `worker.cpus` | CPU limit reported for `cpu_pct` |
 | `MALLOC_ARENA_MAX` / `MALLOC_MMAP_THRESHOLD_` | worker image (glibc) | `2` / `131072` (set in `worker/Dockerfile`) | Allocator settings so memory freed by request threads goes back to the OS; the worker also applies them at start with `mallopt`, and the env covers the black-box child process |
-| `TENANTGUARD_ADMIN_TOKEN` | worker, lab, `tools/demo.py` | `dev` | `X-Admin-Token` for worker `/admin/fault` (the lab's `faulty_server` attack, and the demo's direct fault fallback) and `/admin/memory` |
+| `TENANTGUARD_ADMIN_TOKEN` | worker, `tools/demo.py` | `dev` | `X-Admin-Token` for worker `/admin/fault` (demo fault fallback) and `/admin/memory` |
 | `TENANTGUARD_LAB_PERSONAS` | lab | `lab/personas.yaml` | Persona file |
-| `TENANTGUARD_LAB_RATE_SCALE` | lab | yaml `rate_scale` (1.0) | Multiplies every persona's rate |
-| `TENANTGUARD_LAB_AUTOSTART` | lab | yaml `autostart` (true) | `0` / `false` / `no` / `off` = do not start calm traffic on boot |
+| `TENANTGUARD_LAB_RATE_SCALE` | lab | 1.0 | Multiplies every persona's rate |
 | `TENANTGUARD_LAB_RESULTS` | lab | `lab/results` | Where measured run JSON files are written |
 | `STUB_RPS`, `STUB_FORWARD` | lab stub gateway tool | n/a | Development stub only |
 | `WEB_URL` | handoff, `mock_web.py` | `http://127.0.0.1:8500` | The partner Digital Handoff app |
@@ -273,8 +144,7 @@ The five second-wave profiles (`blackbox_bomb` to `faulty_server`) are starting 
 | `HANDOFF_HOST` / `HANDOFF_PORT` | handoff `__main__` | `0.0.0.0` / yaml port | Bind address |
 | `HANDOFF_URL`, `FAKE_GW_URL` | handoff tools (`mock_web.py`, `prove_handoff.py`) | `:8400`, `:8099` | Tool targets |
 | `NARRATOR_HOST` / `NARRATOR_PORT` | narrator `__main__` | `0.0.0.0` / yaml port | Bind address |
-| `COMPOSE_PROJECT_NAME` | compose | `codeastra` | Project name (a frozen demo stack can run beside a dev stack); passed to the brain as `COMPOSE_PROJECT` |
-| `TENANTGUARD_ROOT` = `/app` | compose, every service | | Set in every container so the yaml and layout are found |
+| `COMPOSE_PROJECT_NAME` | compose | `codeastra` | Project name (a frozen demo stack can run beside a dev stack) |
 | `GATEWAY_PORT`, `BRAIN_PORT`, `LAB_PORT`, `HANDOFF_PORT`, `NARRATOR_PORT`, `BILLING_PORT` | compose | 8000, 8200, 8300, 8400, 8700, 8600 | Host ports published by compose |
 
 ### UI (`ui/.env`, see `ui/.env.example`)
@@ -294,20 +164,20 @@ The five second-wave profiles (`blackbox_bomb` to `faulty_server`) are starting 
 | workers `w0..w8` | 8100 in compose; local 8100–8108 | internal only |
 | `spare`, `quarantine` | 8100 in compose; local 8109, 8110 | internal only |
 | brain | 8200 | published (`BRAIN_PORT`) |
-| lab | 8300 | profile `lab` (`LAB_PORT`) |
-| handoff bridge | 8400 | profile `handoff` (`HANDOFF_PORT`) |
+| lab | 8300 | profile `lab` |
+| handoff bridge | 8400 | profile `handoff` |
 | mock partner app | 8500 | not in compose (`integrations/handoff/tools/mock_web.py`) |
-| billing | 8600 | profile `billing` (`BILLING_PORT`) |
-| narrator | 8700 | profile `narrator` (`NARRATOR_PORT`) |
+| billing | 8600 | profile `billing` (**in progress**) |
+| narrator | 8700 | profile `narrator` |
 | UI (Vite) | 5173 | outside Docker |
 
 ## 4. Tokens and keys
 
 | Secret | Header | Where checked | Default |
 |---|---|---|---|
-| Control token (`TENANTGUARD_CONTROL_TOKEN`) | `X-TenantGuard-Control-Token` | gateway `/admin/*` and `/control/*`; brain `POST /api/operator` (constant-time compare; missing or wrong → 401). Billing sends it to read the gateway's `/admin/tenants` | `dev` |
+| Control token (`TENANTGUARD_CONTROL_TOKEN`) | `X-TenantGuard-Control-Token` | gateway `/admin/*` and `/control/*`; brain `POST /api/operator` (constant-time compare; missing or wrong → 401) | `dev` |
 | Tenant API keys | `X-API-Key` | gateway only; stored as SHA-256; plaintext demo keys are in `layouts/ag23.json` (`tk_A_demo`…) | per layout |
 | Worker admin token (`TENANTGUARD_ADMIN_TOKEN`) | `X-Admin-Token` | worker `/admin/fault` and `/admin/memory` (never reachable through the gateway's path guard) | `dev` |
 | Partner token (`HANDOFF_PARTNER_TOKEN`) | `X-Handoff-Token` | handoff `POST /control/case-update` and `/cases/update` | unset → inbound updates refused (503) |
 
-The brain also holds the host's Docker socket (compose volume `/var/run/docker.sock`); it uses it only to resize its own stack's spare. Use non-default values for every token outside a closed demo network. Services talk plain HTTP; the design assumes a private network (Tailscale or LAN).
+Use non-default values for every token outside a closed demo network. Services talk plain HTTP; the design assumes a private network (Tailscale or LAN).

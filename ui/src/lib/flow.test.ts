@@ -1,35 +1,45 @@
 import { describe, expect, it } from 'vitest'
-import type { OverridesView } from '../types.ts'
-import { pickServer, rerouteHint, tenantRoutes } from './flow.ts'
+import type { OverridesView, PoolView, ProjectView, ReplicaView, TenantView } from '../types.ts'
+import { flowHint, pickServer, routeTable, tenantRoutes } from './flow.ts'
 
-const ov = (o: Partial<OverridesView>): OverridesView => ({
-  limits: {}, blocks: {}, relocations: [], route_weights: {}, drains: {}, expires_at: {}, fail_static: false, ...o,
+const ov = (o: Partial<OverridesView>): OverridesView => ({ limits: {}, blocks: {}, pins: {}, expires_at: {}, fail_static: false, ...o })
+const rep = (id: string, state: ReplicaView['state'] = 'ready', o: Partial<ReplicaView> = {}): ReplicaView => ({
+  id, project: id.split('-')[1] ?? 'p', url: `http://${id}`, state, borrowed: false, nano_cpus: 1e9, cpu_shares: 1024, mem_mb: 160, started_at: 0, tenants: [], ...o,
+})
+const proj = (id: string, replicas: ReplicaView[], o: Partial<ProjectView> = {}): ProjectView => ({
+  id, name: id, tier: 'pro', weight: 2, floor_cpu: 0.75, cap_cpu: 2, warm_min: 1, tenants: [], demand_cpu: 0.4, used_cpu: 0.4,
+  base_cpu: 0.4, loan_cpu: 0, alloc_cpu: 0.4, state: 'warm', replicas, ...o,
+})
+const pool = (projects: ProjectView[]): PoolView => ({
+  pool: { cpu_total: 5.75, mem_total_mb: 2688, headroom_ratio: 0.1 }, usable_cpu: 5.175, usable_mem_mb: 2419, floors_cpu: 4.5, reserved_mem_mb: 800, projects,
+})
+const tv = (tenant: string, project: string): TenantView => ({
+  tenant, name: tenant, tier: 'pro', p95_ms: 20, rps: 5, rejected_rps: 0, cpu_share: 0.1, noisy_score: 0.5, noisy_norm: 0.1, level: 'normal', factor: 1, project,
 })
 
 describe('flow routing model', () => {
-  it('equal weights over the barcode by default', () => {
-    expect(tenantRoutes('B', ['w3', 'w4', 'w5'], null).map((r) => r.weight)).toEqual([1 / 3, 1 / 3, 1 / 3])
-  })
-
-  it('route weights (rescue) shift traffic, normalized', () => {
-    const r = tenantRoutes('B', ['w3', 'w4', 'w5'], ov({ route_weights: { B: { w3: 0, w4: 2, w5: 2 } } }))
+  it('a tenant reaches only its own project’s ready replicas, evenly', () => {
+    const r = tenantRoutes('K', [rep('tg-mobility-1'), rep('tg-mobility-2'), rep('tg-mobility-3', 'starting'), rep('tg-mobility-4', 'draining')], undefined)
     expect(r).toEqual([
-      { server: 'w3', weight: 0 },
-      { server: 'w4', weight: 0.5 },
-      { server: 'w5', weight: 0.5 },
+      { server: 'tg-mobility-1', weight: 0.5 },
+      { server: 'tg-mobility-2', weight: 0.5 },
     ])
   })
 
-  it('a whole-tenant relocation sends everything to the target', () => {
-    expect(tenantRoutes('K', ['w1', 'w3', 'w8'], ov({ relocations: [{ tenant: 'K', target: 'spare', ttl_s: 60 }] }))).toEqual([{ server: 'spare', weight: 1 }])
-    // a class-only relocation does not move the whole tenant
-    expect(tenantRoutes('K', ['w1'], ov({ relocations: [{ tenant: 'K', cls: 'abcd1234', target: 'spare', ttl_s: 60 }] }))).toEqual([{ server: 'w1', weight: 1 }])
+  it('a split-test pin sends everything to the pinned replica; a stale pin is ignored', () => {
+    const reps = [rep('tg-free-1'), rep('tg-free-2')]
+    expect(tenantRoutes('F', reps, { F: 'tg-free-2' })).toEqual([{ server: 'tg-free-2', weight: 1 }])
+    expect(tenantRoutes('F', reps, { F: 'tg-free-9' }).map((x) => x.server)).toEqual(['tg-free-1', 'tg-free-2'])
   })
 
-  it('drained servers are skipped, but never all of them', () => {
-    const d = { w3: { server: 'w3', drained: true, ttl_s: 60 } }
-    expect(tenantRoutes('B', ['w3', 'w4'], ov({ drains: d })).map((r) => r.server)).toEqual(['w4'])
-    expect(tenantRoutes('X', ['w3'], ov({ drains: d })).map((r) => r.server)).toEqual(['w3'])
+  it('a sleeping project has no route (its requests wait for a wake)', () => {
+    expect(tenantRoutes('C', [], undefined)).toEqual([])
+  })
+
+  it('route table keys every tenant by its project', () => {
+    const t = routeTable([tv('A', 'health'), tv('K', 'mobility')], pool([proj('health', [rep('tg-health-1')]), proj('mobility', [rep('tg-mobility-1')])]), null)
+    expect(t.A.map((r) => r.server)).toEqual(['tg-health-1'])
+    expect(t.K.map((r) => r.server)).toEqual(['tg-mobility-1'])
   })
 
   it('pickServer follows the weights', () => {
@@ -42,16 +52,25 @@ describe('flow routing model', () => {
     expect(pickServer(r, 0.9999)).toBe('b')
     expect(pickServer([], 0.5)).toBeNull()
   })
+})
 
-  it('reroute hint: rerouting active names the servers routed around', () => {
-    const h = rerouteHint(ov({ route_weights: { B: { w3: 1, w4: 0, w5: 1 }, E: { w1: 1, w4: 0, w7: 1 } } }), true, 'tenantguard', [])
-    expect(h).toEqual({ kind: 'rerouted', text: '↷ 2 tenants rerouted around w4' })
+describe('flow hint', () => {
+  it('a split test names its pinned tenants and replicas', () => {
+    expect(flowHint(ov({ pins: { C: 'tg-free-1', F: 'tg-free-2', I: 'tg-free-1' } }), false, 'tenantguard', null)).toEqual({
+      kind: 'split',
+      text: 'split test: 3 tenants pinned to tg-free-1 / tg-free-2',
+    })
   })
 
-  it('reroute hint: an attack with no rerouting explains that the gateway refused the excess', () => {
-    expect(rerouteHint(ov({}), true, 'tenantguard', [])).toEqual({ kind: 'refused', text: 'no rerouting needed: the excess is refused at the gateway (red ✕)' })
-    expect(rerouteHint(ov({}), true, 'off', [])?.kind).toBe('off')
-    expect(rerouteHint(ov({}), false, 'tenantguard', [])).toBeNull()
-    expect(rerouteHint(null, false, 'tenantguard', [])).toBeNull()
+  it('lending is shown with the borrowed cores', () => {
+    const p = pool([proj('mobility', [], { loan_cpu: 0.345 }), proj('media', [])])
+    expect(flowHint(ov({}), false, 'tenantguard', p)).toEqual({ kind: 'lending', text: 'idle CPU lent: mobility +0.34 cores' })
+  })
+
+  it('an attack without pins or lending: the gateway refuses the excess; OFF says so', () => {
+    expect(flowHint(ov({}), true, 'tenantguard', null)?.kind).toBe('refused')
+    expect(flowHint(ov({}), true, 'off', null)?.kind).toBe('off')
+    expect(flowHint(ov({}), false, 'tenantguard', null)).toBeNull()
+    expect(flowHint(null, false, 'tenantguard', null)).toBeNull()
   })
 })

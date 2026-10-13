@@ -1,60 +1,41 @@
 # Owned by the coordinator. Tasks own their own Dockerfile; ask before editing this file.
 # Build context is the repo root so every image can install ./common.
-x-worker: &worker
-  build: {context: ., dockerfile: worker/Dockerfile}
-  cpus: 0.5
-  mem_limit: 256m
-  pids_limit: 128
-  restart: unless-stopped
-  environment: &worker-env
-    TENANTGUARD_ROOT: /app
-    TENANTGUARD_ADMIN_TOKEN: ${TENANTGUARD_ADMIN_TOKEN:-dev}
-
-x-worker-urls: &worker-urls >-
-  w0=http://w0:8100,w1=http://w1:8100,w2=http://w2:8100,w3=http://w3:8100,w4=http://w4:8100,w5=http://w5:8100,w6=http://w6:8100,w7=http://w7:8100,w8=http://w8:8100,spare=http://spare:8100,quarantine=http://quarantine:8100
+#
+# v2: there are no fixed workers. The brain starts each project's replicas from the worker image through the
+# Docker Engine API (docker.sock), on this stack's network, labelled tg.stack=<COMPOSE_PROJECT>.
+#   docker compose --profile image build worker      # build the replica image once (tenantguard-worker:latest)
+#   docker compose up -d                              # gateway + brain; the brain starts the warm replicas
 
 services:
-  w0: {<<: *worker, environment: {<<: *worker-env, SERVER_NAME: w0}}
-  w1: {<<: *worker, environment: {<<: *worker-env, SERVER_NAME: w1}}
-  w2: {<<: *worker, environment: {<<: *worker-env, SERVER_NAME: w2}}
-  w3: {<<: *worker, environment: {<<: *worker-env, SERVER_NAME: w3}}
-  w4: {<<: *worker, environment: {<<: *worker-env, SERVER_NAME: w4}}
-  w5: {<<: *worker, environment: {<<: *worker-env, SERVER_NAME: w5}}
-  w6: {<<: *worker, environment: {<<: *worker-env, SERVER_NAME: w6}}
-  w7: {<<: *worker, environment: {<<: *worker-env, SERVER_NAME: w7}}
-  w8: {<<: *worker, environment: {<<: *worker-env, SERVER_NAME: w8}}
-  spare:
-    <<: *worker
-    cpus: 1.0
-    environment: {<<: *worker-env, SERVER_NAME: spare}
-  quarantine:
-    <<: *worker
-    cpus: 0.25
-    mem_limit: 128m
-    environment: {<<: *worker-env, SERVER_NAME: quarantine}
+  worker:                         # image only: never started by compose; the brain starts replicas from it
+    build: {context: ., dockerfile: worker/Dockerfile}
+    image: ${TENANTGUARD_WORKER_IMAGE:-tenantguard-worker:latest}
+    profiles: ["image"]
 
   gateway:
     build: {context: ., dockerfile: gateway/Dockerfile}
     ports: ["${GATEWAY_PORT:-8000}:8000"]
     environment:
       TENANTGUARD_ROOT: /app
-      TENANTGUARD_WORKER_URLS: *worker-urls
+      TENANTGUARD_BRAIN_URL: http://brain:8200
       TENANTGUARD_CONTROL_TOKEN: ${TENANTGUARD_CONTROL_TOKEN:-dev}
       TENANTGUARD_CORS_ORIGINS: ${TENANTGUARD_UI_ORIGINS:-http://127.0.0.1:5173}
-    depends_on: [w0, w1, w2, w3, w4, w5, w6, w7, w8, spare, quarantine]
 
   brain:
     build: {context: ., dockerfile: brain/Dockerfile}
     ports: ["${BRAIN_PORT:-8200}:8200"]
     environment:
       TENANTGUARD_ROOT: /app
-      TENANTGUARD_WORKER_URLS: *worker-urls
       TENANTGUARD_GATEWAY_URL: http://gateway:8000
       TENANTGUARD_CONTROL_TOKEN: ${TENANTGUARD_CONTROL_TOKEN:-dev}
       TENANTGUARD_CORS_ORIGINS: ${TENANTGUARD_UI_ORIGINS:-http://127.0.0.1:5173}
       COMPOSE_PROJECT: ${COMPOSE_PROJECT_NAME:-codeastra}
+      TENANTGUARD_BACKEND: docker
+      TENANTGUARD_WORKER_IMAGE: ${TENANTGUARD_WORKER_IMAGE:-tenantguard-worker:latest}
+      TENANTGUARD_DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME:-codeastra}_default
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/run/docker.sock:/var/run/docker.sock     # privileged: only the brain mounts it (docs/v2/08 R6)
+      - brain-state:/app/brain/.state                   # registry.json + events.jsonl
     depends_on: [gateway]
 
   handoff:
@@ -83,19 +64,6 @@ services:
     depends_on: [brain]
     profiles: ["narrator"]
 
-  billing:
-    build: {context: ., dockerfile: billing/Dockerfile}
-    ports: ["${BILLING_PORT:-8600}:8600"]
-    environment:
-      TENANTGUARD_ROOT: /app
-      TENANTGUARD_WORKER_URLS: *worker-urls
-      TENANTGUARD_BRAIN_URL: http://brain:8200
-      TENANTGUARD_GATEWAY_URL: http://gateway:8000
-      TENANTGUARD_CONTROL_TOKEN: ${TENANTGUARD_CONTROL_TOKEN:-dev}
-      TENANTGUARD_CORS_ORIGINS: ${TENANTGUARD_UI_ORIGINS:-http://127.0.0.1:5173}
-    depends_on: [brain, gateway]
-    profiles: ["billing"]
-
   lab:
     build: {context: ., dockerfile: lab/Dockerfile}
     ports: ["${LAB_PORT:-8300}:8300"]
@@ -103,13 +71,11 @@ services:
       TENANTGUARD_ROOT: /app
       TENANTGUARD_GATEWAY_URL: http://gateway:8000
       TENANTGUARD_BRAIN_URL: http://brain:8200
-      TENANTGUARD_WORKER_URLS: *worker-urls
       TENANTGUARD_CONTROL_TOKEN: ${TENANTGUARD_CONTROL_TOKEN:-dev}
       TENANTGUARD_UI_ORIGINS: ${TENANTGUARD_UI_ORIGINS:-http://127.0.0.1:5173}
-      TENANTGUARD_ADMIN_TOKEN: ${TENANTGUARD_ADMIN_TOKEN:-dev}
-    volumes: ["./lab/results:/app/lab/results"]   # measured runs persist across rebuilds
     depends_on: [gateway]
     profiles: ["lab"]
 
 volumes:
   handoff-data:
+  brain-state:

@@ -23,8 +23,7 @@ thresholds (hurt_on / hurt_off), so between them the ladder holds still (hystere
 When both factors are back at 1.0 the tenant drops to warn (override cleared), and after
 hold_s.warn more calm seconds to normal.
 
-The quarantine rung is a limit (factor and weight 0.1). Moving work to the quarantine worker is the
-`costly_pattern` verdict's job (stage3.py), not the ladder's.
+TODO(Wave 2): quarantine = relocate the tenant to the quarantine worker instead of a 0.1 limit.
 """
 from __future__ import annotations
 

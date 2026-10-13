@@ -44,9 +44,6 @@ flowchart TB
     BR2 --> BR4["Name<br/>barcode decoder: culprit or host fault"]
     BR2 --> BR5["Throttle ladder<br/>warn, throttle, deprioritize, quarantine"]
     BR5 --> BR6["Recover<br/>step back up when calm"]
-    BR4 --> BR7["Prove<br/>culprit to spare (R = 1 - post/pre)<br/>host suspect drained, measured idle"]
-    BR7 --> BR8["Verdict<br/>no blame · over plan · costly · honest growth · host fault"]
-    BR1 --> BR9["Charge<br/>background CPU per tenant, 1/s"]
   end
 
   %% ---------- management plane ----------
@@ -55,7 +52,6 @@ flowchart TB
     ADM["Admin API<br/>tenants · quotas · mode (token)"]
     HO["Handoff bridge :8400"]
     NA["Narrator :8700<br/>plain-English reports"]
-    BI["Billing :8600<br/>fair bills · SLA credits · Why was I slow?"]
     WEB["Partner on-call app<br/>(Web PS3)"]
   end
 
@@ -72,13 +68,8 @@ flowchart TB
   BR3 -- "RouteWeightsCmd (TTL)" --> G6
   BR5 -- "LimitsCmd (TTL)" --> G3
   BR6 -- "LimitsCmd 1.0 (clear)" --> G3
-  BR7 -- "RelocateCmd spare / DrainCmd (TTL)" --> G6
-  BR7 -. "Docker socket: size the spare" .-> SP
-  BR8 -- "stay on spare / class to quarantine / home + tighter limits / stay drained" --> G6
-  BR9 -- "ChargeCmd (debit cost bucket)" --> G3
 
-  BR4 & BR5 & BR8 -- "IncidentEvent" --> UI & HO & NA & BI
-  WP -- "/stats" --> BI
+  BR4 & BR5 -- "IncidentEvent" --> UI & HO & NA
   CP -- "StateSnapshot 2 Hz" --> UI
   UI --> ADM --> GW
   HO -- "case" --> WEB
@@ -101,21 +92,13 @@ flowchart LR
   C -- "no (idle capacity)" --> OK["Let K burst<br/>(work-conserving)"]
   C -- "yes" --> D["RESCUE<br/>move victims to their<br/>other healthy servers (~1-2 s)"]
   D --> E["NAME<br/>only K's barcode covers<br/>all slow servers"]
-  E --> P["PROVE<br/>move K to the spare:<br/>do K's servers recover<br/>and does the harm follow?"]
-  P -- "no" --> NB["mitigated_no_blame<br/>K sent home, not punished"]
-  P -- "yes" --> V{"Verdict"}
-  V -- "paid work explains it" --> HG["honest_growth<br/>K keeps the spare as a burst lane"]
-  V -- "hidden cost" --> CP["costly_pattern<br/>heavy class to quarantine"]
-  V -- "over its plan" --> H
-  NB & HG & CP --> G
-  F{"Harm still<br/>persists?"}
-  F -- "no" --> G["Done: victims safe,<br/>every action TTL-bound"]
-  F -- "yes" --> H["THROTTLE K (over_plan or persisting harm)<br/>warn, then x0.5 limits, then lower priority, then quarantine"]
+  E --> F{"Harm still<br/>persists?"}
+  F -- "no" --> G["Done: victims safe,<br/>K not punished"]
+  F -- "yes" --> H["THROTTLE K<br/>warn, then x0.5 limits, then lower priority, then quarantine"]
   H --> I["Every action has a TTL<br/>and auto-undo"]
   I --> J["RECOVER<br/>+10% per second once calm"]
   J --> G
-  E -. "one server slow,<br/>no tenant explains it" .-> DR["Drain it,<br/>measure it idle"]
-  DR -- "still slow" --> HF["host_fault<br/>stays drained, no tenant blamed"]
+  E -. "one server slow,<br/>no tenant explains it" .-> HF["HOST FAULT<br/>no tenant blamed"]
 ```
 
 ---
@@ -145,9 +128,6 @@ flowchart LR
 | Worker app, per-tenant data | `worker/app/main.py`, `tenancy.py`, `store.py`, `cache.py`, `memory.py`, `jobs.py`, `blackbox.py` |
 | Ingest, detect, ladder | `brain/tenantguard_brain/runtime.py`, `core.py`, `score.py`, `ladder.py` |
 | Server health, rescue, naming | `brain/tenantguard_brain/health.py`, `rescue.py`, `decoder.py`, `stage3.py` |
-| Prove, verdict, action budget | `brain/tenantguard_brain/prover.py`, `verdicts.py`, `stage3.py` |
-| Background-CPU charge | `brain/tenantguard_brain/core.py` (`_charges`), `gateway/tenantguard_gateway/core.py` (`charge`) |
-| Fair billing | `billing/tenantguard_billing/` |
 | Operator decisions | `brain/tenantguard_brain/main.py` (`POST /api/operator`) |
 | Dashboard | `ui/src/` |
 | Handoff to the partner app | `integrations/handoff/tenantguard_handoff/` |
@@ -155,4 +135,4 @@ flowchart LR
 | Shared message formats | `common/tenantguard_common/contracts.py` |
 | Every tunable | `tenantguard.yaml` |
 
-**Status:** everything in these diagrams is merged on `master`. The lab's attacks are flood, whale, hog, memory and retry storm, plus the second wave written by the team: black-box bomb, background bomb, cache flood, honest spike and faulty server (the lab injects the fault through the worker's `/admin/fault` and clears it when the attack stops).
+**Status:** proving the culprit by relocation to the spare, the five verdicts and the calibrated health thresholds are **in progress** (T12). The attacks beyond flood/whale/hog/memory/retry storm and the scorecard runner are **in progress** (T10). Fair billing is **in progress** (T17).

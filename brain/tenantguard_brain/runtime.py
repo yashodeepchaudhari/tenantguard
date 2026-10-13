@@ -1,21 +1,27 @@
-"""I/O around the pure Brain: telemetry WS, worker /stats + /canary polling, heartbeat, control sends,
-start-up adoption of leftover overrides, and the UI hub."""
+"""I/O around the pure Brain (ladders, incidents) and ControlLoop (allocation, replicas, split tests):
+gateway telemetry WS, replica /stats and /healthz polling, the replica backend, snapshot publishing, the registry
+file, the audit log and the UI hub."""
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
-from typing import Callable, Dict, List, Optional, Set, Tuple
+from pathlib import Path
+from typing import Dict, List, Optional, Set
 
 import httpx
 import websockets
-from pydantic import BaseModel
 
-from tenantguard_common.contracts import (H_CONTROL_TOKEN, ChargeCmd, Heartbeat, IncidentEvent, LimitsCmd, OverridesView,
-                                          TelemetryFrame, WorkerStats)
+from tenantguard_common.contracts import (H_CONTROL_TOKEN, IncidentEvent, OverridesView, Snapshot, TelemetryFrame,
+                                          WorkerStats)
 
-from .core import Brain, TickResult
-from .prover import HostCheck, HostProver, ProofRequest, Readings, make_prover
+from . import registry as R
+from . import registry_store
+from .backends import Backend, DockerBackend, DockerCfg, ProcessBackend
+from .control import ControlLoop, Observation
+from .core import Brain
+from .registry import Registry
 from .settings import BrainSettings
 
 log = logging.getLogger("tenantguard.brain")
@@ -46,71 +52,43 @@ class Hub:
             q.put_nowait(text)
 
 
-Post = Callable[[str, BaseModel], "asyncio.Future[bool]"]
-Done = Callable[[BaseModel, bool], None]
+def make_backend(cfg: BrainSettings) -> Backend:
+    c = cfg.control
+    if c.backend == "process":
+        return ProcessBackend(c.process_base_port, cfg.root / "worker", cfg.root / "worker" / ".replicas")
+    return DockerBackend(DockerCfg(image=c.worker_image, stack=cfg.stack, network=c.docker_network,
+                                   cgroup_parent=c.cgroup_parent, socket_path=c.docker_url.removeprefix("unix://"),
+                                   api=c.docker_api))
 
 
-class Sender:
-    """Serialised delivery per key (e.g. one key per tenant's limits).
-
-    At most one request per key is in flight; a command submitted while another is in flight replaces
-    any older unsent one (latest wins), so the gateway can never end up with a stale command that
-    overtook a newer one. Task references are held until the task finishes.
-    """
-
-    def __init__(self, post: Post):
-        self.post = post
-        self.pending: Dict[str, Tuple[str, BaseModel, Done]] = {}
-        self.running: Dict[str, asyncio.Task] = {}
-
-    def submit(self, key: str, path: str, model: BaseModel, done: Done) -> None:
-        self.pending[key] = (path, model, done)
-        if key not in self.running:
-            self.running[key] = asyncio.create_task(self._run(key))
-
-    async def _run(self, key: str) -> None:
-        try:
-            while key in self.pending:
-                path, model, done = self.pending.pop(key)
-                ok = False
-                try:
-                    ok = await self.post(path, model)
-                finally:
-                    done(model, ok)
-        finally:
-            self.running.pop(key, None)      # synchronously, before any new submit can see a stale entry
-
-    async def close(self) -> None:
-        tasks = list(self.running.values())
-        for t in tasks:
-            t.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+def load_registry(cfg: BrainSettings) -> Registry:
+    return registry_store.load(cfg.control.registry_path, lambda: R.seed(
+        cfg.seed_pool, cfg.seed_projects, cfg.seed_tenants, cfg.control.scale))
 
 
 class Runtime:
-    def __init__(self, cfg: BrainSettings, brain: Optional[Brain] = None):
+    def __init__(self, cfg: BrainSettings, backend: Optional[Backend] = None, registry: Optional[Registry] = None):
         self.cfg = cfg
-        self.brain = brain or Brain(cfg)
+        reg = registry or load_registry(cfg)
+        self.control = ControlLoop(cfg, reg)
+        self.brain = Brain(cfg, R.snap_tenants(reg, cfg.tier_quotas), {})
+        self.backend = backend or make_backend(cfg)
         self.hub = Hub()
         self.client: Optional[httpx.AsyncClient] = None
         self.tasks: List[asyncio.Task] = []
-        self.sender = Sender(self._post)
+        self.kick = asyncio.Event()
         self.telemetry_connected = False
         self.gateway_ok: Optional[bool] = None
-        self.worker_ok: dict = {}
-        self.sent_count = 0
-        self.heartbeats = 0
-        self.adopted: Optional[bool] = None
-        self.jobs: Set[asyncio.Task] = set()
-        self.host_prover = HostProver(cfg.prover, cfg.verdicts)
+        self.worker_ok: Dict[str, bool] = {}
+        self.last_snapshot: Optional[Snapshot] = None
+        self.snapshots_sent = 0
 
     @property
     def ws_url(self) -> str:
         base = self.cfg.gateway_url
-        if base.startswith("https://"):
-            base = "wss://" + base[len("https://"):]
-        elif base.startswith("http://"):
-            base = "ws://" + base[len("http://"):]
+        for a, b in (("https://", "wss://"), ("http://", "ws://")):
+            if base.startswith(a):
+                base = b + base[len(a):]
         return base + "/internal/telemetry"
 
     @property
@@ -121,149 +99,101 @@ class Runtime:
         self.client = httpx.AsyncClient(timeout=httpx.Timeout(1.0, connect=1.0),
                                         limits=httpx.Limits(max_connections=64, max_keepalive_connections=32))
         try:
-            self.brain.s3.prover = await make_prover(self.cfg.prover_mode, self.cfg.prover, self.cfg.verdicts)
+            self.control.adopt(await self.backend.list_replicas(), time.time())
         except Exception as e:
-            log.error("prover: %s; continuing without proofs", e)
-        log.info("prover: %s", type(self.brain.s3.prover).__name__)
-        for coro in (self._adopt_once(), self._telemetry_loop(), self._stats_loop(), self._canary_loop(),
-                     self._heartbeat_loop(), self._tick_loop(), self._snapshot_loop()):
+            log.warning("could not list existing replicas (%s); starting with none", type(e).__name__)
+        for coro in (self._adopt_once(), self._telemetry_loop(), self._stats_loop(), self._ladder_loop(),
+                     self._control_loop(), self._ui_loop()):
             self.tasks.append(asyncio.create_task(coro))
-        log.info("brain started: gateway=%s workers=%d", self.cfg.gateway_url, len(self.cfg.worker_urls))
+        log.info("brain started: gateway=%s backend=%s projects=%d", self.cfg.gateway_url, self.cfg.control.backend,
+                 len(self.control.registry.projects))
 
     async def stop(self) -> None:
-        for t in list(self.tasks) + list(self.jobs):
+        for t in self.tasks:
             t.cancel()
-        await asyncio.gather(*self.tasks, *self.jobs, return_exceptions=True)
+        await asyncio.gather(*self.tasks, return_exceptions=True)
         self.tasks.clear()
-        self.jobs.clear()
-        await self.sender.close()
+        await self.backend.aclose()
         if self.client:
             await self.client.aclose()
 
-    # ------------------------------------------------------------ gateway calls
-    async def _post(self, path: str, model: BaseModel) -> bool:
-        try:
-            r = await self.client.post(self.cfg.gateway_url + path, json=model.model_dump(),
-                                       headers=self.control_headers)
-            if r.status_code >= 400:
-                log.warning("gateway refused %s %s: %s %s", path, model, r.status_code, r.text[:200])
-                return False
-            return True
-        except Exception as e:
-            log.warning("control send %s failed (%s)", path, type(e).__name__)
-            return False
+    # ------------------------------------------------------------------ registry (admin API)
+    def set_registry(self, reg: Registry) -> None:
+        """A validated registry change: persist it, then let the control loop act on it now."""
+        registry_store.save(reg, self.cfg.control.registry_path)
+        self.control.set_registry(reg)
+        self._sync_topology()
+        self.kick.set()
 
-    def _publish(self, events: List[IncidentEvent]) -> None:
-        for ev in events:
-            log.info("incident %s %s %s %s->%s: %s", ev.incident_id, ev.stage, ev.tenant,
-                     ev.prev_level, ev.level, ev.detail)
-            self.hub.publish(ev.model_dump_json())
-
-    def _limits_done(self, cmd: BaseModel, ok: bool) -> None:
-        self.brain.mark_sent(cmd, ok, time.time())
+    def wake(self, project: str) -> bool:
+        ok = self.control.wake(project, time.time())
         if ok:
-            self.sent_count += 1
-            log.info("sent limits %s factor=%.2f weight_factor=%.2f ttl=%gs", cmd.tenant, cmd.factor,
-                     cmd.weight_factor, cmd.ttl_s)
-
-    def _routes_done(self, cmd: BaseModel, ok: bool) -> None:
-        self.brain.s3.mark_routes(ok, time.time())
-        if ok:
-            self.sent_count += 1
-            log.info("sent route weights for %s ttl=%gs", sorted(cmd.weights), cmd.ttl_s)
-
-    def _control_done(self, cmd: BaseModel, ok: bool) -> None:
-        if isinstance(cmd, ChargeCmd):
-            if not ok:
-                self.brain.charge_failed(cmd)
-            return
-        self.brain.control_done(cmd, ok, time.time())
-        if ok:
-            self.sent_count += 1
-            log.info("sent %s", cmd)
-
-    # ------------------------------------------------------------ async tests (prover.py)
-    def readings(self) -> Readings:
-        return self.brain.readings(time.time())
-
-    async def send(self, path: str, model: BaseModel) -> bool:
-        ok = await self._post(path, model)
-        if ok:
-            self.sent_count += 1
-            log.info("sent %s %s", path, model)
+            self.kick.set()
         return ok
 
-    async def sleep(self, seconds: float) -> None:
-        await asyncio.sleep(seconds)
+    def _sync_topology(self) -> None:
+        reg = self.control.registry
+        routed = {p: [r.id for r in self.control.replicas_of(p, ("ready", "draining"))] for p in reg.projects}
+        self.brain.set_topology(R.snap_tenants(reg, self.cfg.tier_quotas), routed)
+        caps = {r.id: r.nano_cpus / 1e9 for r in self.control.fleet.replicas.values() if r.nano_cpus}
+        self.brain.set_attribution(self.control.tenant_cpu_by_replica(), caps)
 
-    def _apply(self, res: TickResult) -> None:
-        self._publish(res.events)
-        for cmd in res.commands:
-            self.send_limits(cmd)
-        for rc in res.route_cmds:
-            self.sender.submit("routes", "/control/route_weights", rc, self._routes_done)
-        for key, path, cmd in res.control:
-            self.sender.submit(key, path, cmd, self._control_done)
-        for job in res.jobs:
-            self._start_job(job)
-
-    def _start_job(self, job) -> None:
-        task = asyncio.create_task(self._run_job(job))
-        self.jobs.add(task)
-        task.add_done_callback(self.jobs.discard)
-
-    async def _run_job(self, job) -> None:
+    # ------------------------------------------------------------------ audit + UI events
+    def audit(self, kind: str, data: dict) -> None:
+        path: Path = self.cfg.control.events_path
         try:
-            if isinstance(job, ProofRequest):
-                log.info("proving %s (incident %s)", job.tenant, job.incident_id)
-                result = await self.brain.s3.prover.prove(job, self)
-                self._apply(self.brain.on_proof(result, time.time()))
-            elif isinstance(job, HostCheck):
-                log.info("drain test for %s (incident %s)", job.server, job.incident_id)
-                result = await self.host_prover.check(job, self)
-                self._apply(self.brain.on_host(result, time.time()))
-            elif isinstance(job, tuple) and job and job[0] == "restore_spare":
-                await self.brain.s3.prover.restore_spare(job[1])
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            log.exception("job %r failed", job)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"ts": time.time(), "kind": kind, **data}) + "\n")
+        except OSError as e:
+            log.warning("audit log write failed: %s", e)
 
-    def send_limits(self, cmd: LimitsCmd) -> None:
-        self.sender.submit(f"limits:{cmd.tenant}", "/control/limits", cmd, self._limits_done)
+    def publish(self, events: List[IncidentEvent]) -> None:
+        for ev in events:
+            log.info("incident %s %s %s %s->%s: %s", ev.incident_id, ev.stage, ev.tenant, ev.prev_level, ev.level,
+                     ev.detail)
+            self.audit("incident", ev.model_dump())
+            self.hub.publish(ev.model_dump_json())
 
-    # ------------------------------------------------------------ start-up
+    # ------------------------------------------------------------------ gateway
+    async def push_snapshot(self) -> None:
+        limits = self.brain.limits() if self.brain.mode in (None, "tenantguard") else []
+        snap = self.control.snapshot(limits)
+        self.last_snapshot = snap
+        try:
+            r = await self.client.post(self.cfg.gateway_url + "/control/snapshot", json=snap.model_dump(mode="json"),
+                                       headers=self.control_headers)
+            self.gateway_ok = r.status_code < 400
+            if not self.gateway_ok:
+                log.warning("gateway refused snapshot v%d: %s %s", snap.version, r.status_code, r.text[:200])
+            else:
+                self.snapshots_sent += 1
+        except httpx.HTTPError as e:
+            self.gateway_ok = False
+            log.info("snapshot push failed (%s)", type(e).__name__)
+
     async def _adopt_once(self) -> None:
-        """Take over (or clear) overrides a previous brain run left on the gateway."""
+        """Take over (or clear) limits a previous brain run left on the gateway."""
         while True:
             try:
                 r = await self.client.get(self.cfg.gateway_url + "/admin/overrides", headers=self.control_headers)
                 r.raise_for_status()
-                ov = OverridesView.model_validate(r.json())
-                events, clears = self.brain.adopt_overrides(ov, time.time())
-                self._publish(events)
-                for c in clears:
-                    self.send_limits(c)
-                self.adopted = True
-                if events or clears:
-                    log.info("adopted %d and cleared %d leftover overrides", len(events), len(clears))
+                self.publish(self.brain.adopt_overrides(OverridesView.model_validate(r.json()), time.time()))
                 return
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                self.adopted = False
                 log.info("GET /admin/overrides failed (%s); retrying", type(e).__name__)
                 await asyncio.sleep(2.0)
 
-    # ------------------------------------------------------------ ingest
+    # ------------------------------------------------------------------ ingest
     async def _telemetry_loop(self) -> None:
         backoff = 0.5
         while True:
             try:
                 async with websockets.connect(self.ws_url, open_timeout=3, ping_interval=10,
                                               max_size=8 * 1024 * 1024) as ws:
-                    self.telemetry_connected = True
-                    backoff = 0.5
+                    self.telemetry_connected, backoff = True, 0.5
                     log.info("telemetry connected: %s", self.ws_url)
                     async for msg in ws:
                         try:
@@ -280,86 +210,100 @@ class Runtime:
             await asyncio.sleep(backoff)
             backoff = min(5.0, backoff * 2)
 
-    async def _poll_one(self, server: str, url: str) -> None:
+    async def _poll_one(self, rid: str, url: str) -> None:
         try:
             r = await self.client.get(url + "/stats")
             r.raise_for_status()
             self.brain.ingest_stats(WorkerStats.model_validate(r.json()), time.time())
-            self.worker_ok[server] = True
+            self.worker_ok[rid] = True
         except Exception as e:
-            if self.worker_ok.get(server, True):
-                log.info("worker %s /stats failed: %s", server, type(e).__name__)
-            self.worker_ok[server] = False
+            if self.worker_ok.get(rid, True):
+                log.info("replica %s /stats failed: %s", rid, type(e).__name__)
+            self.worker_ok[rid] = False
 
     async def _stats_loop(self) -> None:
         while True:
             t0 = time.monotonic()
-            await asyncio.gather(*(self._poll_one(s, u) for s, u in self.cfg.worker_urls.items()))
+            reps = [r for r in self.control.fleet.replicas.values() if r.state in ("ready", "draining")]
+            await asyncio.gather(*(self._poll_one(r.id, r.url) for r in reps))
             await asyncio.sleep(max(0.05, self.cfg.stats_poll_s - (time.monotonic() - t0)))
 
-    async def _canary_one(self, server: str, url: str) -> None:
-        t0 = time.perf_counter()
-        try:
-            r = await self.client.get(url + "/canary")
-            if r.status_code < 500:
-                self.brain.ingest_canary(server, (time.perf_counter() - t0) * 1000.0, time.time())
-        except Exception:
-            pass                         # an unreachable worker shows up in /stats (workers_ok)
-
-    async def _canary_loop(self) -> None:
-        while True:
-            t0 = time.monotonic()
-            await asyncio.gather(*(self._canary_one(s, u) for s, u in self.cfg.worker_urls.items()))
-            await asyncio.sleep(max(0.05, self.cfg.canary_s - (time.monotonic() - t0)))
-
-    async def _heartbeat_loop(self) -> None:
-        while True:
+    async def _check_starting(self) -> None:
+        async def one(rid: str, url: str) -> None:
             try:
-                r = await self.client.post(self.cfg.gateway_url + "/control/heartbeat",
-                                           json=Heartbeat(ts=time.time()).model_dump(),
-                                           headers=self.control_headers)
-                self.gateway_ok = r.status_code < 400
-                self.heartbeats += 1
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                self.gateway_ok = False
-            await asyncio.sleep(self.cfg.heartbeat_s)
+                if (await self.client.get(url + "/healthz")).status_code == 200:
+                    self.control.mark_ready(rid)
+            except httpx.HTTPError:
+                pass
+        await asyncio.gather(*(one(r.id, r.url) for r in self.control.fleet.replicas.values() if r.state == "starting"))
 
-    # ------------------------------------------------------------ decide + act
-    async def _tick_loop(self) -> None:
+    # ------------------------------------------------------------------ decide + act
+    async def _ladder_loop(self) -> None:
         while True:
             t0 = time.monotonic()
             try:
-                self._apply(self.brain.tick(time.time()))
+                res = self.brain.tick(time.time())
+                self.publish(res.events)
+                if res.changed:
+                    await self.push_snapshot()
             except Exception:
-                log.exception("tick failed; skipping")
+                log.exception("ladder tick failed; skipping")
             await asyncio.sleep(max(0.01, self.cfg.tick_s - (time.monotonic() - t0)))
 
-    async def _snapshot_loop(self) -> None:
+    def observation(self, now: float, container_ms: Dict[str, float]) -> Observation:
+        queued, refused = self.brain.demand_signals(now, self.cfg.control.tick_s)
+        frame = self.brain.frames[-1][1] if self.brain.frames else None
+        return Observation(now=now, mode=self.brain.mode, fresh=self.brain.telemetry_fresh(now), queued_ms=queued,
+                           refused_ms_s=refused,
+                           usage=self.brain.replica_usage(now, max(self.cfg.detect_window_s, 2 * self.cfg.stats_poll_s)),
+                           container_ms=container_ms,
+                           inflight={ls.server: ls.inflight for ls in (frame.limiter if frame else [])},
+                           slowdown=dict(self.brain.slowdowns))
+
+    async def control_once(self, now: float) -> None:
+        """One control tick: the only place that changes allocations and replicas."""
+        await self._check_starting()
+        ids = list(self.control.fleet.replicas)
+        container = await self.backend.cpu_ms(ids) if ids else {}
+        actions, findings = self.control.tick(self.observation(now, container))
+        results = await self.backend.apply(actions)
+        self.control.applied(results, now)
+        for res in results:
+            if res.action.kind != "update":
+                self.audit("replica", {"action": res.action.kind, "replica": res.action.replica_id,
+                                       "project": res.action.project, "ok": res.ok, "error": res.error})
+        self._sync_topology()
+        for f in findings:
+            self.publish(self.brain.on_finding(f.kind, f.project, f.tenant, f.detail, f.evidence, now))
+        await self.push_snapshot()
+
+    async def _control_loop(self) -> None:
+        while True:
+            t0 = time.monotonic()
+            try:
+                await self.control_once(time.time())
+            except Exception:
+                log.exception("control tick failed; skipping")
+            self.kick.clear()
+            try:
+                await asyncio.wait_for(self.kick.wait(), max(0.05, self.cfg.control.tick_s - (time.monotonic() - t0)))
+            except asyncio.TimeoutError:
+                pass
+
+    async def _ui_loop(self) -> None:
         while True:
             try:
                 if self.hub.clients:
-                    self.hub.publish(self.brain.snapshot(time.time()).model_dump_json())
+                    self.hub.publish(self.brain.snapshot(time.time(), self.control.pool_view()).model_dump_json())
             except Exception:
-                log.exception("snapshot failed")
+                log.exception("ui snapshot failed")
             await asyncio.sleep(0.5)
 
     def health(self) -> dict:
         now = time.time()
         b = self.brain
-        return {
-            "ok": True,
-            "mode": b.mode or self.cfg.default_mode,
-            "telemetry_connected": self.telemetry_connected,
-            "last_frame_age_s": round(now - b.last_frame_at, 2) if b.last_frame_at else None,
-            "gateway_ok": self.gateway_ok,
-            "overrides_adopted": self.adopted,
-            "workers_ok": self.worker_ok,
-            "heartbeats_sent": self.heartbeats,
-            "commands_sent": self.sent_count,
-            "sends_in_flight": len(self.sender.running),
-            "prover": type(self.brain.s3.prover).__name__,
-            "jobs_running": len(self.jobs),
-            "ui_clients": len(self.hub.clients),
-        }
+        return {"ok": True, "mode": b.mode or self.cfg.default_mode, "telemetry_connected": self.telemetry_connected,
+                "last_frame_age_s": round(now - b.last_frame_at, 2) if b.last_frame_at else None,
+                "gateway_ok": self.gateway_ok, "snapshots_sent": self.snapshots_sent,
+                "backend": self.cfg.control.backend, "replicas": len(self.control.fleet.replicas),
+                "replicas_ok": self.worker_ok, "ui_clients": len(self.hub.clients)}

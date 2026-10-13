@@ -3,7 +3,6 @@ import { useBackend, useLive, useNow, useStore } from '../lib/liveContext.ts'
 import { DURATION_MAX_S, LAUNCHABLE_ATTACKS, INTENSITY_MAX, INTENSITY_MIN, type AttackName, type AttackReq } from '../types.ts'
 
 const FALLBACK_TENANTS = 'ABCDEFGHIJKL'.split('')
-const FALLBACK_SERVERS = ['w0', 'w1', 'w2', 'w3', 'w4', 'w5', 'w6', 'w7', 'w8']
 
 const ABOUT: Partial<Record<AttackName, string>> = {
   flood: '10× request rate of light calls',
@@ -11,11 +10,6 @@ const ABOUT: Partial<Record<AttackName, string>> = {
   hog: 'many slow concurrent exports',
   memory: 'memory-hungry requests',
   retry_storm: 'retries instantly on 429/503',
-  blackbox_bomb: 'cheap ingest calls, heavy hidden indexer CPU',
-  background_bomb: 'cheap writes, heavy background indexing',
-  cache_flood: 'reads of never-repeated keys (all cache misses)',
-  honest_spike: '3× its own normal traffic (real growth)',
-  faulty_server: 'a server turns slow by itself (no tenant)',
 }
 
 export function AttackLauncher() {
@@ -24,12 +18,8 @@ export function AttackLauncher() {
   const { snapshot, lab, labReachable } = useLive()
   const now = useNow()
   const tenants = snapshot?.tenants.map((t) => t.tenant) ?? FALLBACK_TENANTS
-  const servers = snapshot?.servers.map((s) => s.server) ?? FALLBACK_SERVERS
   const [attack, setAttack] = useState<AttackName>('whale')
   const [tenant, setTenant] = useState('K')
-  const [server, setServer] = useState('w4')
-  const onServer = attack === 'faulty_server'
-  const target = onServer ? server : tenant
   const [intensity, setIntensity] = useState(2)
   const [duration, setDuration] = useState(60)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
@@ -53,8 +43,8 @@ export function AttackLauncher() {
     setMsg(null)
     const req: AttackReq = {
       attack,
-      tenant: onServer ? null : tenant,
-      server: onServer ? server : null,
+      tenant,
+      server: null,
       intensity,
       duration_s: duration,
     }
@@ -100,20 +90,12 @@ export function AttackLauncher() {
           </select>
         </label>
         <label className="flex flex-col text-sm text-ink-300">
-          {onServer ? 'Server' : 'Tenant'}
-          {onServer ? (
-            <select className="field mt-0.5" value={server} onChange={(e) => setServer(e.target.value)}>
-              {servers.map((s) => (
-                <option key={s}>{s}</option>
-              ))}
-            </select>
-          ) : (
-            <select className="field mt-0.5" value={tenant} onChange={(e) => setTenant(e.target.value)}>
-              {tenants.map((t) => (
-                <option key={t}>{t}</option>
-              ))}
-            </select>
-          )}
+          Tenant
+          <select className="field mt-0.5" value={tenant} onChange={(e) => setTenant(e.target.value)}>
+            {tenants.map((t) => (
+              <option key={t}>{t}</option>
+            ))}
+          </select>
         </label>
         <label className="flex flex-col text-sm text-ink-300">
           Duration (s)
@@ -143,7 +125,7 @@ export function AttackLauncher() {
           />
         </label>
         <button className="btn-accent whitespace-nowrap" disabled={busy || !intensityOk || !durationOk} onClick={launch}>
-          {busy ? 'Launching…' : `Launch on ${target}`}
+          {busy ? 'Launching…' : `Launch on ${tenant}`}
         </button>
       </div>
       {msg && (

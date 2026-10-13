@@ -4,3 +4,4 @@ httpx>=0.25
 websockets>=11,<13
 pydantic>=2.5
 PyYAML>=6
+psutil>=5.9

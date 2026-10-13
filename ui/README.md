@@ -17,29 +17,47 @@ npm run dev:mock          # fixture replay in the browser, no backend (VITE_MOCK
 |---|---|
 | brain `WS /ws/events` (`VITE_BRAIN_URL`) | `StateSnapshot` (2 Hz) + `IncidentEvent`; reconnects with backoff (0.5 s to 8 s) |
 | brain `GET /api/incidents`, `?incident_id=` | timeline backfill on load; Case File history (array or `{incidents: [...]}`) |
-| gateway `/admin/mode`, `/admin/tenants`, `PATCH /admin/tenants/{id}/quota`, `/admin/overrides` (`VITE_GATEWAY_URL`) | mode toggle, Tenants page, quota edit, override expiry and fail-static |
+| gateway `/admin/mode`, `/admin/tenants`, `/admin/overrides` (`VITE_GATEWAY_URL`) | mode toggle, Tenants page (project, replicas, tier quota), limits / pins / blocks and their expiry, fail-static (snapshot age) |
+| brain `GET /api/pool`, `PUT /admin/pool`, `POST/PATCH/DELETE /admin/projects`, `POST /admin/projects/{id}/tenants`, `DELETE /admin/tenants/{id}` (`VITE_BRAIN_URL`, control token) | Pool page: the pool, projects, tenants, replicas; the admin forms |
 | lab `/lab/status`, `POST /lab/attack`, `DELETE /lab/attack/{id}`, `GET /lab/results` (`VITE_LAB_URL`) | attack launcher, Scorecard (`RunResult` list) |
 | handoff bridge `GET /cases` (`VITE_HANDOFF_URL`, default :8400) | Cases column + Case File handoff panel (`CaseView`: case id, owner, pending actions, deadlines); hidden as "not reachable" when the bridge is down |
 
-Every gateway `/admin/*` call sends `X-TenantGuard-Control-Token: $VITE_CONTROL_TOKEN` (default `dev`; must equal the gateway's `TENANTGUARD_CONTROL_TOKEN`). Noisy-bar thresholds come from `StateSnapshot.noisy_thresholds`; `VITE_NOISY_*` are only a fallback.
+Every gateway and brain `/admin/*` call sends `X-TenantGuard-Control-Token: $VITE_CONTROL_TOKEN` (default `dev`; must equal the gateway's `TENANTGUARD_CONTROL_TOKEN`). Noisy-bar thresholds come from `StateSnapshot.noisy_thresholds`; `VITE_NOISY_*` are only a fallback.
 
 `src/types.ts` mirrors `common/tenantguard_common/contracts.py` exactly. The services must allow CORS from the UI origin.
 
 ## Pages
-- **Control Room** (`/`): status sentence; 12 tenant tiles (p95, rps, rejected/s, level, quota factor); p95 per tenant over the last 60 s (log scale); stacked CPU share; noisy-score bars (`noisy_norm` bar, raw score as text, warn/throttle markers); incident timeline; Jain fairness and fleet CPU gauges; OFF / Industry / TenantGuard toggle; attack launcher (attack, tenant or server, intensity 0.1 to 5, duration up to 600 s) with running attacks and Stop.
-  The status row carries the **₹ impact panel** (below). A **Tiles / Flow** toggle (remembered per viewer, or `?view=flow`) swaps the tiles + charts for the **live flow view**: a canvas where dots travel tenant → gateway → server, sampled from snapshot rps and routed by the gateway's live route weights / relocations / drains from `/admin/overrides`; refused requests (429/503) die at the gateway as red crosses, slow servers turn red, rerouted tenants get ↷ and accent route lines whose width is the weight.
-  Plus the **3×3 server grid** (w0..w8: peer ratio, CPU %, status colour; drained = hatched). Clicking a tenant tile outlines its 3 barcode servers; with no tile picked, the grid follows the noisiest flagged tenant. Timeline rows open the Case File.
-- **Cases** (`/case`) and **Case File** (`/case/:incident_id`, the convergence `evidence_link` path): steps detected → rescued → named → proving → verdict → resolved → explained with times, suspects with confidence bars, barcode match on the live grid (slow servers vs the suspect's barcode), verdict + last action + override TTL countdown (from `/admin/overrides`), latest `detail`, the `report` dict rendered as sections (template placeholder until `explained`), and the full event log.
-  Server incidents (no tenant) show the brain's **barcode decoder** report: host fault / nobody / per-tenant confidence bars, P(slow) on each grid cell, host suspects outlined. During the **proving** stage (or while the gateway has a relocation for the suspect) the **proof animation** shows red smoke drifting from the suspect's servers to the spare; "Replay proof" replays it.
-- **Scorecard** (`/scorecard`): `RunResult`s grouped by scenario × mode (medians over runs); per scenario a bar chart of victim p99 baseline / attack / after, and a table with slowdown, time to detect / recover and attacker 429s. Mock mode shows fixtures (`src/mock/results.ts`) under a "FIXTURE DATA, not measured" banner.
-- **Tenants** (`/tenants`): configured quota vs effective quota (after the brain's factor), weight factor, blocked, placement, override expiry, revenue, live p95/level; inline quota edit (PATCH sends changed fields only; validated client-side).
+- **Control Room** (`/`):
+  - **Status row:** the status sentence, the ₹ impact panel, the Jain fairness and pool-CPU gauges, and the OFF / Industry / TenantGuard toggle.
+  - **Tenant tiles:** 12 tiles showing p95, rps, rejected/s, level, quota factor and project. Clicking a tile outlines its project.
+  - **Charts:** p95 per tenant over the last 60 s (log scale), stacked CPU share, noisy-score bars, and the incident timeline.
+  - **Replica grid:** one row per project with its tier, allocation (base + lent cores), floor marker and state. Each replica shows its status, CPU against its cap, memory and `LOAN` if borrowed. Starting or draining replicas are hatched, and split-test pins are named.
+  - **Flow view** (Tiles / Flow toggle, or `?view=flow`): dots travel tenant → gateway → that tenant's project's ready replicas. Refused requests die at the gateway as red crosses. A split test draws accent pin lines, and lent capacity is named in the hint line.
+  - **Attack launcher.**
+- **Pool** (`/pool`): the v2 admin screen.
+  - **Two bars:** guaranteed floors (each project's floor, free room, headroom) and allocated now (base solid, lent cores striped), with measured use as a white line.
+  - **Project table:** tier and weight, floor, cap, warm replicas, demand, used, allocated = base + lent, replicas (cores, MB, loan), tenants (× removes one), Edit / Delete.
+  - **Forms:** set the pool, create a project (a floor above the free cores is refused before sending), add a tenant. The API key is shown once, and the page hands it to the lab at once (`POST /lab/tenants`), so the new tenant gets calm traffic and can be picked in the attack launcher.
+  - **Deleting:** × next to a tenant removes it (and stops its lab traffic). A project's **Delete** works once it has no tenants and asks for a confirmation. The pool itself cannot be deleted, only resized: it is the capacity of the machine.
+- **Cases** (`/case`) and **Case File** (`/case/:incident_id`):
+  - **Case story:** steps, suspects with confidence, verdict, last action and override TTL, the latest detail, the report as sections, and the full event log.
+  - **Three kinds of case, each with its own steps:** a tenant case from the ladder (Detected → Rescued → Named → Proving → Verdict → Resolved → Explained); a hash split of one project (Hidden CPU → Split rounds → Verdict → Closed); a host-wide slowdown nobody is blamed for (Slowdown → No blame → Recovered).
+  - **Hash split:** for an unattributed-work verdict, the split rounds: the two halves, the unexplained CPU on each replica, and what was kept.
+  - **Live replicas:** the case's project replicas, live.
+- **Scorecard** (`/scorecard`): `RunResult`s grouped by scenario × mode.
+- **Tenants** (`/tenants`): project and tier, replicas in the tenant's rendezvous order (and its pin during a split test), live p95 and level, the tier quota against the effective quota after the brain's factor, override expiry, revenue. Quotas come from the tier; tenants are added and removed on the Pool page.
 
-Design rules: colour means status only (green / amber / red; grey = idle) plus one accent (sky) for interactive and selected things. Every number has a unit. Laid out for a 1920×1080 projector on one screen.
-
-Tile colour: red if the tenant is throttled or above, or p95 ≥ `VITE_P95_BAD_MS`; amber if under watch (warn) or p95 ≥ `VITE_P95_WARN_MS`.
+Design rules:
+- Colour means status only (green / amber / red; grey = idle), plus one accent (sky) for interactive, selected and lent things.
+- Every number has a unit.
+- Laid out for a 1920×1080 projector on one screen.
 
 ## Mock
-- `src/mock/sim.ts`: a small simulation of gateway + workers + brain + lab that emits contract-shaped messages and reacts to mode, attacks and quota edits (OFF: victims about 1.3 s; Industry: about 220 ms; TenantGuard: ladder warn → throttle → deprioritize → quarantine, then recovery).
+- `src/mock/sim.ts`: a small simulation of the v2 platform. It emits contract-shaped messages and reacts to mode, attacks and admin changes:
+  - floors first, then idle CPU lent by tier weight;
+  - replicas that scale (starting → ready, draining → gone, borrowed ones marked);
+  - a tenant only reaches its own project's replicas;
+  - the ladder judges a tenant against its project peers.
 - `src/mock/mockBackend.ts`: runs it in the browser (`VITE_MOCK=1`).
 - `scripts/mock-ws-server.mjs`: the same sim behind real HTTP + WS endpoints with CORS and the control-token check (brain :18200, gateway :18000, lab :18300), to exercise the real network code: `npm run mock-ws`, then run the UI with `VITE_MOCK=0 VITE_BRAIN_URL=http://127.0.0.1:18200 VITE_GATEWAY_URL=http://127.0.0.1:18000 VITE_LAB_URL=http://127.0.0.1:18300`. Requires Node ≥ 23.6 (runs the .ts directly).
 
@@ -48,7 +66,6 @@ Tile colour: red if the tenant is throttled or above, or p95 ≥ `VITE_P95_BAD_M
 npm run build      # tsc -b + vite build
 npm run lint       # eslint, zero warnings
 npm test           # vitest: status rules, store, quota patch, backend parsing, case folding, scorecard, mock ladder
-node scripts/e2e.mjs [ui] [gateway] [lab] [brain]  # grid highlight, case file vs brain REST, scorecard vs lab, mode, attack/stop, quota edit (+restore)
 python scripts/load.py --rps 1 --whale K           # modest calm traffic + a whale through the gateway (real-stack checks without the lab)
 node scripts/screenshot.mjs [url] [out.png] [ms] [click]  # headless Edge 1920x1080 (real-time wait)
 ```
@@ -57,7 +74,7 @@ The e2e changes mode, launches/stops an attack and edits (then restores) a quota
 
 ## ₹ impact (client-side until the brain owns it)
 Counted since the page opened (reset button under "innocents"), integrated per snapshot (dt capped at 2 s):
-- a tenant is **threatened** when it shares a server with a flagged tenant (level ≥ warn), or sits on a slow server whose p95 would breach the SLO (a server merely 1.6× its peers at 20 ms threatens nobody); culprits (own score ≥ warn, or named by a brain incident) never count as customers;
+- a tenant is **threatened** when it shares a project (its replicas) with a flagged tenant (level ≥ warn), or its project has a slow replica whose p95 would breach the SLO; culprits (own score ≥ warn, or named by a brain incident) never count as customers;
 - **SLO breach avoided** = seconds a threatened tenant stayed within SLO (`p95 < VITE_P95_WARN_MS`) in TenantGuard mode; **suffered** = seconds any tenant was over SLO (any mode);
 - **revenue protected** = Σ avoided seconds × that tenant's `monthly_revenue_rs` ÷ 30 days; **customers shielded** = tenants with avoided time;
 - **innocents penalised** = tenants acted on (level ≥ throttle or factor < 1) that were never noisy this session and that no brain incident names. A culprit still recovering on the ladder is not an innocent. It must stay 0.
@@ -87,8 +104,8 @@ E2E_LIVE=1 ...                       # also the @live scenario: calm -> whale on
 
 | Spec | Covers |
 |---|---|
-| `e2e/api.spec.ts` | gateway healthz, 401 without API key, 401 on admin without token, 200 + `X-TenantGuard-Cpu-Ms`, 12 admin tenants; brain `/api/state` shape, `/api/incidents`; lab, handoff and narrator shapes (skipped cleanly when unreachable) |
-| `e2e/ui.spec.ts` | 12 tiles + 3×3 grid + status sentence; tile → barcode highlight; mode toggle round-trip (verified via `GET /admin/mode`, restored); launcher offers exactly flood, whale, hog, memory, retry_storm; attack launch → running → Stop (verified via `/lab/status`); quota PATCH + client-side validation (restored); timeline → Case File vs `GET /api/incidents?incident_id=`; Scorecard vs `/lab/results`; flow view paints; Cases handoff column |
+| `e2e/api.spec.ts` | gateway healthz, 401 without API key, 401 on admin without token, 200 + `X-TenantGuard-Cpu-Ms`, 12 admin tenants each in one project; brain `/api/state` shape (replicas with a project, pool), `/api/pool` invariants, brain admin 401 without token, `/api/incidents`; lab, handoff and narrator shapes (skipped cleanly when unreachable) |
+| `e2e/ui.spec.ts` | a tile per tenant + replica grid (one row per project) + status sentence; tile → its project outlined; mode toggle round-trip (verified via `GET /admin/mode`, restored); launcher offers exactly flood, whale, hog, memory, retry_storm; attack launch → running → Stop (verified via `/lab/status`); Pool page: create a project, an oversized floor refused, add a tenant, key shown once and handed to the lab (verified via `/lab/personas`), then the tenant (×) and the project (Delete → Yes) deleted from the page; timeline → Case File vs `GET /api/incidents?incident_id=`; Scorecard vs `/lab/results`; flow view paints; Cases handoff column |
 | `e2e/live.spec.ts` | `@live`, host only: the real detection loop end to end |
 
 Every UI test fails on an uncaught page error or a console error (`e2e/fixtures.ts`); only failed loads to an optional service that is known to be down are tolerated. Writes are skipped while the lab reports a scenario run in progress, and anything changed is restored.

@@ -33,13 +33,13 @@ for (const size of SIZES) {
           return { name: el.getAttribute('data-panel')!, x: r.x, y: r.y + window.scrollY, w: r.width, h: r.height }
         }),
       )
-      expect(boxes.map((b) => b.name).sort()).toEqual(['cpu', 'launcher', 'noisy', 'p95', 'servers', 'status', 'tiles', 'timeline'])
+      expect(boxes.map((b) => b.name).sort()).toEqual(['cpu', 'launcher', 'noisy', 'p95', 'replicas', 'status', 'tiles', 'timeline'])
       for (const b of boxes) expect(b.h, `${b.name} has a real height`).toBeGreaterThan(60)
       for (let i = 0; i < boxes.length; i++)
         for (let j = i + 1; j < boxes.length; j++) expect(overlap(boxes[i], boxes[j]), `${boxes[i].name} overlaps ${boxes[j].name}`).toBe(false)
 
-      // server cells and the status bar keep their text inside
-      const spills = await page.locator('[data-testid^="server-w"], [data-panel="status"]').evaluateAll((els) =>
+      // replica cells and the status bar keep their text inside
+      const spills = await page.locator('[data-testid^="replica-tg-"], [data-panel="status"]').evaluateAll((els) =>
         els.filter((el) => el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1).map((el) => el.getAttribute('data-testid') ?? el.getAttribute('data-panel')),
       )
       expect(spills, 'elements whose content overflows').toEqual([])
@@ -79,7 +79,7 @@ for (const size of SIZES) {
       const tiles = await page.locator('[data-testid^="tile-"]').evaluateAll((els) =>
         els.map((el) => ({ id: el.getAttribute('data-testid')!.slice(5), badge: el.querySelector('span.uppercase.tracking-wide')?.textContent?.trim() ?? '' })),
       )
-      expect(tiles).toHaveLength(12)
+      expect(tiles.length).toBeGreaterThanOrEqual(12) // 12 seeded tenants, plus any added on the Pool page
       for (const t of tiles) {
         if (t.badge && t.badge.toLowerCase() !== 'normal') await expect(page.getByTestId(`why-${t.id}`), `tile ${t.id} (${t.badge}) explains why`).toBeVisible()
       }

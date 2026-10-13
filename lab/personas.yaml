@@ -5,7 +5,7 @@
 # Check it against the real fleet with `python -m tenantguard_lab calibrate`, which runs
 # calm traffic, reads every worker's /stats and prints the rate_scale to use.
 
-# Calm load ~121 req/s (sum of rps below). CPU comes from request weight (search n), not request count: an httpx client costs
+# Calm load ~116 req/s. CPU comes from request weight (search n), not request count: an httpx client costs
 # ~3 ms CPU per request on the dev laptop, so one lab process tops out near 270 req/s, and a Python gateway
 # pays a similar per-request cost. est_cpu_ms below follow worker/README (search ~0.35 us/doc); the estimate
 # is ~30% of 4500 CPU-ms/s (9 x 0.5 cores). Recalibrate on the real fleet with `calibrate`.
@@ -31,20 +31,20 @@ endpoints:
 # Default request mix (weights, normalised). Personas may override.
 mix: {light: 0.45, read: 0.30, search: 0.15, write: 0.10}
 
-# id -> persona. Names, tiers and SLA (sla_p95_ms) come from the layout; these add behaviour and profile.
+# id -> persona. Names and tiers come from the layout; these add behaviour and profile.
 personas:
-  A: {rps: 10, end_users: 900000,  note: "hospital records, steady reads"}
-  B: {rps: 10, end_users: 900000,  mix: {light: 0.35, read: 0.30, search: 0.25, write: 0.10}, note: "catalogue search heavy"}
-  C: {rps: 5,  end_users: 40000,   note: "image studio, small free plan"}
-  D: {rps: 14, end_users: 3000000, mix: {light: 0.50, read: 0.25, search: 0.05, write: 0.20}, note: "payments, write heavy"}
-  E: {rps: 10, end_users: 600000,  note: "online classes"}
-  F: {rps: 14, end_users: 1800000, note: "fitness platform, gyms and wearables"}
-  G: {rps: 5,  end_users: 40000,   note: "ride hailing, one-city pilot"}
-  H: {rps: 10, end_users: 300000,  mix: {light: 0.40, read: 0.25, search: 0.10, write: 0.25}, note: "accounting, write heavy"}
-  I: {rps: 5,  end_users: 50000,   note: "food delivery"}
-  J: {rps: 14, end_users: 5000000, note: "e-commerce, sale days"}
-  K: {rps: 10, end_users: 250000,  note: "task marketplace, usual culprit in demos"}
-  L: {rps: 14, end_users: 2500000, mix: {light: 0.40, read: 0.50, search: 0.05, write: 0.05}, note: "news, read heavy"}
+  A: {rps: 14, sla_p95_ms: 50,  end_users: 2000000, note: "hospital records, steady reads"}
+  B: {rps: 10, sla_p95_ms: 80,  end_users: 900000,  mix: {light: 0.35, read: 0.30, search: 0.25, write: 0.10}, note: "catalogue search heavy"}
+  C: {rps: 5,  sla_p95_ms: 150, end_users: 40000,   note: "image studio, small free plan"}
+  D: {rps: 14, sla_p95_ms: 40,  end_users: 3000000, mix: {light: 0.50, read: 0.25, search: 0.05, write: 0.20}, note: "payments, write heavy"}
+  E: {rps: 10, sla_p95_ms: 80,  end_users: 600000,  note: "online classes"}
+  F: {rps: 5,  sla_p95_ms: 150, end_users: 30000,   note: "fitness tracker"}
+  G: {rps: 14, sla_p95_ms: 50,  end_users: 1500000, note: "ride hailing"}
+  H: {rps: 10, sla_p95_ms: 80,  end_users: 300000,  mix: {light: 0.40, read: 0.25, search: 0.10, write: 0.25}, note: "accounting, write heavy"}
+  I: {rps: 5,  sla_p95_ms: 150, end_users: 50000,   note: "food delivery"}
+  J: {rps: 14, sla_p95_ms: 50,  end_users: 5000000, note: "e-commerce, sale days"}
+  K: {rps: 10, sla_p95_ms: 80,  end_users: 250000,  note: "task marketplace, usual culprit in demos"}
+  L: {rps: 5,  sla_p95_ms: 150, end_users: 80000,   mix: {light: 0.40, read: 0.50, search: 0.05, write: 0.05}, note: "news, read heavy"}
 
 # Attack profiles at intensity 1.0 (AttackReq.intensity multiplies the rate / concurrency).
 attacks:
@@ -53,14 +53,6 @@ attacks:
   hog:         {concurrency: 24, path: /api/export, params: {rows: 1000, chunk: 50, pause_ms: 50}}  # ~1 s each, closed loop
   memory:      {rps: 4.0, params: {mb: 24, hold_ms: 1000}, max_inflight: 32}  # overlapping holds exceed the 32 MB tenant budget
   retry_storm: {multiplier: 3, endpoint: read, max_retries: 50}   # retries at once on 429/503, ignores Retry-After
-  # Wave 2. Starting points sized from worker/calibration.json (2 ms CPU per black-box doc, ~7 us per index
-  # round); re-check on the real fleet: the bombs should push the attacker's servers past ~80% CPU while its
-  # request rate and metered cost stay inside the pro quota (50 req/s, 300 cost-ms/s).
-  blackbox_bomb:   {rps: 10, docs: 60}                    # ~120 ms of unmetered black-box CPU per cheap /api/ingest
-  background_bomb: {rps: 8, index_rounds: 20000}          # ~140 ms of background indexing per cheap /api/write
-  cache_flood:     {multiplier: 4, keyspace: 10000000}    # 4x persona rps of /api/read, every key new (all misses)
-  honest_spike:    {multiplier: 3}                        # 3x the tenant's own mix: busy but within its plan
-  faulty_server:   {latency_ms: 150, cpu_burn_pct: 30}    # on AttackReq.server; cleared when the attack stops
 
 # Scripted run (POST /lab/run): warmup is discarded, then calm_s -> attack_s -> calm_s.
 run:

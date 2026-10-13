@@ -50,7 +50,7 @@ Product/design background: `docs/FINAL-PLAN.md` (scope tiers, demo), `enhanced-p
   - Only one session runs a local stack at a time; ask the coordinator first.
   - The laptop has 8 cores / 7.8 GB, and the dev sessions themselves use most of the RAM.
 12b. **The coordinator never runs git commands that change a live session's worktree** (checkout, merge, branch switch). It sends the session the exact commands instead. (Learned 2026-10-12: a branch switch landed T15b's commit on the wrong branch.) After every merge, the coordinator verifies `git log` shows the merge commit before announcing it.
-12c. **Never run the `docker` CLI on this laptop, not even with `--context tg-host`.** Invoking it relaunches Docker Desktop + WSL locally (~1.4 GB RAM). Learned 2026-10-13: it was a main cause of the out-of-memory kills. Drive the Docker host ONLY via `ssh tg-host "docker ..."` / `ssh tg-host "cd /d C:\Users\preeti\tenantguard-deploy && docker compose ..."`. Image builds needing Docker Hub credentials can't run over SSH, so build ON the host with the classic builder: `ssh tg-host "cd /d C:\Users\preeti\tenantguard-deploy && set DOCKER_BUILDKIT=0&& docker build -f <svc>/Dockerfile -t codeastra-<svc>:latest ."` (verified 2026-10-13: no credentials needed, nothing starts locally).
+12c. **Never run the `docker` CLI on this laptop, not even with `--context tg-host`.** Invoking it relaunches Docker Desktop + WSL locally (~1.4 GB RAM). Learned 2026-10-13: it was a main cause of the out-of-memory kills. Drive the Docker host ONLY via `ssh tg-host "docker ..."` / `ssh tg-host "cd /d C:\Users\preeti\tenantguard-deploy && docker compose ..."`. Image builds needing Docker Hub credentials can't run over SSH, so build when free RAM allows and stop Docker Desktop right after.
 13. **Machine quirks:** Windows 11; PowerShell plus Git Bash. Docker Desktop must be running before any `docker compose` (it was found stopped on 2026-10-12). Use `127.0.0.1`, not `localhost`. Some peers run in "prompting" mode, so permission prompts may appear in their terminals. **Never rewrite UTF-8 files with Windows PowerShell 5 `Get-Content -Raw`/`Set-Content`**: it mis-decodes them and garbles `→ × ≥ §` (this happened on 2026-10-12). Use the Edit tool or Python with `encoding="utf-8"`.
 
 ## §3 Ownership
@@ -522,47 +522,6 @@ Build:
 
 Done = screenshots at both sizes from the REAL host (fixed brain), plus the tests.
 
-### T26: Final docs refresh (T1 session, worktree codeAstra-T1)
-**You are TASK T26:** when this is finished, every doc tells the truth about the FINAL system on master (59d0920 + 3fd756b), with measured numbers.
-
-Branch: `git checkout -b task/T26-docs-final master` (your old WIP branch task/T26-docs-refresh may be reused for text, but start from master). For this task you own `README.md`, `docs/SUBMISSION.md`, `docs/SETUP.md`, `docs/architecture.html` + `docs/Architecture.pdf`, and `prototype-docs/**`.
-
-Facts to apply (all on master):
-1. **Merged:**
-   - T12 brain: DockerProver relocation proof; 5 verdicts; calibration (sustained signals, SLA floor ≈25 ms, over_use 1.6, min_hurt_neighbours 4, warn hold 5 s); held hosts; ChargeCmd sender; tuning keys now in tenantguard.yaml.
-   - Also merged: T10 tiers/SLA/run marks; T25 scorecard runner; T17 billing; tier rebalance (A pro, F ent, G free, L ent; per-tenant sla_p95_ms); T28 worker memory fix; T27/T30 UI clarity.
-2. **Wave-2 lab attacks are NOT included** (user decision). Say "not included", never "in progress". The faulty-server scene is triggered via the worker's /admin/fault.
-3. **Measured scorecard:** `lab/results/summary-scorecard-host.json` + 18 RunResult files. Medians, victim p99 baseline→attack→after (ms):
-   - whale off 149→691→254; whale industry 157→176→165; whale tenantguard 158→183→154;
-   - flood off 200→162→186; flood industry 166→164→163; flood tenantguard 143→144→175;
-   - innocents penalised: none in any run.
-
-   State honestly: whale and flood are contained by the gateway limits that both protected modes share, so industry ≈ tenantguard on these two. The brain's distinct value is shown by the host-acceptance scenarios (PLAN decisions log 2026-10-13): a big-plan whale (named 99%, proved R=0.88, honest_growth, victims rerouted) and a faulty server (host_fault, 5.1× idle, no tenant blamed). Quote those from the log, labelled "host acceptance run".
-   - Note the anomaly: one OFF-mode flood run recorded 1,522 refused requests (likely a mode-switch carry-over).
-4. Test counts on master: gateway 94, worker 53 + 1 Linux-only skip, brain 166, lab 49, billing 25, handoff 47, narrator 9, tools 16 (459 Python); UI unit + e2e per ui/.
-5. Update the `11_FILES_*` catalogs for changed code: brain (prover, verdicts, health, decoder, held hosts, charge), lab (scorecard.py, marks), billing (new file `11_FILES_billing.md`), ui (T27/T30), worker (already done in T29). Update 00_INDEX, 01_OVERVIEW status, 05 sequence diagrams (prover/verdict/held-host), 06 risks, 07 unique, 09 config (all new yaml keys), 10 testing.
-6. Re-render the PDF and check it page by page.
-7. No tool attribution anywhere. Plain commits.
-
-Done = the files updated, the term grep empty, the PDF checked; report the file list.
-
-### T31: Final code cleanup from the T26 findings (T1 session)
-Branch `git checkout -b task/T31-cleanup master`. Temporary ownership for this task (other task sessions are closed): `brain/`, `lab/`, `ui/src/mock/`, `billing/`.
-1. **BUG (priority):** a proven over_plan tenant pushed below warn by force_throttle can be counted in ImpactMeter.innocents_penalised. Only tenants acted on WITHOUT a verdict/score ≥ warn may count. Add a regression test that fails before the fix.
-2. Lab: the 501 detail "attack '<name>' ships in Wave 2" → "attack '<name>' is not included in this build"; update test_scorecard FakeLab + its assert and lab/README (also add the `scorecard` subcommand to lab/README).
-3. ui/src/mock/fixture.ts: tiers A pro, F enterprise, G free, L enterprise + sla_p95_ms from layouts/ag23.json; keep the mock suites green.
-4. Stale text: the score.py docstring (over_use 1.6, min_hurt_neighbours 4); remove ladder.py's TODO(Wave 2) or reword it; lab/personas.yaml header total rate (it now sums to 121 req/s).
-5. Dead code: remove health.weighted_median, HealthTracker.ratios, billing Timeline.blamed_in and Priced.waived_ms if truly unused (git grep), or give each a caller. Add /control/charge to brain/tools/fake_gateway.py.
-6. Every affected suite green, the term grep empty, plain commits; update the matching 11_FILES_* rows. Report done.
-
-### T32: Integrate Mayur's Wave 2 attacks (T1 session)
-Mayur (GitHub Mayur280star, author mayurchaudhari2405) hand-wrote the 5 Wave 2 attacks: commit 228bf62 on GitHub branch `guardian/wave2-attacks`, based on the PRE-rewrite master a571f3e (same content as the new master d9f9035).
-1. `git fetch origin && git checkout -b task/T32-wave2 origin/master && git cherry-pick 228bf62`. Keep Mayur as the author (cherry-pick does by default). Resolve any conflict in favour of his intent.
-2. Lab: pytest green (incl. his tests/test_wave2_attacks.py).
-3. UI: the T24/T27 e2e currently asserts the launcher offers EXACTLY flood/whale/hog/memory/retry_storm. Change it to the 10 attacks (+ the server picker for faulty_server). Keep it mutation-checked. vitest + mock e2e green.
-4. Docs: everywhere it says the Wave 2 attacks are "not included" (README, SUBMISSION, prototype-docs 01/06/07/09/10, 11_FILES_lab/ui, lab/README, tools/README), say they ARE included, written by the team. The demo driver: blackbox_bomb no longer falls back to whale, and faulty_server/honest_spike run. Keep the measured-scorecard text (it covers whale/flood only).
-5. Plain commits, term grep empty. Do not push; report done.
-
 ## Task table
 
 | Task | Branch | Worktree | Session | Status |
@@ -695,8 +654,4 @@ Mayur (GitHub Mayur280star, author mayurchaudhari2405) hand-wrote the 5 Wave 2 a
 - 2026-10-13: **T12 host acceptance.** Step 0 PASS (DockerProver). 1a idle PASS (0 incidents in 5 min). **1b calm FAIL:** in 270 s of calm traffic there were 78 srv detections across all 9 servers (ratio 0.6–19.3, e.g. 54 ms vs 5 ms), 20 named, 19 ladder level changes. Likely cause: CFS throttling tail spikes on 0.5-CPU cgroups against a 3 s p95 window. Back to T12 for calibration.
 - Session names change on every restart: always confirm with ListAgents. Coordinator is currently `codeastra-b1`.
 - 2026-10-13 (user: "A"): **the 5 Wave 2 attack runners are dropped** (blackbox_bomb, background_bomb, cache_flood, faulty_server, honest_spike). The demo and scorecard use the existing flood, whale, hog, memory and retry_storm. The faulty-server scene is triggered by the coordinator with `docker exec … /admin/fault` on the host. The UI attack launcher should not offer the dropped attacks; docs say "not included" rather than "in progress".
-- 2026-10-13: **T12 final host acceptance PASSED** on 7f72906, run inside the lab container on the host: idle 0 events; calm 0 ladder moves (2 real w7 slowdowns rerouted, no tenant blamed); K big-plan whale named 99%, proved R=0.88, honest_growth, held hosts w1/w8 judged first; w4 fault host_fault 5.1x idle, no tenant blamed; 0 overrides left. Batch merged: layout-balance, T10, T25, T17, T12. Master: 459 tests green. Brain tuning keys moved into tenantguard.yaml.
-- 2026-10-13 (user): GitHub collaborator `Mayur280star` (Mayur Dipak Chaudhari) invited with write access, alongside `reki-shu`.
-- 2026-10-13: History rewrite #2 done (2 commit messages reworded; master + v2/main force-pushed by the user; the old scrub branch deleted). A third effort exists: branch `v2/main` + worktree `D:\yashodeep\codeAstra-v2` ("projects" redesign, 8 commits 03:25–05:12, owner session closed): cleaned, not merged.
-- 2026-10-13: Mayur hand-wrote the 5 Wave 2 attacks (branch guardian/wave2-attacks, commit 228bf62), reversing the "not included" state. T32 integrates them.
 - 2026-10-12: Cost bucket is debited with the worker-measured CPU (`X-TenantGuard-Cpu-Ms`) rather than an estimate, so it is a real resource quota, not a request count.

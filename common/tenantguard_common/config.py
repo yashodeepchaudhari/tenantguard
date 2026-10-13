@@ -1,14 +1,13 @@
-"""Load tenantguard.yaml and the tenant layout. Owned by the coordinator."""
+"""Load tenantguard.yaml: settings, the pool, and the seed projects and tenants (v2). Owned by the coordinator."""
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 from typing import Any, Dict, List
 
 import yaml
 
-from .contracts import Quota, TenantConfig
+from .contracts import PoolSpec, ProjectSpec, Quota, TenantConfig
 
 ROOT = Path(os.environ.get("TENANTGUARD_ROOT", Path(__file__).resolve().parents[2]))
 
@@ -20,23 +19,29 @@ def load_settings() -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
+def load_pool(settings: Dict[str, Any] | None = None) -> PoolSpec:
+    """The pool seeded from the yaml (the admin API may change it at runtime)."""
+    settings = settings or load_settings()
+    return PoolSpec(**settings["pool"])
+
+
+def load_projects(settings: Dict[str, Any] | None = None) -> List[ProjectSpec]:
+    """Seed projects from the yaml."""
+    settings = settings or load_settings()
+    return [ProjectSpec(**p) for p in settings.get("projects") or []]
+
+
+def tier_quota(settings: Dict[str, Any], tier: str) -> Quota:
+    """Per-tenant request quota of a tier."""
+    return Quota(**settings["tiers"][tier]["quota"])
+
+
 def load_tenants(settings: Dict[str, Any] | None = None) -> List[TenantConfig]:
-    """Return tenants from the layout file with tier quota and weight filled in."""
+    """Seed tenants from the yaml, with tier and quota taken from their project."""
     settings = settings or load_settings()
-    path = Path(os.environ.get("TENANTGUARD_LAYOUT", ROOT / settings["layout"]))
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    tiers = settings["tiers"]
+    tier_of = {p.id: p.tier for p in load_projects(settings)}
     out = []
-    for t in raw["tenants"]:
-        tier = tiers[t["tier"]]
-        out.append(TenantConfig(weight=tier["weight"], quota=Quota(**tier["quota"]), **t))
+    for t in settings.get("tenants") or []:
+        tier = tier_of[t["project"]]
+        out.append(TenantConfig(tier=tier, quota=tier_quota(settings, tier), **t))
     return out
-
-
-def worker_urls(settings: Dict[str, Any] | None = None) -> Dict[str, str]:
-    """Return server name -> base URL (env TENANTGUARD_WORKER_URLS='w0=http://..,w1=..' overrides)."""
-    settings = settings or load_settings()
-    env = os.environ.get("TENANTGUARD_WORKER_URLS")
-    if env:
-        return dict(kv.split("=", 1) for kv in env.split(","))
-    return dict(settings["workers"])

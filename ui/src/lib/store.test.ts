@@ -19,7 +19,7 @@ const snap = (ts: number, p95 = 20): StateSnapshot => ({
       noisy_norm: 0.25,
       level: 'normal',
       factor: 1,
-      placement: 'normal',
+      project: 'mobility',
     },
   ],
   servers: [],

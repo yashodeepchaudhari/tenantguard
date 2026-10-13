@@ -1,7 +1,9 @@
-"""Token bucket (requests) and cost bucket (CPU-ms). Pure: every call takes `now` (perf_counter seconds)."""
-from __future__ import annotations
+"""Token bucket (requests). Pure: every call takes `now` (perf_counter seconds).
 
-import math
+There is no per-tenant CPU bucket in v2: a project's CPU is bounded by its replicas' cgroups, and inside a
+project DRR charges every request its class cost, so an expensive tenant only spends its own turns.
+"""
+from __future__ import annotations
 
 
 class TokenBucket:
@@ -39,43 +41,3 @@ class TokenBucket:
     def take(self, now: float, n: float = 1.0) -> None:
         self._refill(now)
         self.tokens -= n
-
-
-class CostBucket:
-    """CPU-ms budget: refills `rate` ms/s up to `capacity`, debited after the response with measured CPU.
-
-    A request is admitted while the level is >= 0 and refused while it is negative, so one expensive
-    request can overdraw the bucket and the debt is paid back at `rate` before the next one is admitted.
-    """
-
-    def __init__(self, rate: float, capacity: float, now: float):
-        self.rate = float(rate)
-        self.capacity = float(capacity)
-        self.level_ms = float(capacity)
-        self.last = now
-
-    def _refill(self, now: float) -> None:
-        if now > self.last:
-            self.level_ms = min(self.capacity, self.level_ms + (now - self.last) * self.rate)
-            self.last = now
-
-    def configure(self, rate: float, capacity: float, now: float) -> None:
-        self._refill(now)
-        self.rate, self.capacity = float(rate), float(capacity)
-        self.level_ms = min(self.level_ms, self.capacity)
-
-    def level(self, now: float) -> float:
-        self._refill(now)
-        return self.level_ms
-
-    def available(self, now: float) -> bool:
-        return self.level(now) >= 0.0
-
-    def retry_after(self, now: float) -> float:
-        lvl = self.level(now)
-        return 0.0 if lvl >= 0 else -lvl / self.rate
-
-    def debit(self, ms: float, now: float) -> None:
-        self._refill(now)
-        if ms > 0 and math.isfinite(ms):
-            self.level_ms -= ms

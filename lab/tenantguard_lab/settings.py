@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-from tenantguard_common.config import load_settings, load_tenants, worker_urls
+from tenantguard_common.config import load_settings, load_tenants, tier_quota
 from tenantguard_common.contracts import TenantConfig
 
 LAB_DIR = Path(__file__).resolve().parents[1]
@@ -27,17 +27,13 @@ class Persona:
     tenant: TenantConfig
     rps: float
     mix: Dict[str, float]
+    sla_p95_ms: float = 100.0
     end_users: int = 0
     note: str = ""
 
     @property
     def id(self) -> str:
         return self.tenant.id
-
-    @property
-    def sla_p95_ms(self) -> float:
-        """The layout (TenantConfig) is the source of truth for SLA."""
-        return float(self.tenant.sla_p95_ms)
 
 
 @dataclass
@@ -47,8 +43,6 @@ class LabConfig:
     lab_url: str
     ui_origins: List[str]
     results_dir: Path
-    workers: Dict[str, str]
-    worker_cpus: float
     personas: Dict[str, Persona]
     endpoints: Dict[str, Endpoint]
     attacks: Dict[str, Dict[str, Any]]
@@ -58,6 +52,8 @@ class LabConfig:
     autostart: bool = True
     default_attacker: str = "K"
     target_fleet_util: float = 0.30
+    default_mix: Dict[str, float] = field(default_factory=dict)
+    quotas: Dict[str, Any] = field(default_factory=dict)    # tier -> Quota, for tenants added at runtime
 
     def persona(self, tenant: str) -> Persona:
         if tenant not in self.personas:
@@ -90,7 +86,7 @@ def load_config(personas_path: Optional[Path] = None) -> LabConfig:
             raise ValueError(f"persona {tid}: unknown request kinds {sorted(unknown)}")
         personas[tid] = Persona(
             tenant=t, rps=float(p.get("rps", 5.0)), mix=dict(mix),
-            end_users=int(p.get("end_users", 0)),
+            sla_p95_ms=float(p.get("sla_p95_ms", 100.0)), end_users=int(p.get("end_users", 0)),
             note=p.get("note", ""),
         )
 
@@ -102,8 +98,6 @@ def load_config(personas_path: Optional[Path] = None) -> LabConfig:
         lab_url=os.environ.get("TENANTGUARD_LAB_URL", services.get("lab", "http://127.0.0.1:8300")).rstrip("/"),
         ui_origins=[o.strip() for o in origins.split(",") if o.strip()],
         results_dir=Path(os.environ.get("TENANTGUARD_LAB_RESULTS", LAB_DIR / "results")),
-        workers=worker_urls(settings),
-        worker_cpus=float(settings.get("worker", {}).get("cpus", 0.5)),
         personas=personas,
         endpoints=endpoints,
         attacks=raw["attacks"],
@@ -113,7 +107,19 @@ def load_config(personas_path: Optional[Path] = None) -> LabConfig:
         autostart=_env_bool("TENANTGUARD_LAB_AUTOSTART", bool(raw.get("autostart", True))),
         default_attacker=raw.get("default_attacker", "K"),
         target_fleet_util=float(raw.get("target_fleet_util", 0.30)),
+        default_mix=dict(default_mix),
+        quotas={tier: tier_quota(settings, tier) for tier in settings.get("tiers", {})},
     )
+
+
+def new_persona(cfg: LabConfig, tenant: str, name: str, project: str, tier: str, api_key: str,
+                rps: Optional[float] = None) -> Persona:
+    """A calm persona for a tenant added at runtime (its key comes from whoever created it).
+    Rate: the given rps, else the median of the configured personas of the same tier, else 5 rps."""
+    same = sorted(p.rps for p in cfg.personas.values() if p.tenant.tier == tier)
+    rate = rps if rps is not None else (same[len(same) // 2] if same else 5.0)
+    t = TenantConfig(id=tenant, name=name, project=project, tier=tier, api_key=api_key, quota=cfg.quotas[tier])
+    return Persona(tenant=t, rps=float(rate), mix=dict(cfg.default_mix), note="added at runtime")
 
 
 def estimated_fleet_cpu_ms_per_s(cfg: LabConfig) -> float:

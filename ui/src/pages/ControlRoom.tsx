@@ -6,14 +6,13 @@ import { Gauge } from '../components/Gauge.tsx'
 import { ImpactPanel } from '../components/ImpactPanel.tsx'
 import { IncidentTimeline } from '../components/IncidentTimeline.tsx'
 import { NoisyBars } from '../components/NoisyBars.tsx'
-import { ServerGrid } from '../components/ServerGrid.tsx'
+import { ReplicaGrid } from '../components/ReplicaGrid.tsx'
 import { StatusBar } from '../components/StatusBar.tsx'
 import { TenantTiles } from '../components/TenantTiles.tsx'
 import { config } from '../config.ts'
 import { useLive } from '../lib/liveContext.ts'
 import { latestByTenant } from '../lib/reason.ts'
 import { noisyThresholds } from '../lib/thresholds.ts'
-import { useBarcodes } from '../lib/useBarcodes.ts'
 import { fairnessStatus, utilizationStatus } from '../lib/status.ts'
 
 type View = 'tiles' | 'flow'
@@ -50,7 +49,6 @@ function ViewToggle({ view, onChange }: { view: View; onChange: (v: View) => voi
 
 export function ControlRoom() {
   const { snapshot, history, incidents, conn, overrides } = useLive()
-  const barcodes = useBarcodes()
   const [picked, setPicked] = useState<string | null>(null)
   const [view, setViewState] = useState<View>(initialView)
   const setView = (v: View) => {
@@ -76,10 +74,10 @@ export function ControlRoom() {
 
   const tenants = snapshot.tenants
   const latest = latestByTenant(incidents)
-  // Highlight the picked tenant's barcode; otherwise follow the noisiest flagged tenant.
+  // Highlight the picked tenant's project; otherwise follow the noisiest flagged tenant.
   const flagged = [...tenants].filter((t) => t.level !== 'normal').sort((a, b) => b.noisy_score - a.noisy_score)[0]
   const focus = picked ?? flagged?.tenant ?? null
-  const focusName = tenants.find((t) => t.tenant === focus)?.name
+  const focusTenant = tenants.find((t) => t.tenant === focus)
 
   // Fixed panel heights and normal page scroll: nothing is squeezed to fit the window, so nothing
   // can collapse or overlap whatever the window size (1366x768 and 1920x1080 are tested).
@@ -98,12 +96,12 @@ export function ControlRoom() {
           hint="Jain index over completed rps / weight; 1.00 = perfectly fair"
         />
         <Gauge
-          label="Fleet CPU"
+          label="Pool CPU"
           value={snapshot.utilization}
           display={(snapshot.utilization * 100).toFixed(0)}
           unit="%"
           status={utilizationStatus(snapshot.utilization)}
-          hint="Share of the w0..w8 CPU limit in use"
+          hint="Share of the pool's cores in use (measured cgroup CPU of every replica)"
         />
         </div>
         <ViewToggle view={view} onChange={setView} />
@@ -112,7 +110,7 @@ export function ControlRoom() {
       {view === 'flow' ? (
         <div className="grid grid-cols-12 gap-3">
           <section className="panel col-span-12 h-[560px] xl:col-span-9" data-panel="flow">
-            <FlowView snapshot={snapshot} overrides={overrides} barcodes={barcodes} />
+            <FlowView snapshot={snapshot} overrides={overrides} />
           </section>
           <section className="panel col-span-12 h-[560px] xl:col-span-3" data-panel="noisy">
             <NoisyBars tenants={tenants} thresholds={noisyThresholds(snapshot)} />
@@ -123,8 +121,8 @@ export function ControlRoom() {
           <section data-panel="tiles">
             <TenantTiles tenants={tenants} latest={latest} selected={picked} onSelect={(id) => setPicked((p) => (p === id ? null : id))} />
             <p className="mt-1 truncate text-xs text-ink-300" data-testid="legend">
-              <b>p95</b> = the slowest 5 % of responses · <b>THROTTLE</b> = its limits are reduced · <b>fair share</b> = its tier&apos;s portion of the
-              servers it shares · click a tile to see its 3 servers
+              <b>p95</b> = the slowest 5 % of responses · <b>THROTTLE</b> = its limits are reduced · <b>fair share</b> = its portion of its
+              project&apos;s replicas · click a tile to see its project
             </p>
           </section>
 
@@ -132,12 +130,13 @@ export function ControlRoom() {
             <section className="panel col-span-12 h-[270px] xl:col-span-5" data-panel="p95">
               <P95Chart history={history} tenants={tenants} />
             </section>
-            <section className="panel col-span-6 h-[270px] xl:col-span-4" data-panel="servers">
-              <ServerGrid
+            <section className="panel col-span-6 h-[270px] xl:col-span-4" data-panel="replicas">
+              <ReplicaGrid
+                pool={snapshot.pool}
                 servers={snapshot.servers}
-                highlight={focus ? (barcodes[focus] ?? []) : []}
-                highlightLabel={focus ? `${focus}${focusName ? ` ${focusName}` : ''} · barcode ${(barcodes[focus] ?? []).join(' ')}` : undefined}
-                compact
+                pins={overrides?.pins}
+                highlight={focusTenant?.project ?? null}
+                highlightLabel={focusTenant ? `${focusTenant.tenant} ${focusTenant.name} · project ${focusTenant.project}` : undefined}
               />
             </section>
             <section className="panel col-span-6 h-[270px] xl:col-span-3" data-panel="noisy">

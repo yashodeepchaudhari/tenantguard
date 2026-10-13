@@ -12,7 +12,6 @@ COPY narrator/requirements.txt /app/narrator/requirements.txt
 RUN pip install --no-cache-dir -r /app/narrator/requirements.txt
 
 COPY tenantguard.yaml /app/tenantguard.yaml
-COPY layouts /app/layouts
 COPY narrator/tenantguard_narrator /app/narrator/tenantguard_narrator
 
 WORKDIR /app/narrator

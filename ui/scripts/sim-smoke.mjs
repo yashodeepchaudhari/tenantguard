@@ -14,10 +14,10 @@ for (const mode of ['off', 'industry', 'tenantguard']) {
     for (const e of incidents) lines.push(`  t=${(i / 2).toFixed(1)}s ${e.stage} ${e.prev_level ?? ''}->${e.level ?? ''} ${e.detail}`)
     if (i % 20 === 19) {
       const k = snapshot.tenants.find((x) => x.tenant === 'K')
-      const a = snapshot.tenants.find((x) => x.tenant === 'A')
+      const a = snapshot.tenants.find((x) => x.tenant === 'E') // K's project peer
       lines.push(
         `t=${(i / 2).toFixed(0)}s K lvl=${k.level} f=${k.factor.toFixed(2)} score=${k.noisy_score.toFixed(1)} cpu=${(k.cpu_share * 100).toFixed(0)}% | ` +
-          `A p95=${a.p95_ms.toFixed(0)}ms | util=${(snapshot.utilization * 100).toFixed(0)}% fair=${snapshot.fairness.toFixed(2)} | ${snapshot.status_sentence}`,
+          `E (peer) p95=${a.p95_ms.toFixed(0)}ms | util=${(snapshot.utilization * 100).toFixed(0)}% fair=${snapshot.fairness.toFixed(2)} | ${snapshot.status_sentence}`,
       )
     }
   }

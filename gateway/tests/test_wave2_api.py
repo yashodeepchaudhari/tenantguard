@@ -1,11 +1,10 @@
-"""Wave 2 behaviour through the HTTP API: express lane, batch lane + shedding, retry budget, charge,
-reference costs, adaptive window wiring."""
+"""Wave 2 behaviour through the HTTP API: express lane, batch lane + shedding, retry budget, adaptive window
+wiring (per replica)."""
 from __future__ import annotations
 
 import asyncio
 import time
 
-import pytest
 from tenantguard_common.contracts import H_CLASS
 
 from test_api import client, make, run, tenant
@@ -20,8 +19,8 @@ async def _learn(c, key: str, path: str, n: int = 1):
 
 
 def _whale_vs_light(express_cost_ms: float):
-    """W keeps a single-server window full of 200 ms requests; A sends 5 light requests meanwhile."""
-    gw, app, up = make([tenant("W", servers=("w0",)), tenant("A", servers=("w0",))], window=4,
+    """W keeps a single replica's window full of 200 ms requests; A (same project) sends 5 light requests."""
+    gw, app, up = make([tenant("W"), tenant("A")], replicas={"p1": ["w0"]}, window=4,
                        max_wait_ms=3000, express_cost_ms=express_cost_ms)
 
     async def go():
@@ -69,7 +68,7 @@ def test_batch_lane_by_header_or_route_with_longer_wait():
 
 
 def test_batch_is_shed_first_when_worker_saturates():
-    gw, app, up = make([tenant("B", servers=("w0",)), tenant("C", servers=("w0",))], window=2, max_wait_ms=2000)
+    gw, app, up = make([tenant("B"), tenant("C")], replicas={"p1": ["w0"]}, window=2, max_wait_ms=2000)
 
     async def go():
         async with client(app) as c:
@@ -123,7 +122,7 @@ def test_idempotency_key_repeat_counts_as_retry():
 
 
 def test_off_mode_has_no_retry_budget_and_fixed_window():
-    gw, app, up = make([tenant("K", rate_rps=1, burst=1)], mode="off", window=8)
+    gw, app, up = make([tenant("K", rate_rps=1, burst=1)], replicas={"p1": ["w0"]}, mode="off", window=8)
 
     async def go():
         async with client(app) as c:
@@ -134,61 +133,8 @@ def test_off_mode_has_no_retry_budget_and_fixed_window():
     assert gw.window("w0") == 8
 
 
-def test_charge_debits_cost_bucket_idempotently_in_tenantguard_mode_only():
-    gw, app, up = make([tenant("K", cost_ms_per_s=100)], mode="tenantguard")
-
-    async def go():
-        async with client(app) as c:
-            h = {"X-API-Key": "key-K"}
-            out = {}
-            out["bad"] = await c.post("/control/charge", json={"tenant": "K", "cpu_ms": -1})
-            out["unknown"] = await c.post("/control/charge", json={"tenant": "Z", "cpu_ms": 1})
-            out["c1"] = await c.post("/control/charge", json={"tenant": "K", "cpu_ms": 150, "charge_id": "s1"})
-            out["dup"] = await c.post("/control/charge", json={"tenant": "K", "cpu_ms": 150, "charge_id": "s1"})
-            out["ok_req"] = await c.get("/api/light", headers=h)          # level 50 -> admitted
-            out["c2"] = await c.post("/control/charge", json={"tenant": "K", "cpu_ms": 300, "charge_id": "s2"})
-            out["refused"] = await c.get("/api/light", headers=h)         # level about -251 -> refused
-            await c.post("/admin/mode", json={"mode": "industry"})
-            out["ignored"] = await c.post("/control/charge", json={"tenant": "K", "cpu_ms": 999})
-            out["m"] = (await c.get("/metrics")).text
-            return out
-    o = run(go())
-    assert o["bad"].status_code == 400 and o["unknown"].status_code == 400
-    assert o["c1"].json()["ok"] and o["dup"].json()["detail"] == "duplicate charge_id"
-    assert o["ok_req"].status_code == 200
-    assert o["refused"].status_code == 429 and o["refused"].json()["reasons"] == ["cost"]
-    assert o["refused"].headers["Retry-After"] == "3"                  # ~251 ms debt at 100 ms/s
-    assert o["ignored"].json()["detail"] == "ignored: mode"
-    assert 'tenantguard_charged_cpu_ms_total{tenant="K"} 450.000' in o["m"]
-
-
-def test_reference_costs_override_measured_cost_for_lane_choice():
-    gw, app, up = make([tenant("A")], mode="tenantguard")
-
-    async def go():
-        async with client(app) as c:
-            h = {"X-API-Key": "key-A"}
-            await _learn(c, "key-A", LIGHT)
-            r1 = await c.get(LIGHT, headers=h)
-            cls = up.seen[-1].headers[H_CLASS]
-            bad = await c.post("/control/reference_costs", json={"costs": {cls: -1}})
-            ok = await c.post("/control/reference_costs", json={"costs": {cls: 50.0}})
-            r2 = await c.get(LIGHT, headers=h)
-            await c.post("/admin/mode", json={"mode": "industry"})
-            r3 = await c.get(LIGHT, headers=h)
-            view = (await c.get("/admin/reference_costs")).json()
-            return r1, bad, ok, r2, r3, view, cls
-    r1, bad, ok, r2, r3, view, cls = run(go())
-    assert r1.headers["X-TenantGuard-Lane"] == "express"
-    assert bad.status_code == 400 and ok.json()["ok"]
-    assert r2.headers["X-TenantGuard-Lane"] == "interactive"       # reference 50 ms: not express
-    assert r3.headers["X-TenantGuard-Lane"] == "express"           # industry ignores brain references
-    assert view["reference_costs"] == {cls: 50.0}
-    assert gw.ref_cost("A", cls) == pytest.approx(1.0)             # measured EWMA still 1 ms
-
-
 def test_adaptive_window_moves_with_worker_side_latency():
-    gw, app, up = make([tenant("A")], window=16)
+    gw, app, up = make([tenant("A"), tenant("B", project="p2")], replicas={"p1": ["w0"], "p2": ["idle"]}, window=16)
 
     async def go():
         async with client(app) as c:
@@ -201,6 +147,5 @@ def test_adaptive_window_moves_with_worker_side_latency():
                 frame = gw.tick()
             return before, {ls.server: ls.window for ls in frame.limiter}
     before, after = run(go())
-    for s in ("w0", "w1", "w2"):
-        assert after[s] < before[s], (before, after)
-    assert after["spare"] == 16                                    # idle worker untouched
+    assert after["w0"] < before["w0"], (before, after)
+    assert after["idle"] == 16                                     # idle replica untouched

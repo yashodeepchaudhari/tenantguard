@@ -7,19 +7,29 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from tenantguard_common.contracts import AttackName, AttackReq, AttackStatus, LabStatus, Mode, RunReq, RunResult
 
 from .core import Lab, LabError
-from .settings import LabConfig, estimated_fleet_cpu_ms_per_s, load_config
+from .settings import LabConfig, estimated_fleet_cpu_ms_per_s, load_config, new_persona
 
 log = logging.getLogger("tenantguard_lab.app")
 
 
 class CalmBody(BaseModel):
     rate_scale: Optional[float] = Field(None, gt=0, le=20)
+
+
+class TenantJoin(BaseModel):
+    """A tenant created through the brain admin API; its key is shown once, so the creator hands it over here."""
+    tenant: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")
+    api_key: str = Field(min_length=8)
+    name: str
+    project: str
+    tier: str
+    rps: Optional[float] = Field(None, gt=0, le=200)
 
 
 def create_app(cfg: Optional[LabConfig] = None, autostart: Optional[bool] = None, transport=None) -> FastAPI:
@@ -68,6 +78,20 @@ def create_app(cfg: Optional[LabConfig] = None, autostart: Optional[bool] = None
                           "monthly_revenue_rs": p.tenant.monthly_revenue_rs, "protected": p.tenant.protected}
                          for p in cfg.personas.values()],
         }
+
+    @app.post("/lab/tenants", status_code=201)
+    async def add_tenant(request: Request, body: TenantJoin) -> Dict[str, Any]:
+        if body.tier not in cfg.quotas:
+            raise HTTPException(422, f"unknown tier {body.tier!r}")
+        p = new_persona(cfg, body.tenant, body.name, body.project, body.tier, body.api_key, body.rps)
+        lab_of(request).add_tenant(p)
+        return {"tenant": p.id, "rps": p.rps, "effective_rps": round(p.rps * cfg.rate_scale, 3),
+                "calm_running": lab_of(request).engine.calm_running}
+
+    @app.delete("/lab/tenants/{tenant}", status_code=204, response_class=Response)
+    async def remove_tenant(request: Request, tenant: str) -> Response:
+        await lab_of(request).remove_tenant(tenant)
+        return Response(status_code=204)
 
     @app.post("/lab/calm/start", response_model=LabStatus)
     async def calm_start(request: Request, body: Optional[CalmBody] = None) -> LabStatus:

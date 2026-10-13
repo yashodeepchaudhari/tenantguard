@@ -102,3 +102,17 @@ def test_config_reads_yaml_worker_keys():
     assert cfg.cache_guaranteed_share == w["cache_guaranteed_share"]
     assert cfg.blackbox_cpu_ms_per_doc == w["blackbox"]["cpu_ms_per_doc"]
     assert cfg.blackbox_queue_max == w["blackbox"]["queue_max"]
+
+
+def test_stats_count_blackbox_docs_per_tenant(client, worker):
+    """v2 attribution: the brain splits black-box CPU by documents handed over per tenant."""
+    assert client.post("/api/ingest", json={"docs": 30}, headers=hdr("K")).status_code == 202
+    assert client.post("/api/ingest", json={"docs": 10}, headers=hdr("A")).status_code == 202
+    docs = client.get("/stats").json()["docs_by_tenant"]
+    assert docs == {"K": 30, "A": 10}
+
+
+def test_tenant_list_comes_from_env(monkeypatch):
+    from app.config import load_config
+    monkeypatch.setenv("TENANTGUARD_TENANTS", "A, D")
+    assert load_config(server="t").tenants == ["A", "D"]

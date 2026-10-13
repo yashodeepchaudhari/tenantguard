@@ -31,6 +31,13 @@ def test_status_starts_idle(client):
     assert s == {"attacks": [], "calm_running": False, "run": None}
 
 
+def test_wave2_attacks_are_501(client):
+    for name in ["background_bomb", "blackbox_bomb", "cache_flood", "faulty_server", "honest_spike"]:
+        r = client.post("/lab/attack", json={"attack": name, "tenant": "K"})
+        assert r.status_code == 501, name
+    assert client.post("/lab/run", json={"scenario": "blackbox_bomb", "mode": "off"}).status_code == 501
+
+
 def test_attack_validation(client):
     assert client.post("/lab/attack", json={"attack": "whale", "tenant": "K", "intensity": 6}).status_code == 422
     assert client.post("/lab/attack", json={"attack": "whale", "tenant": "K", "intensity": 0.05}).status_code == 422
@@ -97,3 +104,28 @@ def test_results_newest_first_and_filters(tmp_path):
         assert [r["run_id"] for r in c.get("/lab/results", params={"scenario": "whale"}).json()] == ["r1", "r0"]
         assert [r["run_id"] for r in c.get("/lab/results", params={"scenario": "whale", "mode": "off"}).json()] == ["r0"]
         assert c.get("/lab/results", params={"mode": "bogus"}).status_code == 422
+
+
+def test_a_tenant_added_at_runtime_gets_calm_traffic_with_its_own_key(client):
+    client.post("/lab/calm/start")
+    r = client.post("/lab/tenants", json={"tenant": "Q9", "api_key": "tk_Q9_secret", "name": "Q", "project": "games", "tier": "free"})
+    assert r.status_code == 201
+    free = sorted(p["rps"] for p in client.get("/lab/personas").json()["personas"] if p["tier"] == "free" and p["tenant"] != "Q9")
+    assert r.json()["rps"] == free[len(free) // 2]           # median of the configured free personas
+    deadline = time.time() + 5
+    while time.time() < deadline and not any(k == "tk_Q9_secret" for k, _ in client.calls):
+        time.sleep(0.1)
+    assert any(k == "tk_Q9_secret" for k, _ in client.calls)
+    assert client.post("/lab/attack", json={"attack": "flood", "tenant": "Q9", "duration_s": 30}).status_code == 200
+    assert client.delete("/lab/tenants/Q9").status_code == 204
+    assert all(a["state"] != "running" for a in client.get("/lab/status").json()["attacks"] if a["tenant"] == "Q9")
+    assert "Q9" not in {p["tenant"] for p in client.get("/lab/personas").json()["personas"]}
+    client.post("/lab/calm/stop")
+
+
+def test_configured_tenants_cannot_be_replaced_or_removed(client):
+    j = {"tenant": "K", "api_key": "tk_other_key", "name": "K", "project": "mobility", "tier": "pro"}
+    assert client.post("/lab/tenants", json=j).status_code == 409
+    assert client.delete("/lab/tenants/K").status_code == 409
+    assert client.delete("/lab/tenants/nobody").status_code == 404
+    assert client.post("/lab/tenants", json={**j, "tenant": "Q8", "tier": "gold"}).status_code == 422

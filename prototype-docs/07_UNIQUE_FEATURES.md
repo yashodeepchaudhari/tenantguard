@@ -1,11 +1,11 @@
 # 07: Unique features
 
-What TenantGuard does that a rate limiter, or a typical fair-share API gateway, does not. Each item is built and merged on `master`, and each says where it lives.
+What TenantGuard does that a rate limiter, or a typical fair-share API gateway, does not. Each item says what is built on `master` and where; work still on task branches is marked **in progress**.
 
 ```mermaid
 flowchart LR
   RL["Typical rate limiter<br/>counts requests"] -->|"+ CPU-cost quotas<br/>+ retry budget<br/>+ fair lanes"| IND["Industry mode<br/>(a strong gateway)"]
-  IND -->|"+ server health<br/>+ rescue<br/>+ barcode naming<br/>+ proof by relocation<br/>+ five verdicts<br/>+ background-CPU charge-back<br/>+ adaptive ladder with TTL<br/>+ human holds<br/>+ fair billing<br/>+ explanations"| TG["TenantGuard mode"]
+  IND -->|"+ server health<br/>+ rescue<br/>+ barcode naming<br/>+ adaptive ladder with TTL<br/>+ human holds<br/>+ explanations"| TG["TenantGuard mode"]
 ```
 
 ## 1. Quotas on real resources, measured by the worker
@@ -46,8 +46,8 @@ In a live comparison with a whale saturating a worker, the express lane cut the 
 Where: `gateway/tenantguard_gateway/scheduler.py`, `limiter.py`, `core.py`.
 
 ## 9. An honest baseline: three switchable modes
-`off`, `industry` and `tenantguard` run in the same gateway, switched live. `industry` is everything a good gateway does on its own (CPU-cost quotas, retry budget, fair lanes, adaptive window), so the comparison with `tenantguard` isolates exactly what the adaptive loop adds. The lab writes one measured result file per run, and the scorecard runner (`lab/tenantguard_lab/scorecard.py`) aggregates them. On the Docker host (whale and flood, 3 runs per cell) both protected modes held the victims close to baseline while OFF did not (whale median victim p99 during the attack: OFF 691 ms, Industry 176 ms, TenantGuard 183 ms). On these two attacks Industry ≈ TenantGuard, because the gateway limits they share contain the attacker first; the brain's own value is shown in §13 and §14.
-Where: `gateway/tenantguard_gateway/core.py`, `lab/tenantguard_lab/scenario.py`, `scorecard.py`, `lab/results/`.
+`off`, `industry` and `tenantguard` run in the same gateway, switched live. `industry` is everything a good gateway does on its own (CPU-cost quotas, retry budget, fair lanes, adaptive window), so the comparison with `tenantguard` isolates exactly what the adaptive loop adds. The lab writes one measured result file per scenario and mode for the scorecard (**to be measured**).
+Where: `gateway/tenantguard_gateway/core.py`, `lab/tenantguard_lab/scenario.py`.
 
 ## 10. Every step is explained
 - **Brain events:** every event carries a plain-English `detail` (why), and every action carries its command and TTL.
@@ -75,46 +75,8 @@ Where: `integrations/handoff/`.
 
 Where: `gateway/tenantguard_gateway/security.py`, `app.py`; `worker/app/tenancy.py`, `store.py`.
 
-## 13. Proof before punishment: relocation to the spare
-Naming is a hypothesis. Before anyone is penalised, the brain tests it: the named culprit is moved to the spare worker, which is resized through the Docker socket to `spare_sizing` (1.25) × the culprit's CPU footprint. After `prove_settle_s` (2 s) the brain measures for `prove_window_s` (6 s) and computes R = 1 − post/pre slowdown on the culprit's old servers. The proof is confirmed only if R ≥ `recovery_R` (0.5) **and** the harm followed the tenant to the spare. A culprit that pauses during the test is not confirmed. A host suspect gets the matching test: it is drained and measured idle against its peers.
-
-In the host acceptance run (2026-10-13), tenant K as a big-plan whale was named with 99% confidence and proved with **R = 0.88**. Servers `w1` and `w8` were *held hosts*: they were judged on K first and never drained as faulty hosts.
-Where: `brain/tenantguard_brain/prover.py` (`DockerProver`, `HostProver`, `EngineDocker`), `stage3.py`.
-
-## 14. Five verdicts, each with its own action
-A proof is not a punishment. The verdict decides what happens, and every verdict event lists its reasons:
-
-| Verdict | When | Action (TTL-bound) |
-|---|---|---|
-| `mitigated_no_blame` | confidence below 0.8, or the proof did not confirm | none; the rescue keeps the neighbours safe |
-| `over_plan` | confirmed, and admission already refuses ≥ 20% of its requests | back home, limits tightened through the ladder |
-| `costly_pattern` | confirmed, and its paid CPU explains < 35% of its footprint (or black-box / eviction evidence) | its most expensive request class goes to the quarantine heavy lane; the rest goes home |
-| `honest_growth` | confirmed, and its paid work explains the load | stays on the spare as a burst lane, no penalty |
-| `host_fault` | a drained server is still ≥ 1.5× its peers while idle | stays drained; no tenant blamed |
-
-An honest, growing customer therefore gets *more* room, not a throttle. In the acceptance run K's verdict was `honest_growth`, and a fault on `w4` was judged `host_fault` at **5.1×** its peers while idle, with no tenant blamed. In calm traffic the brain made 0 ladder moves (2 real slowdowns of `w7` were rerouted, no tenant blamed), and 0 overrides were left at the end.
-Where: `brain/tenantguard_brain/verdicts.py`, `stage3.py`.
-
-## 15. Hidden work is charged to the tenant that caused it
-Background jobs run after the request has returned, so their CPU is not in `X-TenantGuard-Cpu-Ms`. Once a second, in `tenantguard` mode, the brain sends each tenant's background-job CPU to the gateway as a `ChargeCmd`, which is debited from that tenant's own cost bucket. Each charge has an idempotent `charge_id`, and a failed send is folded into the next one.
-Where: `brain/tenantguard_brain/core.py` (`_charges`), `gateway/tenantguard_gateway/core.py` (`charge`), `app.py`.
-
-## 16. Fair billing and "Why was I slow?"
-The billing service turns worker counters and brain incidents into per-tenant bills:
-- **Victims never pay for contention.** During an incident a victim pays, per request class, at most the calm reference price; the waived CPU is shown on the bill.
-- **The culprit pays what it used**, including an "unmetered" line for black-box CPU when it was named with enough confidence (`unmetered_min_confidence` 0.6).
-- **SLA credits** follow the tenant's own `sla_p95_ms` and a credit table (2% after 2 s of violation, up to 25% after 300 s).
-- **"Why was I slow?"** answers in plain English for a time window: a neighbour, a host fault, the tenant's own usage, nothing, or unknown. It never names another tenant.
-
-Where: `billing/tenantguard_billing/` (`meter.py`, `pricing.py`, `timeline.py`, `bill.py`, `main.py`).
-
-## 17. A lab that attacks the blind spots
-The lab runs ten attacks. Besides flood, whale, hog, memory and retry storm, the team wrote five that aim at what a rate limiter cannot see:
-- **Black-box bomb:** cheap `POST /api/ingest` calls that make the worker's black-box indexer burn CPU nobody meters.
-- **Background bomb:** cheap writes that each queue heavy background indexing (charged to the tenant as `bg_cpu_ms`, not to the request).
-- **Cache flood:** reads of keys that never repeat, so every read misses the cache.
-- **Honest spike:** a tenant's own mix at 3× its rate. The right answer is room to grow, not a throttle.
-- **Faulty server:** a fault injected on one worker through `/admin/fault`, cleared when the attack stops. No tenant is behind it, so none should be blamed.
-
-These five are tested against a mock fleet. They have not been measured on the Docker host yet; their profiles are sized from `worker/calibration.json` and are to be re-checked there.
-Where: `lab/tenantguard_lab/attacks.py`, `lab/personas.yaml`.
+## Still in progress (not on `master`)
+- **Relocation prover:** move a suspect to the spare and show the slowdown follows it. **In progress** (T12).
+- **Five verdicts:** costly pattern, over plan, honest growth, host fault, mitigated / no blame. **In progress** (T12).
+- **Wave-2 attacks:** black-box bomb, background bomb, cache flood, faulty server, honest spike. **In progress** (T10).
+- **Fair billing with SLA credits and "Why was I slow?":** **in progress** (T17).

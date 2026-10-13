@@ -5,9 +5,9 @@ import type { BrainMessage, IncidentEvent, LabStatus, Mode, OverridesView, State
 import type { ConnState } from './backend.ts'
 import { emptyImpact, updateImpact, type ImpactState } from './impact.ts'
 
-/** Layout fallback (ag23) until gateway /admin/tenants answers. */
-const LAYOUT_BARCODES: Record<string, string[]> = Object.fromEntries(TENANTS.map((t) => [t.id, t.servers]))
-const LAYOUT_REVENUE: Record<string, number> = Object.fromEntries(TENANTS.map((t) => [t.id, t.monthly_revenue_rs]))
+/** Seed fallback (tenantguard.yaml) until the first snapshot / gateway /admin/tenants answers. */
+const SEED_PROJECT: Record<string, string> = Object.fromEntries(TENANTS.map((t) => [t.id, t.project]))
+const SEED_REVENUE: Record<string, number> = Object.fromEntries(TENANTS.map((t) => [t.id, t.monthly_revenue_rs]))
 
 export interface HistoryPoint {
   ts: number
@@ -30,9 +30,9 @@ export interface LiveState {
   admin: TenantAdminView[] | null
   /** gateway /admin/overrides (polled); null while unreachable */
   overrides: OverridesView | null
-  /** tenant -> barcode servers (admin, else layout) */
-  barcodes: Record<string, string[]>
-  /** tenant -> monthly_revenue_rs (admin, else layout) */
+  /** tenant -> project (snapshot, else the yaml seed) */
+  projectOf: Record<string, string>
+  /** tenant -> monthly_revenue_rs (admin, else the yaml seed) */
   revenue: Record<string, number>
   impact: ImpactState
   /** lab GET /lab/status (polled); null until it answers or while unreachable */
@@ -77,8 +77,8 @@ export class LiveStore {
       pendingMode: null,
       admin: null,
       overrides: null,
-      barcodes: LAYOUT_BARCODES,
-      revenue: LAYOUT_REVENUE,
+      projectOf: SEED_PROJECT,
+      revenue: SEED_REVENUE,
       impact: emptyImpact(),
       lab: null,
       labReachable: null,
@@ -91,11 +91,7 @@ export class LiveStore {
 
   setAdmin(admin: TenantAdminView[]) {
     if (!admin.length) return
-    this.set({
-      admin,
-      barcodes: Object.fromEntries(admin.map((t) => [t.id, t.servers])),
-      revenue: Object.fromEntries(admin.map((t) => [t.id, t.monthly_revenue_rs ?? 0])),
-    })
+    this.set({ admin, revenue: Object.fromEntries(admin.map((t) => [t.id, t.monthly_revenue_rs ?? 0])) })
   }
 
   setOverrides(overrides: OverridesView | null) {
@@ -144,14 +140,15 @@ export class LiveStore {
     const history = base.filter((p) => p.ts >= cutoff)
     history.push(point)
     const pendingMode = this.state.pendingMode && this.state.pendingMode === s.mode ? null : this.state.pendingMode
+    const projectOf = s.tenants.length ? Object.fromEntries(s.tenants.map((t) => [t.tenant, t.project])) : this.state.projectOf
     const impact = updateImpact(this.state.impact, s, {
-      barcodes: this.state.barcodes,
+      projectOf,
       revenue: this.state.revenue,
       warn: s.noisy_thresholds?.warn ?? this.warnFallback,
       sloMs: this.sloMs,
       suspected: new Set(this.state.incidents.map((e) => e.tenant).filter((t): t is string => !!t)),
     })
-    this.set({ snapshot: s, receivedAt, history, pendingMode, impact })
+    this.set({ snapshot: s, receivedAt, history, pendingMode, impact, projectOf })
   }
 
   addIncidents(events: IncidentEvent[]) {

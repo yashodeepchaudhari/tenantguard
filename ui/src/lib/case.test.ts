@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { IncidentEvent } from '../types.ts'
-import { barcodeMatch, caseIndex, decoderView, reportSections, stepTime, summarizeCase } from './case.ts'
+import { caseIndex, caseSteps, reportSections, splitRounds, stepTime, summarizeCase } from './case.ts'
 
 const ev = (o: Partial<IncidentEvent>): IncidentEvent => ({
   type: 'incident',
@@ -46,26 +46,25 @@ describe('case file', () => {
     expect(stepTime(c, 'verdict')).toBeNull()
   })
 
-  it('reads the barcode decoder report of a server incident (real brain shape)', () => {
+  it('reads the hash split rounds of an unattributed-work verdict (real brain shape)', () => {
     const report = {
-      p_slow: { w3: 0.532, w6: 0.3967, w0: 0.0011 },
-      confidence: { K: 0.0543, D: 0.0669, host_fault: 0.2956, none: 0.146 },
-      host_suspects: ['w3'],
-      culprits: [],
+      verdict: 'costly_pattern',
+      project: 'free',
+      rounds: [
+        { round: 1, unattributed_ms_per_s: { 'tg-free-1': 12.5, 'tg-free-2': 580.2 }, halves: [['C'], ['F', 'I']], kept: ['F', 'I'] },
+        { round: 2, unattributed_ms_per_s: { 'tg-free-1': 3.1, 'tg-free-2': 590 }, halves: [['I'], ['F']], kept: ['F'] },
+      ],
     }
-    const d = decoderView(report)!
-    expect(d.ranking.map((r) => r.label)).toEqual(['host fault', 'nobody', 'D', 'K'])
-    expect(d.ranking[0].kind).toBe('host')
-    expect(d.pSlow.w3).toBe(0.532)
-    expect(d.hostSuspects).toEqual(['w3'])
-    expect(decoderView({ summary: 'x' })).toBeNull()
-    const c = summarizeCase('srv-1', [
-      ev({ incident_id: 'srv-1', stage: 'detected', ts: 1 }),
-      ev({ incident_id: 'srv-1', stage: 'named', ts: 2, report }),
-      ev({ incident_id: 'srv-1', stage: 'closed', ts: 3, report: { note: 'later report without decoder' } }),
+    const r = splitRounds(report)
+    expect(r.map((x) => x.kept)).toEqual([['F', 'I'], ['F']])
+    expect(r[0].unattributed['tg-free-2']).toBe(580.2)
+    expect(r[1].halves).toEqual([['I'], ['F']])
+    expect(splitRounds({ summary: 'x' })).toEqual([])
+    const c = summarizeCase('inc-F', [
+      ev({ incident_id: 'inc-F', stage: 'verdict', ts: 2, tenant: 'F', report }),
+      ev({ incident_id: 'inc-F', stage: 'level_change', ts: 3, report: { note: 'later report without rounds' } }),
     ])
-    expect(c.tenant).toBeNull()
-    expect(c.decoder?.hostSuspects).toEqual(['w3']) // kept from the earlier report
+    expect(c.split).toHaveLength(2) // kept from the verdict's report
   })
 
   it('an open case is not closed', () => {
@@ -76,23 +75,37 @@ describe('case file', () => {
     expect(caseIndex(events).map((c) => c.id)).toEqual(['other', 'inc-1'])
   })
 
-  it('barcode match counts slow servers inside the barcode', () => {
-    expect(barcodeMatch(['w1', 'w3', 'w8'], ['w1', 'w3'])).toEqual({ matched: ['w1', 'w3'], missing: [], score: 1 })
-    expect(barcodeMatch(['w1', 'w3', 'w8'], ['w1', 'w4']).score).toBe(0.5)
-    expect(barcodeMatch(['w1'], []).score).toBe(0)
-  })
-
   it('renders a report dict as sections', () => {
     const s = reportSections({
       verdict: 'costly_pattern',
       confidence: 0.912,
-      summary: 'KaamKaro ran very heavy searches that took most of the CPU of w1, w3 and w8.',
-      evidence: ['w1 p95 4x peers', 'w3 p95 3x peers'],
+      summary: 'KaamKaro ran very heavy searches that took most of project mobility’s CPU.',
+      evidence: ['E p95 4x baseline', 'G p95 3x baseline'],
       numbers: { victim_p95_before_ms: 240, victim_p95_after_ms: 31 },
     })
     expect(s[0]).toEqual({ title: 'Facts', kind: 'table', rows: [['Verdict', 'costly_pattern'], ['Confidence', '0.91']] })
     expect(s.map((x) => x.kind)).toEqual(['table', 'text', 'list', 'table'])
     expect(s[3]).toMatchObject({ title: 'Numbers', rows: [['Victim p95 before ms', '240'], ['Victim p95 after ms', '31']] })
-    expect(reportSections({ p_slow: { w3: 0.97, K: 0.1 } })[0]).toMatchObject({ title: 'P slow', rows: [['w3', '0.97'], ['K', '0.10']] })
+    expect(reportSections({ unattributed_ms_per_s: { 'tg-free-2': 590, K: 0.1 } })[0]).toMatchObject({ title: 'Unattributed ms per s', rows: [['tg-free-2', '590'], ['K', '0.10']] })
+  })
+})
+
+describe('case kinds', () => {
+  it('tells a tenant case, a hash split and a host-wide slowdown apart, each with its own steps', () => {
+    expect(summarizeCase('inc-1', [ev({ tenant: 'K' })]).kind).toBe('tenant')
+    const split = summarizeCase('srv-1-3', [
+      ev({ incident_id: 'srv-1-3', stage: 'detected', report: { project: 'health', suspects: ['A', 'D'] } }),
+      ev({ incident_id: 'srv-1-3', stage: 'proving', ts: 9, report: { project: 'health', round: 1, kept: ['D'] } }),
+    ])
+    expect(split.kind).toBe('split')
+    expect(caseSteps(split.kind).map((s) => s.label)).toEqual(['Hidden CPU', 'Split rounds', 'Verdict', 'Closed'])
+    const host = summarizeCase('srv-1-1', [
+      ev({ incident_id: 'srv-1-1', stage: 'detected', report: { projects: ['health', 'media'] } }),
+      ev({ incident_id: 'srv-1-1', stage: 'verdict', report: { verdict: 'host_fault', projects: ['health', 'media'] } }),
+      ev({ incident_id: 'srv-1-1', stage: 'closed', ts: 40 }),
+    ])
+    expect(host.kind).toBe('host')
+    expect(host.verdict).toBe('host_fault')
+    expect(caseSteps(host.kind).every((s) => stepTime(host, s.stage) !== null)).toBe(true)   // a finished story
   })
 })

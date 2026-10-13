@@ -159,26 +159,48 @@ class Engine:
         stop = asyncio.Event()
         self._calm_stop = stop
         self.calm_started_at = time.time()
-        cap = int(self.cfg.client["max_inflight_per_tenant"])
-        for tid, persona in self.cfg.personas.items():
-            gate = InflightGate(cap)
-            self._calm_gates[tid] = gate
-            client = self.client(tid, "calm")
-
-            def fire(tid=tid, persona=persona, gate=gate, client=client) -> None:
-                if gate.full():
-                    self.recorder.drop(tid)
-                    return
-                kind = self.pick_kind(persona.mix)
-                gate.spawn(self.send(client, tid, self.build(self.cfg.endpoints[kind]), "calm", kind))
-
-            def rate(persona=persona) -> float:
-                return persona.rps * self.cfg.rate_scale
-
-            self._calm_tasks[tid] = asyncio.ensure_future(
-                run_poisson(rate, fire, stop, rng=random.Random(self.rng.random())))
+        for tid in self.cfg.personas:
+            self._start_stream(tid)
         log.info("calm traffic started for %d tenants (rate_scale %.2f)", len(self._calm_tasks), self.cfg.rate_scale)
         return True
+
+    def _start_stream(self, tid: str) -> None:
+        """One Poisson stream of calm requests for one tenant (calm traffic must be running)."""
+        assert self._calm_stop is not None
+        persona = self.cfg.personas[tid]
+        gate = InflightGate(int(self.cfg.client["max_inflight_per_tenant"]))
+        self._calm_gates[tid] = gate
+        client = self.client(tid, "calm")
+
+        def fire() -> None:
+            if gate.full():
+                self.recorder.drop(tid)
+                return
+            kind = self.pick_kind(persona.mix)
+            gate.spawn(self.send(client, tid, self.build(self.cfg.endpoints[kind]), "calm", kind))
+
+        def rate() -> float:
+            return persona.rps * self.cfg.rate_scale
+
+        self._calm_tasks[tid] = asyncio.ensure_future(
+            run_poisson(rate, fire, self._calm_stop, rng=random.Random(self.rng.random())))
+
+    def start_tenant(self, tid: str) -> None:
+        """Calm traffic for a tenant added while calm traffic runs (otherwise the next start includes it)."""
+        if self.calm_running and tid not in self._calm_tasks:
+            self._start_stream(tid)
+
+    async def stop_tenant(self, tid: str) -> None:
+        """Stop a tenant's calm stream and close its connection pools."""
+        task = self._calm_tasks.pop(tid, None)
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        gate = self._calm_gates.pop(tid, None)
+        if gate is not None:
+            await gate.cancel_all()
+        for key in [k for k in self._clients if k[0] == tid]:
+            await self.close_pool(*key)
 
     async def stop_calm(self) -> bool:
         if not self.calm_running:
