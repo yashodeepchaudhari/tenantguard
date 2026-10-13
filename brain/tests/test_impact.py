@@ -45,6 +45,21 @@ def test_ladder_escalation_on_a_low_score_is_an_innocent(cfg):
     assert brain.snapshot(sim.now).impact.innocents_penalised == ["K"]
 
 
+def test_over_plan_verdict_below_warn_is_not_an_innocent(cfg):
+    """A proven over_plan tenant is throttled by the verdict (force_throttle) even when its noisy score is
+    below warn: that is a verdict, not an innocent penalised. Neither is the AIMD step that renews it."""
+    brain = Brain(cfg)
+    sim = Simulator(cfg.tenants, whale_scenario("K", 20, 40, 30), quota_mult={"K": 3}, start=T0)
+    drive(brain, sim, T0 + 21, routes_apply=False)
+    brain.scores["K"].score = 0.5                         # proven over plan, but not noisy right now
+    assert brain.force_throttle("K", sim.now, "verdict over_plan for K")
+    from tenantguard_brain import ladder as lad
+    st = brain.ladders["K"]
+    tr = lad.Transition("step", st.level, st.level, st.factor, st.factor * 0.5, 1.0, 1.0, "test")
+    brain._on_transition("K", tr, sim.now)
+    assert brain.snapshot(sim.now).impact.innocents_penalised == []
+
+
 def test_status_sentence_says_recovering_not_zero_share(cfg):
     brain = Brain(cfg)
     sim = Simulator(cfg.tenants, whale_scenario("K", 20, 40, 60), quota_mult={"K": 3}, start=T0)
