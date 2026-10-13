@@ -50,7 +50,8 @@ export interface StoreOptions {
 
 const MAX_INCIDENTS = 300
 
-const eventKey = (e: IncidentEvent) => `${e.incident_id}|${e.stage}|${e.ts}|${e.level ?? ''}`
+/** Dedup key for incident events. Includes the tenant: one tick can carry verdicts for two culprits of the same incident. */
+export const eventKey = (e: IncidentEvent) => `${e.incident_id}|${e.stage}|${e.ts}|${e.level ?? ''}|${e.tenant ?? ''}`
 
 export class LiveStore {
   private state: LiveState

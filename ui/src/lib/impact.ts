@@ -40,7 +40,7 @@ export interface ImpactState {
 
 export const emptyImpact = (): ImpactState => ({ since: null, lastTs: null, avoidedS: {}, sufferedS: {}, innocents: [], noisy: [], revenueRs: 0 })
 
-const ACTED: Level[] = ['throttle', 'deprioritize', 'quarantine', 'blocked']
+export const ACTED: Level[] = ['throttle', 'deprioritize', 'quarantine', 'blocked']
 
 export function updateImpact(prev: ImpactState, s: StateSnapshot, ctx: ImpactContext): ImpactState {
   const noisy = new Set(prev.noisy)
