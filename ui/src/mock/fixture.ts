@@ -9,23 +9,24 @@ export interface FixtureTenant {
   servers: string[]
   monthly_revenue_rs: number
   protected: boolean
+  sla_p95_ms: number // end-to-end p95 promised to the tenant (layout)
 }
 
 export const SERVERS = ['w0', 'w1', 'w2', 'w3', 'w4', 'w5', 'w6', 'w7', 'w8']
 
 export const TENANTS: FixtureTenant[] = [
-  { id: 'A', name: 'Aarogya Health', tier: 'enterprise', servers: ['w0', 'w1', 'w2'], monthly_revenue_rs: 900000, protected: true },
-  { id: 'B', name: 'BazaarKart', tier: 'pro', servers: ['w3', 'w4', 'w5'], monthly_revenue_rs: 250000, protected: false },
-  { id: 'C', name: 'Chitra Studio', tier: 'free', servers: ['w6', 'w7', 'w8'], monthly_revenue_rs: 0, protected: false },
-  { id: 'D', name: 'DhanSetu Payments', tier: 'enterprise', servers: ['w0', 'w3', 'w6'], monthly_revenue_rs: 1200000, protected: true },
-  { id: 'E', name: 'Ekalavya Learn', tier: 'pro', servers: ['w1', 'w4', 'w7'], monthly_revenue_rs: 200000, protected: false },
-  { id: 'F', name: 'FitZone', tier: 'free', servers: ['w2', 'w5', 'w8'], monthly_revenue_rs: 0, protected: false },
-  { id: 'G', name: 'GaadiGo', tier: 'enterprise', servers: ['w0', 'w4', 'w8'], monthly_revenue_rs: 800000, protected: false },
-  { id: 'H', name: 'HisaabBooks', tier: 'pro', servers: ['w1', 'w5', 'w6'], monthly_revenue_rs: 150000, protected: false },
-  { id: 'I', name: 'IdliExpress', tier: 'free', servers: ['w2', 'w3', 'w7'], monthly_revenue_rs: 0, protected: false },
-  { id: 'J', name: 'JhatpatMart', tier: 'enterprise', servers: ['w0', 'w5', 'w7'], monthly_revenue_rs: 1500000, protected: false },
-  { id: 'K', name: 'KaamKaro', tier: 'pro', servers: ['w1', 'w3', 'w8'], monthly_revenue_rs: 180000, protected: false },
-  { id: 'L', name: 'LokVani News', tier: 'free', servers: ['w2', 'w4', 'w6'], monthly_revenue_rs: 0, protected: false },
+  { id: 'A', name: 'Aarogya Health', tier: 'pro', servers: ['w0', 'w1', 'w2'], monthly_revenue_rs: 400000, protected: true, sla_p95_ms: 50 },
+  { id: 'B', name: 'BazaarKart', tier: 'pro', servers: ['w3', 'w4', 'w5'], monthly_revenue_rs: 250000, protected: false, sla_p95_ms: 80 },
+  { id: 'C', name: 'Chitra Studio', tier: 'free', servers: ['w6', 'w7', 'w8'], monthly_revenue_rs: 0, protected: false, sla_p95_ms: 150 },
+  { id: 'D', name: 'DhanSetu Payments', tier: 'enterprise', servers: ['w0', 'w3', 'w6'], monthly_revenue_rs: 1200000, protected: true, sla_p95_ms: 40 },
+  { id: 'E', name: 'Ekalavya Learn', tier: 'pro', servers: ['w1', 'w4', 'w7'], monthly_revenue_rs: 200000, protected: false, sla_p95_ms: 80 },
+  { id: 'F', name: 'FitZone', tier: 'enterprise', servers: ['w2', 'w5', 'w8'], monthly_revenue_rs: 700000, protected: false, sla_p95_ms: 50 },
+  { id: 'G', name: 'GaadiGo', tier: 'free', servers: ['w0', 'w4', 'w8'], monthly_revenue_rs: 0, protected: false, sla_p95_ms: 150 },
+  { id: 'H', name: 'HisaabBooks', tier: 'pro', servers: ['w1', 'w5', 'w6'], monthly_revenue_rs: 150000, protected: false, sla_p95_ms: 80 },
+  { id: 'I', name: 'IdliExpress', tier: 'free', servers: ['w2', 'w3', 'w7'], monthly_revenue_rs: 0, protected: false, sla_p95_ms: 150 },
+  { id: 'J', name: 'JhatpatMart', tier: 'enterprise', servers: ['w0', 'w5', 'w7'], monthly_revenue_rs: 1500000, protected: false, sla_p95_ms: 50 },
+  { id: 'K', name: 'KaamKaro', tier: 'pro', servers: ['w1', 'w3', 'w8'], monthly_revenue_rs: 180000, protected: false, sla_p95_ms: 80 },
+  { id: 'L', name: 'LokVani News', tier: 'enterprise', servers: ['w2', 'w4', 'w6'], monthly_revenue_rs: 650000, protected: false, sla_p95_ms: 50 },
 ]
 
 export const TIERS: Record<Tier, { weight: number; quota: Quota }> = {
@@ -39,7 +40,7 @@ export const NOISY = {
   throttle: 2.0,
   quarantine: 4.0,
   recover_below: 1.0,
-  hold_s: { warn: 2, throttle: 2, deprioritize: 4, quarantine: 6, recover: 10 },
+  hold_s: { warn: 5, throttle: 2, deprioritize: 4, quarantine: 6, recover: 10 },
   throttle_factor: 0.5,
   recover_step: 0.1,
 }
