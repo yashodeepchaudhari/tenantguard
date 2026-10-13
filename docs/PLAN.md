@@ -555,6 +555,14 @@ Branch `git checkout -b task/T31-cleanup master`. Temporary ownership for this t
 5. Dead code: remove health.weighted_median, HealthTracker.ratios, billing Timeline.blamed_in and Priced.waived_ms if truly unused (git grep), or give each a caller. Add /control/charge to brain/tools/fake_gateway.py.
 6. Every affected suite green, the term grep empty, plain commits; update the matching 11_FILES_* rows. Report done.
 
+### T32: Integrate Mayur's Wave 2 attacks (T1 session)
+Mayur (GitHub Mayur280star, author mayurchaudhari2405) hand-wrote the 5 Wave 2 attacks: commit 228bf62 on GitHub branch `guardian/wave2-attacks`, based on the PRE-rewrite master a571f3e (same content as the new master d9f9035).
+1. `git fetch origin && git checkout -b task/T32-wave2 origin/master && git cherry-pick 228bf62`. Keep Mayur as the author (cherry-pick does by default). Resolve any conflict in favour of his intent.
+2. Lab: pytest green (incl. his tests/test_wave2_attacks.py).
+3. UI: the T24/T27 e2e currently asserts the launcher offers EXACTLY flood/whale/hog/memory/retry_storm. Change it to the 10 attacks (+ the server picker for faulty_server). Keep it mutation-checked. vitest + mock e2e green.
+4. Docs: everywhere it says the Wave 2 attacks are "not included" (README, SUBMISSION, prototype-docs 01/06/07/09/10, 11_FILES_lab/ui, lab/README, tools/README), say they ARE included, written by the team. The demo driver: blackbox_bomb no longer falls back to whale, and faulty_server/honest_spike run. Keep the measured-scorecard text (it covers whale/flood only).
+5. Plain commits, term grep empty. Do not push; report done.
+
 ## Task table
 
 | Task | Branch | Worktree | Session | Status |
@@ -689,4 +697,6 @@ Branch `git checkout -b task/T31-cleanup master`. Temporary ownership for this t
 - 2026-10-13 (user: "A"): **the 5 Wave 2 attack runners are dropped** (blackbox_bomb, background_bomb, cache_flood, faulty_server, honest_spike). The demo and scorecard use the existing flood, whale, hog, memory and retry_storm. The faulty-server scene is triggered by the coordinator with `docker exec … /admin/fault` on the host. The UI attack launcher should not offer the dropped attacks; docs say "not included" rather than "in progress".
 - 2026-10-13: **T12 final host acceptance PASSED** on 7f72906, run inside the lab container on the host: idle 0 events; calm 0 ladder moves (2 real w7 slowdowns rerouted, no tenant blamed); K big-plan whale named 99%, proved R=0.88, honest_growth, held hosts w1/w8 judged first; w4 fault host_fault 5.1x idle, no tenant blamed; 0 overrides left. Batch merged: layout-balance, T10, T25, T17, T12. Master: 459 tests green. Brain tuning keys moved into tenantguard.yaml.
 - 2026-10-13 (user): GitHub collaborator `Mayur280star` (Mayur Dipak Chaudhari) invited with write access, alongside `reki-shu`.
+- 2026-10-13: History rewrite #2 done (2 commit messages reworded; master + v2/main force-pushed by the user; coord/no-ai deleted). A third effort exists: branch `v2/main` + worktree `D:\yashodeep\codeAstra-v2` ("projects" redesign, 8 commits 03:25–05:12, owner session closed): cleaned, not merged.
+- 2026-10-13: Mayur hand-wrote the 5 Wave 2 attacks (branch guardian/wave2-attacks, commit 228bf62), reversing the "not included" state. T32 integrates them.
 - 2026-10-12: Cost bucket is debited with the worker-measured CPU (`X-TenantGuard-Cpu-Ms`) rather than an estimate, so it is a real resource quota, not a request count.
