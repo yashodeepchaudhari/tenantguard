@@ -9,7 +9,7 @@ Branch `v2/main`. Each change below was found while building against the simulat
 | D2 | `cpu_enforcement: shares \| caps` | One mode; `cgroup_parent` optional | The Docker host is Docker Desktop on Windows (`docs/PLAN.md` rule 12c), where a pool slice may not exist. Caps = `max(alloc, floor)` + shares hold floors either way. |
 | D3 | Demand = used + queued + refused | Plus a saturation probe: at ≥ 90% of its caps, demand ≥ 1.25 × used (*estimates*) | A project held at its cap can only show what it gets, so lending never started. |
 | D4 | ≥ 2 replicas while busy | Only if each would still get ≥ `busy_cpu` (0.5 core) | Splitting a 0.75-core project into two 0.375-core replicas made the sticky tenant slower. |
-| D5 | Score queue share = (depth + in flight) / slots | A tenant that is itself hurt counts only its queued requests | Whale scenario: the victims' in-flight count rose *because* they were slowed, so victims were flagged and one was throttled. |
+| D5 | Score queue share = (depth + in flight) / slots | A tenant that is itself hurt (slowdown ≥ `min_victim_impact`) has a queue share of 0 | Whale scenario: the victims' in-flight count rose *because* they were slowed, so victims were flagged and one was throttled. Counting only their queued requests was not enough on the real local stack (the victim G was still watched): their queue fills for the same reason. |
 | D6 | Overhead split by request share | Split up to a ceiling of 6.6 ms per request (max of process − handler − bg − black-box CPU in `worker/calibration.json`); the rest is unattributed | Without a ceiling, hidden work would be smeared over every tenant and never be found. |
 | D7 | Unattributed > 25% of container CPU | Also > 50 ms/s (*estimate*) | An idle replica's own runtime (about 5 ms/s) is "100% unexplained". |
 | D8 | Project volume shared by replicas | Each replica keeps its own per-tenant SQLite (as v1 workers did) | The worker seeds and resets its data at start, so a shared volume would be wiped by every new replica. |
@@ -41,8 +41,8 @@ These numbers come from the simulator's latency model (`sim.py`), not from the h
 | V6 control + detector + ladder + runtime | Done |
 | V7 worker changes | Done |
 | V8 lab + scorecard | Compose, lab calibrate, handoff and narrator adapted. **The scorecard has not been run on the host** |
-| V9 UI | **Not done.** The UI still expects barcodes / servers (`useBarcodes`, `FlowView`, `ServerGrid`, the mock simulator). `TenantAdminView` now has `project` and `replicas`; `ServerView` entries are replicas with a `project` |
-| V10 billing | **Not done.** Billing lives on the unmerged `task/T17-billing`; it must read per-tenant CPU from attribution and the replica list from the brain |
+| V9 UI | Done. Replica grid by project (`ReplicaGrid`), Flow view on projects and replicas, **Pool** page (pool, projects, tenants: create / edit / delete, key shown once), Tenants page read-only (tier quotas), Case File with the hash-split rounds. The mock simulator models the pool (floors, lending, scaling). Barcodes, `ServerGrid`, `useBarcodes` and the proof animation are gone |
+| V10 billing | **Dropped.** Billing is not part of v2: removed from contracts, config, compose and the v2 docs |
 | V11 docs | `docs/v2` updated (this file, `04_FUNCTIONS.md`). The `prototype-docs` pack still describes v1 |
 
 ## 4. Test counts on this branch
@@ -55,11 +55,39 @@ These numbers come from the simulator's latency model (`sim.py`), not from the h
 | lab | 33 passed |
 | tools | 16 passed |
 | narrator | 9 passed |
+| UI unit (vitest) | 81 passed (plus tsc, eslint, vite build) |
+| UI end-to-end (Playwright), mock stack | 28 passed |
+| UI end-to-end (Playwright), real local stack | 28 passed (brain, gateway, replicas as processes, lab, handoff + mock web, narrator) |
 
 Run each suite from its own directory with `PYTHONPATH=<repo>/common`. The shared editable install points at the main checkout.
 
-## 5. Before v2 can replace v1 (07 §5 gate)
+## 5. Running the whole system on one laptop (no Docker)
+`brain/tools/local_stack.py` starts everything on offset ports, so it never collides with a v1 stack:
+
+| Service | Port |
+|---|---|
+| brain (`control.backend=process`: replicas are local worker processes from port 8130) | 8230 |
+| gateway | 8030 |
+| lab (calm traffic at 0.25 × the `personas.yaml` rates; attacks from the UI) | 8330 |
+| handoff bridge → mock Web PS3 app | 8430 → 8530 |
+| narrator | 8730 |
+| UI (Vite dev server, live mode) | 5180 |
+
+```
+cd <repo>
+PYTHONPATH=<repo>/common TENANTGUARD_ROOT=<repo> python brain/tools/local_stack.py   # Ctrl+C stops everything
+python brain/tools/local_stack.py --stop                                             # stop one started in the background
+```
+Then open http://127.0.0.1:5180. Logs, the registry and the handoff state go to `brain/.stack-logs/` (git-ignored).
+
+Observed on the laptop (single runs, not scorecard measurements; laptop timing, not the host):
+- calm traffic: one warm replica per project, 12 tenants normal;
+- whale on K: only K got an incident and was throttled (about 11 s after the attack started); mobility borrowed idle cores and scaled to 2 replicas, then back to 1; the other projects' caps did not change;
+- incident → handoff case pushed to the mock Web app → narrator report, end to end;
+- while a browser test run loaded the laptop (about 550 MB free), mobility's tenants slowed together and G reached `warn` for 15 s (no action, closed). A shared-host slowdown should be a no-blame contention finding; on the laptop it is not. Check this on the host before trusting `warn` on small, uneven projects.
+
+## 6. Before v2 can replace v1 (07 §5 gate)
 1. Run the V4 host checks: does a pool slice exist, do CpuShares split 3:1, and what are the container start p50/p95. Then replace the estimates in `tenantguard.yaml`.
 2. Build the worker image and run the stack on the host (`docker compose --profile image build worker && docker compose up -d`).
 3. Run S1–S8 × off / industry / tenantguard, 3 runs each, into `lab/results/v2-*.json`. Compare against v1's tenantguard whale ratio (3.57×, a single run).
-4. Do V9 (UI) and V10 (billing).
+4. Rehearse the demo on the host stack (the UI is done; billing is out of scope for v2).

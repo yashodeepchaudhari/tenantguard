@@ -57,7 +57,6 @@ class TenantAgg:
     p95_weighted: float = 0.0
     rejected: int = 0
     occupancy: float = 0.0         # queued + in flight
-    depth: float = 0.0             # queued only
     ticks: int = 0
     queued_ms: float = 0.0         # latest queued reference cost
     refused_ms: float = 0.0        # refused / expired reference cost over the window
@@ -207,7 +206,6 @@ class Brain:
                 a.ticks += 1
                 a.rejected += q.rejected_429 + q.expired_503
                 a.occupancy += q.depth + q.inflight
-                a.depth += q.depth
                 a.queued_ms = q.queued_cost_ms
                 a.refused_ms += q.refused_cost_ms
                 if q.completed > 0 and q.p95_ms > 0:
@@ -266,10 +264,11 @@ class Brain:
         self.slowdowns = {t: slowdown(agg[t].p95 if t in agg else None,
                                       self.baseline.get(t) if self.baseline.ready(t) else None, self.cfg.slow_abs_ms)
                           for t in self.tenants}
-        # A hurt tenant holds slots longer because it is slowed down: its in-flight requests are a symptom, not a
-        # cause, so only its queued requests count toward its occupancy.
+        # A hurt tenant holds slots longer and queues behind whoever slows it down: both its in-flight and its
+        # queued requests are symptoms, not causes, so a hurt tenant is judged on its CPU share alone. (A slow
+        # slot hog is still bounded by its own concurrency cap and DRR at the gateway.)
         hurt = {t for t, s in self.slowdowns.items() if s is not None and s >= self.cfg.min_victim_impact}
-        queue = {t: (a.depth if t in hurt else a.occupancy) / max(1, a.ticks) for t, a in agg.items()}
+        queue = {t: 0.0 if t in hurt else a.occupancy / max(1, a.ticks) for t, a in agg.items()}
         replicas = {r for rs in self.servers_of.values() for r in rs}
         cpu_cap = {r: 1000.0 * (self.caps.get(r) or self.cfg.default_cores) for r in replicas}
         slots = {r: float(self.cfg.default_window) for r in replicas}

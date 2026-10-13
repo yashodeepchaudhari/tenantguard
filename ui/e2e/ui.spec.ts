@@ -135,8 +135,9 @@ test('incident timeline opens the Case File for that incident', async ({ page, r
   await openControlRoom(page)
   const row = page.getByTestId('timeline-row').first()
   await expect(row).toBeVisible({ timeout: 15_000 })
+  // the timeline is live: a newer incident can push this row down, so click the link by its href
   const href = (await row.getAttribute('href'))!
-  await row.click()
+  await page.locator(`[data-testid="timeline-row"][href="${href}"]`).first().click()
   await expect(page).toHaveURL(new RegExp(`${href.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`))
   await expect(page.getByTestId('case-steps')).toBeVisible()
   const id = decodeURIComponent(href.split('/case/')[1])

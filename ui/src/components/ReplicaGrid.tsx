@@ -22,30 +22,27 @@ function Replica({ r, s, pinned }: { r: ReplicaView; s: ServerView | undefined; 
       data-testid={`replica-${r.id}`}
       data-state={r.state}
       data-status={s?.status ?? 'unknown'}
-      className={`relative flex min-w-[7.5rem] flex-1 flex-col justify-between overflow-hidden rounded-lg border-2 px-2 py-1 ${FRAME[st]}`}
+      className={`relative flex min-w-[7.5rem] flex-1 flex-col justify-center gap-0.5 overflow-hidden rounded-md border-2 px-1.5 ${FRAME[st]}`}
       style={r.state !== 'ready' ? HATCH : undefined}
       title={`${r.id}: ${r.state}${s ? `, p95 ${ms(s.p95_ms)}, ${s.peer_ratio.toFixed(2)}× project peers` : ''}, CPU cap ${cores(r.nano_cpus)}, ${r.mem_mb} MB${r.borrowed ? ', borrowed' : ''}`}
     >
-      <div className="flex min-w-0 items-baseline justify-between gap-1">
-        <span className="truncate font-mono text-sm font-bold text-ink-100">{r.id.replace(/^tg-/, '')}</span>
-        {word && <span className={`shrink-0 text-xs font-bold uppercase ${TEXT[st]}`}>{word}</span>}
-        {r.borrowed && !word && <span className="shrink-0 rounded border border-accent px-1 text-[10px] font-bold uppercase text-accent">loan</span>}
+      <div className="flex min-w-0 items-baseline gap-1 leading-tight">
+        <span className="truncate font-mono text-[13px] font-bold text-ink-100">{r.id.replace(/^tg-/, '')}</span>
+        {word && <span className={`shrink-0 text-[11px] font-bold uppercase ${TEXT[st]}`}>{word}</span>}
+        {r.borrowed && !word && <span className="shrink-0 rounded border border-accent px-1 text-[10px] font-bold uppercase leading-none text-accent">loan</span>}
+        {pinned.length > 0 && (
+          <span className="truncate text-[11px] font-semibold text-accent" title="split test: tenants pinned here">
+            pin {pinned.join(' ')}
+          </span>
+        )}
+        <span className="ml-auto whitespace-nowrap text-[11px] text-ink-300">{s ? `${s.cpu_pct.toFixed(0)} %` : '–'}</span>
       </div>
-      <div className="flex items-center gap-1.5">
-        <div className="h-1.5 flex-1 rounded bg-ink-800">
-          <div className={`h-full rounded ${BAR[st]}`} style={{ width: `${Math.min(100, s?.cpu_pct ?? 0)}%` }} />
-        </div>
-        <span className="whitespace-nowrap text-xs text-ink-300">{s ? `${s.cpu_pct.toFixed(0)} %` : '–'}</span>
+      <div className="h-1 rounded bg-ink-800">
+        <div className={`h-full rounded ${BAR[st]}`} style={{ width: `${Math.min(100, s?.cpu_pct ?? 0)}%` }} />
       </div>
-      <div className="flex justify-between gap-1 text-[11px] text-ink-300">
-        <span>{cores(r.nano_cpus)}</span>
-        <span>{r.mem_mb} MB</span>
+      <div className="whitespace-nowrap text-[10px] leading-tight text-ink-300">
+        {cores(r.nano_cpus)} · {r.mem_mb} MB
       </div>
-      {pinned.length > 0 && (
-        <div className="truncate text-[11px] font-semibold text-accent" title="split test: tenants pinned here">
-          pinned: {pinned.join(' ')}
-        </div>
-      )}
     </div>
   )
 }
@@ -57,23 +54,23 @@ function ProjectRow({ p, servers, lit, pins }: { p: ProjectView; servers: Map<st
       data-testid={`project-${p.id}`}
       data-lit={lit ? '1' : '0'}
       data-state={p.state}
-      className={`flex min-w-0 items-stretch gap-2 rounded-lg px-1 py-0.5 ${lit ? 'outline outline-[3px] outline-offset-1 outline-accent' : ''}`}
+      className={`flex min-h-0 min-w-0 flex-1 items-stretch gap-2 rounded-md px-1 py-px ${lit ? 'outline outline-[3px] outline-offset-0 outline-accent' : ''}`}
     >
-      <div className="flex w-32 shrink-0 flex-col justify-center">
-        <div className="flex items-baseline gap-1.5">
-          <span className="truncate text-base font-black text-ink-100">{p.name}</span>
-          <span className="text-[10px] uppercase tracking-wider text-ink-300">{p.tier}</span>
+      <div
+        className="flex w-36 shrink-0 flex-col justify-center gap-0.5"
+        title={`tenants ${p.tenants.join(' ')} · ${p.state} · floor ${p.floor_cpu} · used ${p.used_cpu.toFixed(2)} · cap ${p.cap_cpu} cores`}
+      >
+        <div className="flex min-w-0 items-baseline gap-1.5 leading-tight">
+          <span className="truncate text-sm font-black text-ink-100">{p.name}</span>
+          <span className="shrink-0 text-[10px] uppercase tracking-wider text-ink-300">{p.tier}</span>
         </div>
-        <div className="text-[11px] text-ink-300" title="allocated cores = guaranteed base + lent surplus; floor / cap">
+        <div className="whitespace-nowrap text-[11px] leading-tight text-ink-300">
           {p.alloc_cpu.toFixed(2)} core
-          {p.loan_cpu > 0.005 && <b className="text-accent"> +{p.loan_cpu.toFixed(2)} lent</b>}
+          {p.loan_cpu > 0.005 ? <b className="text-accent"> +{p.loan_cpu.toFixed(2)} lent</b> : <span className="text-ink-500"> · {p.state}</span>}
         </div>
-        <div className="relative mt-0.5 h-1.5 rounded bg-ink-800" title={`floor ${p.floor_cpu} · used ${p.used_cpu.toFixed(2)} · cap ${p.cap_cpu} cores`}>
+        <div className="relative h-1 rounded bg-ink-800">
           <div className="absolute inset-y-0 left-0 rounded bg-ink-500" style={{ width: `${Math.min(100, (p.used_cpu / p.cap_cpu) * 100)}%` }} />
           <div className="absolute inset-y-[-2px] w-0.5 bg-ok" style={{ left: `${floorPct}%` }} />
-        </div>
-        <div className="text-[10px] text-ink-500">
-          {p.tenants.join(' ')} · {p.state}
         </div>
       </div>
       <div className="flex min-w-0 flex-1 gap-1.5 overflow-hidden">
@@ -82,7 +79,7 @@ function ProjectRow({ p, servers, lit, pins }: { p: ProjectView; servers: Map<st
             <Replica key={r.id} r={r} s={servers.get(r.id)} pinned={Object.entries(pins).filter(([, x]) => x === r.id).map(([t]) => t)} />
           ))
         ) : (
-          <div className="flex flex-1 items-center rounded-lg border-2 border-dashed border-ink-700 px-2 text-sm text-ink-500">
+          <div className="flex flex-1 items-center rounded-md border-2 border-dashed border-ink-700 px-2 text-xs text-ink-500">
             {p.state === 'asleep' ? 'asleep · no replica (wakes on the next request)' : 'no replica yet'}
           </div>
         )}
@@ -113,7 +110,7 @@ export function ReplicaGrid({ pool, servers, highlight, highlightLabel, pins = {
         <div className="panel-title">{title}</div>
         {highlightLabel && <span className="truncate text-sm font-semibold text-accent">{highlightLabel}</span>}
       </div>
-      <div className="flex min-h-0 flex-1 flex-col justify-between gap-1 overflow-hidden" data-testid="replica-grid">
+      <div className="mt-1 flex min-h-0 flex-1 flex-col gap-1 overflow-hidden" data-testid="replica-grid">
         {projects.length ? (
           projects.map((p) => <ProjectRow key={p.id} p={p} servers={by} lit={highlight === p.id} pins={pins} />)
         ) : (

@@ -13,3 +13,7 @@ dist/
 .pytest_cache/
 lab/results/*.json
 !lab/results/.gitkeep
+# v2 runtime state (brain registry + audit log, local stack logs, local replica data)
+brain/.state/
+brain/.stack-logs/
+worker/.replicas/
