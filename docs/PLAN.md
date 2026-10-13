@@ -546,6 +546,15 @@ Facts to apply (all on master):
 
 Done = the files updated, the term grep empty, the PDF checked; report the file list.
 
+### T31: Final code cleanup from the T26 findings (T1 session)
+Branch `git checkout -b task/T31-cleanup master`. Temporary ownership for this task (other task sessions are closed): `brain/`, `lab/`, `ui/src/mock/`, `billing/`.
+1. **BUG (priority):** a proven over_plan tenant pushed below warn by force_throttle can be counted in ImpactMeter.innocents_penalised. Only tenants acted on WITHOUT a verdict/score ≥ warn may count. Add a regression test that fails before the fix.
+2. Lab: the 501 detail "attack '<name>' ships in Wave 2" → "attack '<name>' is not included in this build"; update test_scorecard FakeLab + its assert and lab/README (also add the `scorecard` subcommand to lab/README).
+3. ui/src/mock/fixture.ts: tiers A pro, F enterprise, G free, L enterprise + sla_p95_ms from layouts/ag23.json; keep the mock suites green.
+4. Stale text: the score.py docstring (over_use 1.6, min_hurt_neighbours 4); remove ladder.py's TODO(Wave 2) or reword it; lab/personas.yaml header total rate (it now sums to 121 req/s).
+5. Dead code: remove health.weighted_median, HealthTracker.ratios, billing Timeline.blamed_in and Priced.waived_ms if truly unused (git grep), or give each a caller. Add /control/charge to brain/tools/fake_gateway.py.
+6. Every affected suite green, the term grep empty, plain commits; update the matching 11_FILES_* rows. Report done.
+
 ## Task table
 
 | Task | Branch | Worktree | Session | Status |
