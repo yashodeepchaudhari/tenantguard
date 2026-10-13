@@ -60,7 +60,7 @@ worker:
   blackbox: {cpu_ms_per_doc: 2.0, queue_max: 5000}
   max_request_s: 30             # any single request (e.g. /api/export) must finish within this
   bg_pending: {per_tenant: 200, total: 1000}   # background-job backlog caps (503 bg_backlog)
-  mem_baseline_mb: 80           # RSS reserved for the process; worker-wide memory cap = mem_limit_mb - this   # "vendor indexer": CPU not attributed to any tenant
+  mem_baseline_mb: 80           # RSS reserved for the process; worker-wide memory cap = mem_limit_mb - this
   memory_trim_s: 30            # periodic malloc_trim on glibc
   max_classes_per_tenant: 256   # per-tenant class meters; overflow folds into "other"
 
@@ -96,7 +96,7 @@ brain:
     probe_window_ticks: 8
     slow_peer_ratio: 1.6
     slow_abs_ms: 8
-    open_after_ticks: 4         # legacy; persistence is now open_hold_s
+    open_after_ticks: 4         # naming debounce (Stage 3); server persistence is open_hold_s
     window_s: 5.0
     level_quantile: 0.3         # cell level = this quantile of per-tick p95 over window_s
     open_hold_s: 4.0            # a server opens only after this long with >= hold_ratio slow ticks
@@ -118,7 +118,7 @@ brain:
   recovery_R: 0.5
   paid_share_costly: 0.35
   host_idle_ratio: 1.5
-  ttl_s: {relocate: 120, quarantine: 120, throttle: 60, probation: 300}
+  ttl_s: {relocate: 120, quarantine: 120, throttle: 60, probation: 300}   # probation: reserved, not read yet
   action_budget: {relocations_per_min: 6, quarantine_every_s: 30, max_drained: 1, drain_peer_busy: 0.75}
   prover: auto                  # auto | docker | null (env TENANTGUARD_PROVER wins)
   charge_s: 1.0                 # background-CPU charge period
