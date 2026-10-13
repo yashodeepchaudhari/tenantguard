@@ -8,6 +8,7 @@ x-worker: &worker
   restart: unless-stopped
   environment: &worker-env
     TENANTGUARD_ROOT: /app
+    TENANTGUARD_ADMIN_TOKEN: ${TENANTGUARD_ADMIN_TOKEN:-dev}
 
 x-worker-urls: &worker-urls >-
   w0=http://w0:8100,w1=http://w1:8100,w2=http://w2:8100,w3=http://w3:8100,w4=http://w4:8100,w5=http://w5:8100,w6=http://w6:8100,w7=http://w7:8100,w8=http://w8:8100,spare=http://spare:8100,quarantine=http://quarantine:8100
@@ -105,6 +106,7 @@ services:
       TENANTGUARD_WORKER_URLS: *worker-urls
       TENANTGUARD_CONTROL_TOKEN: ${TENANTGUARD_CONTROL_TOKEN:-dev}
       TENANTGUARD_UI_ORIGINS: ${TENANTGUARD_UI_ORIGINS:-http://127.0.0.1:5173}
+      TENANTGUARD_ADMIN_TOKEN: ${TENANTGUARD_ADMIN_TOKEN:-dev}
     depends_on: [gateway]
     profiles: ["lab"]
 
