@@ -736,7 +736,7 @@ classDiagram
 
 | Model | Endpoint | Notes |
 |---|---|---|
-| `AttackReq` | `POST /lab/attack` | `intensity` multiplies the attack's default profile (flood: 10× persona rps at 1.0; whale/hog/memory: request rate), valid 0.1..5 else 422; `duration_s` 0 < x ≤ 600; `faulty_server` uses `server` instead of `tenant` |
+| `AttackReq` | `POST /lab/attack` | `intensity` multiplies the attack's default profile (flood: 10× persona rps at 1.0; whale/hog/memory, the bombs, cache_flood, honest_spike: request rate; faulty_server: the fault's latency and CPU burn), valid 0.1..5 else 422; `duration_s` 0 < x ≤ 600; `faulty_server` uses `server` instead of `tenant` (422 when missing, 404 when unknown) |
 | `AttackStatus` | response of `POST /lab/attack`, items of `LabStatus` | `state` ∈ `running`, `stopped`, `done`; `started_at`/`ends_at` epoch s |
 | `LabStatus` | `GET /lab/status` | running attacks, whether calm traffic runs, id of the scenario run in progress |
 | `RunReq` | `POST /lab/run` | scripted calm (`calm_s`) → attack (`attack_s`) → calm, after setting the gateway mode |
@@ -744,16 +744,18 @@ classDiagram
 | `RunResult` | written to `lab/results/<ts>-<scenario>-<mode>.json` | `victim_p99_ms` pooled over all non-attacker tenants; `victim_p99_by_tenant`; `time_to_detect_s` (attack start → first incident event, if the brain is reachable); `time_to_recover_s` (attack start → victim p99 ≤ 1.5× baseline for 5 s); the attacker's 429/503 counts; the file path. Slide numbers come only from these files |
 
 | `CellStats` | one scenario x mode inside a `CrashSummary` | `runs` and `failed_runs`; median and mean victim p99 per phase; median time to detect / recover with the number of runs that detected / recovered; median attacker 429 and 503; `brain_checked_runs` (runs whose brain incidents could be read), `culprit_named_runs` (the brain named the attacker inside the run's marks); `innocents_penalised` (union over runs) and `innocents_penalised_runs`; the run files used |
-| `CrashSummary` | written to `lab/results/summary-<ts>.json` by `python -m tenantguard_lab scorecard` | when and against which lab and brain it ran; the scenarios, modes, runs per cell, attacker, intensity, `calm_s` / `attack_s`; `aggregate_only` (built from existing run files, no new runs); `cells`; `skipped` (scenarios the lab answered 501 for); the file path |
+| `CrashSummary` | written to `lab/results/summary-<ts>.json` by `python -m tenantguard_lab scorecard` | when and against which lab and brain it ran; the scenarios, modes, runs per cell, attacker, intensity, `calm_s` / `attack_s`; `aggregate_only` (built from existing run files, no new runs); `cells`; `skipped` (scenarios the lab answered 501 for; the current lab runs all ten, so this is only filled against an older lab); the file path |
 
 **Run marks.** `GET /lab/run/{run_id}` returns the run's state, phase and, once the timeline finishes, `marks`:
 the actual epoch timestamps `t0`, `baseline_start`, `attack_start`, `attack_end`, `end`
 (`lab/tenantguard_lab/scenario.py Marks`). This is a lab view, not a contract model. The phase windows of a
 `RunResult` and the scorecard's alignment of brain incidents with a run both use these marks.
 
-The `background_bomb`, `blackbox_bomb`, `cache_flood`, `faulty_server` and `honest_spike` attacks are
-defined in `AttackName`, but they are **not included** in the lab: it answers 501 for them (`WAVE2` in
-`lab/tenantguard_lab/attacks.py`), and the scorecard lists such scenarios in `skipped`.
+Every `AttackName` has a runner in the lab (`RUNNERS` in `lab/tenantguard_lab/attacks.py`). The
+`background_bomb`, `blackbox_bomb`, `cache_flood`, `faulty_server` and `honest_spike` attacks were written
+by the team. `faulty_server` is the one server attack: it needs `server`, sends no tenant traffic and,
+in `POST /lab/run`, has no attacker (`RunResult.attacker` is null, every tenant is a victim). The lab
+answers 501 only for a name it has no runner for (`attack '<name>' not implemented`).
 
 ---
 

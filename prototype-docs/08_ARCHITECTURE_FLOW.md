@@ -155,4 +155,4 @@ flowchart LR
 | Shared message formats | `common/tenantguard_common/contracts.py` |
 | Every tunable | `tenantguard.yaml` |
 
-**Status:** everything in these diagrams is merged on `master`. The lab's attacks are flood, whale, hog, memory and retry storm; the second-wave attacks are not included, and a faulty server is simulated through the worker's `/admin/fault`.
+**Status:** everything in these diagrams is merged on `master`. The lab's attacks are flood, whale, hog, memory and retry storm, plus the second wave written by the team: black-box bomb, background bomb, cache flood, honest spike and faulty server (the lab injects the fault through the worker's `/admin/fault` and clears it when the attack stops).

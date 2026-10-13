@@ -9,23 +9,23 @@ Every service has its own test suite, which runs with `python -m pytest` in the 
 | Gateway | `cd gateway && python -m pytest` | 94 | `test_buckets.py`, `test_scheduler.py`, `test_router.py`, `test_overrides.py`, `test_limiter_retry.py`, `test_api.py`, `test_wave2_api.py`, `test_security.py`, `test_telemetry.py` |
 | Worker | `cd worker && python -m pytest` | 53 + 1 skipped off Linux | `test_isolation.py`, `test_metering.py`, `test_blackbox.py`, `test_limits_fault.py`, `test_calibrate.py`, `test_review_fixes.py`, `test_memory_return.py` |
 | Brain | `cd brain && python -m pytest` | 167 | `test_score.py`, `test_ladder.py`, `test_fairness.py`, `test_core.py`, `test_impact.py`, `test_stage3_pure.py`, `test_stage3_sim.py`, `test_prover.py`, `test_verdicts.py`, `test_t12_sim.py`, `test_t12_regressions.py`, `test_host_noise.py`, `test_operator.py`, `test_runtime.py`, `test_api.py` |
-| Lab | `cd lab && python -m pytest` | 49 | `test_poisson.py`, `test_stats.py`, `test_scenario.py`, `test_scorecard.py`, `test_api.py`, `test_isolation.py` |
+| Lab | `cd lab && python -m pytest` | 57 | `test_poisson.py`, `test_stats.py`, `test_scenario.py`, `test_scorecard.py`, `test_api.py`, `test_isolation.py`, `test_wave2_attacks.py` |
 | Billing | `cd billing && python -m pytest` | 25 | `test_meter.py`, `test_billing.py`, `test_api.py` |
 | Handoff bridge | `cd integrations/handoff && python -m pytest` | 47 | `test_wire_cases.py`, `test_bridge_api.py`, `test_t20_fixes.py`, `test_t23_tools.py` |
 | Narrator | `cd narrator && python -m pytest` | 9 | `test_narrator.py` |
 | Demo driver | `cd tools && python -m pytest` | 16 | `test_demo.py`, `test_demo_t20.py` |
-| **Total (Python)** | | **460** | |
+| **Total (Python)** | | **468** | |
 | UI unit | `cd ui && npm test` (vitest) | 76 | 12 files: `src/lib/*.test.ts` (backend, case, clarity, flow, impact, quota, scorecard, status, store, thresholds), `src/mock/*.test.ts` (handoff, sim) |
 | UI end-to-end | `cd ui && npm run e2e` (Playwright) | 27 declared, 26 run by default | `e2e/api.spec.ts` (10), `e2e/ui.spec.ts` (10), `e2e/layout.spec.ts` (3 tests × 2 screen sizes = 6), `e2e/live.spec.ts` (1, tagged `@live`, runs only with `E2E_LIVE=1`) |
 
 Python counts are the numbers `pytest --collect-only` reports on `master` (parametrised cases count separately). The worker's skipped test checks glibc allocator behaviour and runs only on Linux. The UI also has `npm run build` (TypeScript type-check plus the production build) and `npm run lint` (zero warnings).
 
 ```mermaid
-pie title Python tests per suite (master, 460)
+pie title Python tests per suite (master, 468)
   "Brain" : 167
   "Gateway" : 94
   "Worker" : 53
-  "Lab" : 49
+  "Lab" : 57
   "Handoff" : 47
   "Billing" : 25
   "Demo driver" : 16
@@ -56,10 +56,12 @@ Tenant B can never read tenant A's data (same key, case-variant ids, unknown ten
 - **Host noise (`test_host_noise.py`):** the simulator reproduces the host's calm (1 to 3 s CPU-quota stalls of whole servers, tail spikes on 5% of cells). A noisy calm opens nothing and moves nothing (3 seeds × 2 load levels); a whale and a host fault are still found and proved under that noise; a fast server is never slow whatever its ratio; two slow neighbours do not flag an over-user; a server a hot tenant runs on is not drained as a faulty host, while a real host fault with no hot tenant still is; a deferred drain is said once; a server below its floor enters the decoder as normal.
 - **Impact (`test_impact.py`):** the meter maths; a whale run shields victims and penalises no innocent; a ladder escalation on a low score counts as an innocent, but a proven `over_plan` throttle below warn (and the step that renews it) does not; the status sentence says "recovering", not "zero share".
 
-### Lab (49)
-Poisson arrival counts within ±10% and exponential gaps; percentile maths matching the linear method; the scenario timeline and the result computation (phases from the run marks, time to recover, attacker 429/503 counts); attack lifecycle and validation; the second-wave attacks answering 501; results listed newest first; read/write keys matching the worker's seed.
+### Lab (57)
+Poisson arrival counts within ±10% and exponential gaps; percentile maths matching the linear method; the scenario timeline and the result computation (phases from the run marks, time to recover, attacker 429/503 counts); attack lifecycle and validation; results listed newest first; read/write keys matching the worker's seed.
 
-**Scorecard runner (`test_scorecard.py`):** the plan interleaves modes inside each repetition; every cell is run, unregistered (501) scenarios are skipped and listed, and the cells are aggregated; brain incidents are aligned with each run's marks to find whether the culprit was named and whether any innocent was penalised; a brain that is down still gives a summary; a busy lab is waited for and retried; an overrunning run is cancelled and counted failed; an unreachable lab stops cleanly; aggregate-only mode takes the newest runs per cell; the summary file and table, pure-JSON stdout mode, argument checks, the CLI hook; the summary models come from the contracts.
+**Second-wave attacks (`test_wave2_attacks.py`, 9):** run against a mock fleet that records every request. The black-box bomb sends `POST /api/ingest` with the profile's `docs`, as the attacker only; the background bomb sends writes with the profile's `index_rounds`; the cache flood reads keys that never repeat; the honest spike sends only the tenant's own mix at about 3× its rate. The faulty server posts one fault to the chosen worker with the admin token (no tenant key, no tenant traffic), keeps it while the attack runs, deletes it when the attack stops, and scales it with `intensity`; a refused fault ends the attack at once. Validation: a server attack needs a known server (422 / 404), the others a known tenant, and the demo's preflight probe gets 404, not 501, for every one of the five. `POST /lab/run` accepts them, and a faulty-server run has no attacker. These tests check what the attacks send, not their effect on a real fleet.
+
+**Scorecard runner (`test_scorecard.py`):** the plan interleaves modes inside each repetition; every cell is run, unregistered (501) scenarios are skipped and listed (the fake lab plays an older lab without `blackbox_bomb`), and the cells are aggregated; brain incidents are aligned with each run's marks to find whether the culprit was named and whether any innocent was penalised; a brain that is down still gives a summary; a busy lab is waited for and retried; an overrunning run is cancelled and counted failed; an unreachable lab stops cleanly; aggregate-only mode takes the newest runs per cell; the summary file and table, pure-JSON stdout mode, argument checks, the CLI hook; the summary models come from the contracts.
 
 ### Billing (25)
 - **Meter:** cumulative counters are diffed into buckets; a worker restart counts its new counters from zero; a worker started after billing counts from its start; a counter drop without a restart is a reset, and duplicates are ignored; servers are summed and classes diffed; black-box CPU is prorated over the window.
@@ -79,12 +81,12 @@ The vitest suites cover the backend clients, case and flow helpers, the impact m
 ### UI end-to-end (27)
 Run against a mock stack that Playwright starts itself, or against a real stack with `E2E_*` URLs. Tests that change state (mode, quotas, attacks) run on a real stack only with `E2E_ALLOW_WRITES=1`.
 - **API (10):** gateway health, 401 without a key or token, a 200 with the CPU header, 12 tenants with barcodes and quotas; the brain's state and incidents match the contracts; lab, handoff and narrator answers (skipped when not reachable).
-- **UI (10):** 12 tiles, the 3×3 grid and a status sentence; a tile outlines its barcode; the mode toggle round-trip; the launcher offers exactly the five supported attacks and starts and stops one; a quota PATCH round-trip; the incident timeline opens the Case File; the Scorecard; the flow view; the Cases page.
+- **UI (10):** 12 tiles, the 3×3 grid and a status sentence; a tile outlines its barcode; the mode toggle round-trip; the launcher offers exactly the ten attacks, switches to a server picker for `faulty_server` ("Launch on w4") and back to tenants, and starts and stops one; a quota PATCH round-trip; the incident timeline opens the Case File; the Scorecard; the flow view; the Cases page.
 - **Layout (3 × 2 sizes):** at 1366×768 and 1920×1080 panels never overlap or spill, the status bar keeps its height with the headline in full, and every tile with a level badge shows why.
 - **Live (1, `@live`):** a whale on K is detected, acted on, and recovers on a real stack.
 
 ### Demo driver (16)
-The full sequence of modes, attacks and durations (240 s); each attack is preceded by stopping the previous ones and setting the mode; the token header; the fallback to whale on 501; a failed attack does not abort the demo; cleanup on interrupt; a dry run sends nothing; the live readout (attacker excluded from victim numbers); scorecard selection; `--only` / `--speed`. T20 adds preflight, the fault fallback and robust cleanup.
+The full sequence of modes, attacks and durations (240 s); each attack is preceded by stopping the previous ones and setting the mode; the token header; the fallback to whale on 501 (an older lab); a failed attack does not abort the demo; cleanup on interrupt; a dry run sends nothing; the live readout (attacker excluded from victim numbers); scorecard selection; `--only` / `--speed`. T20 adds preflight, the fault fallback and robust cleanup.
 
 ## Mutation checks
 

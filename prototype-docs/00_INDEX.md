@@ -1,6 +1,6 @@
 # TenantGuard prototype documentation: index
 
-This folder documents the TenantGuard prototype exactly as it is built on the final `master` branch: what it does, how it is designed, and every source file and function. Everything described here is merged and tested. The one thing left out on purpose is the second wave of lab attacks (black-box bomb, background bomb, cache flood, faulty server, honest spike): it is **not included**, and the documents say so wherever it matters.
+This folder documents the TenantGuard prototype exactly as it is built on the final `master` branch: what it does, how it is designed, and every source file and function. Everything described here is merged and tested. The lab runs all ten attacks, including the second wave (black-box bomb, background bomb, cache flood, faulty server, honest spike), written by the team. The measured scorecard covers whale and flood only; the second-wave attacks are tested against a mock fleet but still to be measured on the Docker host.
 
 ## How to read it
 
