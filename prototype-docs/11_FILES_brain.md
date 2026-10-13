@@ -349,8 +349,7 @@ With the layout's SLAs (40, 50, 80 and 150 ms) the floor is 25 ms on any server 
 | `HealthParams` | `@dataclass` | `window_ticks` 8, `tick_s`, `window_s` 5.0, `slow_peer_ratio` 1.6, `slow_abs_ms` 8, `open_after_ticks` 4, `min_cell_requests` 5, `min_tenants` 2, `min_canaries` 3, `canary_window_s` 6.0, `canary_abs_ms` 8, `open_hold_s` 4, `heal_hold_s` 2, `hold_ratio` 0.8, `level_quantile` 0.3, `min_slow_ms` 25, `sla_fraction` 0.5 | `settings.load` |
 | `HealthParams.from_yaml` | `classmethod from_yaml(health, tick_s)` | Reads `brain.health` (`min_requests` accepted as an older name for `min_cell_requests`) | `settings.load` |
 | `ServerHealth` | `@dataclass` | Per server: `source` (traffic / canary / none), `level_ms`, `peer_ms`, `peer_ratio`, `excess_ms`, `tenants_used`, `slow_now`, `slow`, `streak`, `slow_since`, `canary` and `history` deques | `HealthTracker.servers`; read by `Stage3`, `Brain.readings`, `Brain.snapshot`, `Brain.debug` |
-| `weighted_quantile` | `weighted_quantile(samples, q) -> float` | q-quantile of values weighted by counts | `_cell_levels`, `weighted_median` |
-| `weighted_median` | `weighted_median(samples) -> float` | `weighted_quantile(samples, 0.5)` | Not called on this branch |
+| `weighted_quantile` | `weighted_quantile(samples, q) -> float` | q-quantile of values weighted by counts | `_cell_levels` |
 | `HealthTracker` | class | All servers' health plus per-(tenant, server) cell samples | `Stage3.__init__` |
 | `HealthTracker.__init__` | `(servers, params, barcodes=None, sla_ms=None)` | One `ServerHealth` per server; `fleet` = barcode servers; `floor_ms` per server from the strictest SLA | `Stage3.__init__` |
 | `HealthTracker._h` | `_h(s) -> ServerHealth` | Gets the entry, creating it for a new server | `observe_canary`, `observe` |
@@ -362,7 +361,6 @@ With the layout's SLAs (40, 50, 80 and 150 ms) the floor is 25 ms on any server 
 | `HealthTracker._held` | `_held(h, value, hold, now) -> bool` | `value` in ≥ `hold_ratio` of the ticks of the last `hold` seconds, with the history covering them | `_evaluate` |
 | `HealthTracker._peer` | `_peer(s) -> bool` | True for fleet (barcode) servers | `_evaluate`, `slow_servers`, `Stage3.decoder_ratios` |
 | `HealthTracker.slow_servers` | `slow_servers() -> List[str]` | Sorted open fleet servers | `Stage3.tick`, `Stage3.status`, `Stage3._named` |
-| `HealthTracker.ratios` | `ratios() -> Dict[str, float]` | server → peer ratio | Not called on this branch (`Stage3` uses `decoder_ratios`) |
 
 **Key decisions**
 - **Tenant-relative.** Comparing a tenant with itself cancels workload differences: a search-heavy tenant is slow everywhere, a light one fast everywhere (`tests/test_stage3_pure.py::test_workload_mix_is_not_slowness`).
@@ -893,7 +891,7 @@ latency(u) = 12 ms × (1 + 0.6 × u / (1 − u)),  u = min(0.97, server load see
 ## 18. Dev tools (`brain/tools/`)
 
 ### `tools/fake_gateway.py`
-A stand-in gateway and workers for developing the brain alone: streams `Simulator` frames on `WS /internal/telemetry`, serves `/fake/workers/{server}/stats`, `/canary` and `/admin/fault`, and accepts `/control/*` like the real gateway (control token, validation, 400s). Limits, route weights, relocations and drains are applied to the simulation. It has no `/control/charge` route. Run: `python tools/fake_gateway.py --port 8000`; `--print-worker-urls` prints `TENANTGUARD_WORKER_URLS` including `spare` and `quarantine`.
+A stand-in gateway and workers for developing the brain alone: streams `Simulator` frames on `WS /internal/telemetry`, serves `/fake/workers/{server}/stats`, `/canary` and `/admin/fault`, and accepts `/control/*` like the real gateway (control token, validation, 400s). Limits, route weights, relocations and drains are applied to the simulation. Charges are validated, de-duplicated by `charge_id` and logged, but not simulated. Run: `python tools/fake_gateway.py --port 8000`; `--print-worker-urls` prints `TENANTGUARD_WORKER_URLS` including `spare` and `quarantine`.
 
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
@@ -915,6 +913,7 @@ A stand-in gateway and workers for developing the brain alone: streams `Simulato
 | `build_app.parse` | `async parse(request, model)` | Validates the body; 400 on error | Control routes |
 | `build_app.heartbeat` | `POST /control/heartbeat` | Records the heartbeat | Brain |
 | `build_app.control_limits` | `POST /control/limits` | Validates and applies | Brain |
+| `build_app.control_charge` | `POST /control/charge` | 400 for an unknown tenant or negative `cpu_ms`; `ignored: mode` outside tenantguard; `duplicate charge_id` once seen; otherwise recorded in the control log, not simulated | Brain (`_charges`) |
 | `build_app.control_block` | `POST /control/block` | Stored, not simulated | — |
 | `build_app.control_rw` | `POST /control/route_weights` | Validates and applies | Brain |
 | `build_app.control_relocate` | `POST /control/relocate` | Validates the target and applies | Brain |

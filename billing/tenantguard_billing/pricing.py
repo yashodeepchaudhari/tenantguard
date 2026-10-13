@@ -27,10 +27,6 @@ class Priced:
     calm: bool
     blamed: bool
 
-    @property
-    def waived_ms(self) -> float:
-        return max(0.0, self.measured_handler_ms - self.billed_handler_ms)
-
 
 class Pricer:
     def __init__(self, alpha: float, bucket_s: float, settle_s: float) -> None:

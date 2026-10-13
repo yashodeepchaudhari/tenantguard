@@ -155,7 +155,6 @@ Pure incident and latency history, built only from the brain's structured fields
 | `Timeline.ingest` | `ingest(self, events: Iterable[IncidentEvent]) -> None` | In time order, skips events already seen (`(incident_id, stage, ts)`). Creates the episode on first sight (ladder tenant set for `tenant` kind). `named`: culprits from `report.culprits` if present, else from `suspects`; `host_suspects` from the report; first `named_at`. `rescued`: first `rescued_at`. `level_change` or `detected` at a throttle level: first `throttled_at`. `closed`: sets `end` | `Billing.on_events`; tests |
 | `Timeline.overlapping` | `overlapping(self, a, b) -> List[Episode]` | Episodes overlapping `[a, b)`, by start | `pricing.Pricer.price`, `bill` |
 | `Timeline.open_at` | `open_at(self, ts) -> List[Episode]` | Episodes open at `ts` | `violations` |
-| `Timeline.blamed_in` | `blamed_in(self, a, b) -> Set[str]` | Union of `blamed` over overlapping episodes | No caller in `billing/` on this branch |
 | `Timeline.prune` | `prune(self, cutoff: float) -> None` | Drops closed episodes that ended before `cutoff`, and their dedupe keys | `Billing.tick` |
 | `Tick` | dataclass: `ts`, `dt`, `p95: Dict[str, float]`, `slow_servers: Set[str]` | One brain snapshot as billing needs it | `LatencyLog`, `violations`, `bill` |
 | `LatencyLog` | class | Snapshot history (2 Hz) | `main.Billing` |
@@ -177,7 +176,6 @@ Pure calm-reference pricing. A bucket that no brain incident overlaps is calm: i
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
 | `Priced` | dataclass: `requests`, `measured_handler_ms`, `billed_handler_ms`, `bg_cpu_ms`, `db_ms`, `calm`, `blamed` | The price of one (tenant, bucket) | `Pricer`, `bill.build_bill` |
-| `Priced.waived_ms` (property) | `waived_ms -> float` | `max(0, measured - billed)` handler CPU | No caller in `billing/` on this branch (`build_bill` computes the waived total itself) |
 | `Pricer` | class | Reference prices and closed buckets | `main.Billing` |
 | `Pricer.__init__` | `__init__(self, alpha: float, bucket_s: float, settle_s: float)` | Stores the EWMA weight, bucket width and settle delay (`2 × poll_s` in `Billing`, because incident reports lag). Empty `ref` ((tenant, cls) → calm ms/request), `gref` (cls → calm ms/request fleet-wide) and `closed` maps | `Billing.__init__` |
 | `Pricer._ewma` | `_ewma(self, table, key, value) -> None` | First value is taken as is; later values move it by `alpha × (value - old)` | `close` |
