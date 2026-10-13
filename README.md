@@ -101,7 +101,7 @@ python tools/demo.py --step         # the 4-minute demo, Enter before each step
 ```
 The steps: calm → OFF + flood → Industry (flood refused, then a whale) → TenantGuard (same whale: rescue, name, proof, verdict) → faulty server → scorecard. Each step prints one narration line and live numbers from the brain and the lab. Targets come from `TENANTGUARD_{GATEWAY,BRAIN,LAB}_URL`.
 
-The wave-2 lab attacks (`blackbox_bomb`, `background_bomb`, `cache_flood`, `faulty_server`, `honest_spike`) are **not included**: the lab answers 501 for them. The demo falls back to the whale for the bomb step, injects the faulty server directly through the worker's `/admin/fault`, and skips the honest-spike step.
+The lab also runs the wave-2 attacks (`blackbox_bomb`, `background_bomb`, `cache_flood`, `faulty_server`, `honest_spike`), so the demo uses the black-box bomb, has the lab inject the faulty server, and runs the honest-spike step. Their strengths are not yet checked on the Docker host: rehearse there first, and use `--bomb whale` to keep the measured whale story.
 
 ## "Not just a rate limit": the evidence
 

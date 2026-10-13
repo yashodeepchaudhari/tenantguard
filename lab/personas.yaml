@@ -53,6 +53,14 @@ attacks:
   hog:         {concurrency: 24, path: /api/export, params: {rows: 1000, chunk: 50, pause_ms: 50}}  # ~1 s each, closed loop
   memory:      {rps: 4.0, params: {mb: 24, hold_ms: 1000}, max_inflight: 32}  # overlapping holds exceed the 32 MB tenant budget
   retry_storm: {multiplier: 3, endpoint: read, max_retries: 50}   # retries at once on 429/503, ignores Retry-After
+  # Wave 2. Starting points sized from worker/calibration.json (2 ms CPU per black-box doc, ~7 us per index
+  # round); re-check on the real fleet: the bombs should push the attacker's servers past ~80% CPU while its
+  # request rate and metered cost stay inside the pro quota (50 req/s, 300 cost-ms/s).
+  blackbox_bomb:   {rps: 10, docs: 60}                    # ~120 ms of unmetered black-box CPU per cheap /api/ingest
+  background_bomb: {rps: 8, index_rounds: 20000}          # ~140 ms of background indexing per cheap /api/write
+  cache_flood:     {multiplier: 4, keyspace: 10000000}    # 4x persona rps of /api/read, every key new (all misses)
+  honest_spike:    {multiplier: 3}                        # 3x the tenant's own mix: busy but within its plan
+  faulty_server:   {latency_ms: 150, cpu_burn_pct: 30}    # on AttackReq.server; cleared when the attack stops
 
 # Scripted run (POST /lab/run): warmup is discarded, then calm_s -> attack_s -> calm_s.
 run:

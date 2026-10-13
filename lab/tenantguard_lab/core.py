@@ -13,7 +13,7 @@ import httpx
 
 from tenantguard_common.contracts import H_CONTROL_TOKEN, AttackReq, AttackStatus, LabStatus, RunReq, RunResult
 
-from .attacks import RUNNERS, WAVE2, AttackCtx
+from .attacks import RUNNERS, SERVER_ATTACKS, AttackCtx
 from .engine import Engine
 from .isolation import ProcessAttack
 from .scenario import Marks, ScenarioDriver, Timeline, compute_result, run_timeline
@@ -82,10 +82,14 @@ class Lab(ScenarioDriver):
 
     # ---------- attacks ----------
     def _validate(self, req: AttackReq) -> None:
-        if req.attack in WAVE2:
-            raise LabError(501, f"attack {req.attack!r} is not included in this build")
         if req.attack not in RUNNERS:  # pragma: no cover - contract and RUNNERS cover every name
             raise LabError(501, f"attack {req.attack!r} not implemented")
+        if req.attack in SERVER_ATTACKS:
+            if not req.server:
+                raise LabError(422, f"attack {req.attack!r} needs a server")
+            if req.server not in self.cfg.workers:
+                raise LabError(404, f"unknown server {req.server!r}")
+            return
         if not req.tenant:
             raise LabError(422, f"attack {req.attack!r} needs a tenant")
         if req.tenant not in self.cfg.personas:
@@ -96,7 +100,8 @@ class Lab(ScenarioDriver):
 
     @property
     def isolated(self) -> bool:
-        """Attacks run in their own process unless client.attack_isolation is 'inline' (tests, mocks)."""
+        """Attacks run in their own process unless client.attack_isolation is 'inline' (tests, mocks).
+        Server attacks (faulty_server) always run inline: they send two admin calls, no traffic."""
         return self.cfg.client.get("attack_isolation", "process") == "process" and self.engine.transport is None
 
     async def launch(self, req: AttackReq) -> AttackStatus:
@@ -104,7 +109,7 @@ class Lab(ScenarioDriver):
         attack_id = f"atk-{uuid.uuid4().hex[:8]}"
         ctx = AttackCtx(attack_id=attack_id, engine=self.engine, req=req, stop=asyncio.Event())
         proc: Optional[ProcessAttack] = None
-        if self.isolated:
+        if self.isolated and req.attack not in SERVER_ATTACKS:
             proc = ProcessAttack(self.cfg, ctx, self.recorder)
             try:
                 await proc.start()            # returns once the attack traffic is really running
@@ -118,7 +123,7 @@ class Lab(ScenarioDriver):
         self.attacks[attack_id] = entry
         entry.task = asyncio.ensure_future(self._supervise(entry))
         log.info("attack %s started%s: %s on %s x%.2f for %.0fs", attack_id, f" (pid {proc.proc.pid})" if proc else "",
-                 req.attack, req.tenant, req.intensity, req.duration_s)
+                 req.attack, req.tenant or req.server, req.intensity, req.duration_s)
         self._prune_attacks()
         return status
 
@@ -147,7 +152,8 @@ class Lab(ScenarioDriver):
                 runner.cancel()
             except Exception:  # noqa: BLE001 - keep the lab alive, log the attack failure
                 log.exception("attack %s failed", ctx.attack_id)
-            await self.engine.close_pool(ctx.tenant, ctx.attack_id)
+            if ctx.req.tenant is not None:
+                await self.engine.close_pool(ctx.tenant, ctx.attack_id)
             self._finish(entry)
 
     def _finish(self, entry: AttackEntry) -> None:
@@ -246,7 +252,8 @@ class Lab(ScenarioDriver):
     def start_run(self, req: RunReq) -> RunInfo:
         if self.current_run is not None and self.current_run.state == "running":
             raise LabError(409, f"run {self.current_run.run_id} is in progress")
-        attacker = req.tenant or self.cfg.default_attacker
+        # A faulty server has no attacker: every tenant is a victim and nobody should be blamed.
+        attacker = None if req.scenario in SERVER_ATTACKS else (req.tenant or self.cfg.default_attacker)
         self._validate(AttackReq(attack=req.scenario, tenant=attacker, server=req.server, intensity=req.intensity))
         tl = self.timeline(req)
         info = RunInfo(run_id=f"run-{uuid.uuid4().hex[:8]}", req=req, attacker=attacker)
