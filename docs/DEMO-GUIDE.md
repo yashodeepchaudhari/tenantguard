@@ -172,6 +172,25 @@ Each step gives **what to click**, **what the judges see**, **what to say** and 
 
 ---
 
+## Optional: Jury challenge (1–2 min), only after a rehearsal on the Docker host
+
+**Click:** top menu → **Jury challenge**. Wait until the company cards are clickable (no attack running, nobody held back).
+
+**Hand the judge the laptop:** they pick what happens, secretly:
+- **A company attacks:** Heavy searches, Flood or Hidden work, then they tap a company.
+- **Or nobody is to blame:** Honest growth (tap a company) or Broken server (tap w0–w8).
+
+**Judges see:** the choice sealed as a hash, a timer and the 9 servers. TenantGuard either names a company (with its noisy score, CPU share, neighbours over the 150 ms target and the brain's own words) or blames nobody within 45 s. **Open the seal** shows the judge's real choice, re-hashes it next to the sealed one, gives ✓ or ✕, and counts the innocent companies held back.
+
+**Say:**
+> "We don't choose the attacker, you do. TenantGuard only sees server measurements. And when nobody is to blame, the right answer is to blame nobody."
+
+**Caution:** the result is whatever the live brain does, and a ✕ is shown as a ✕. Rehearse all five choices on the Docker host first. In mock mode (`npm run dev:mock`, open `/challenge?script=0`) the simulation plays the brain, so its ✓ proves nothing (and it wrongly throttles an honest spike).
+
+**PS:** **Noisy-neighbor detector** · *"Do not equate a simple API rate limit with full tenant isolation"*
+
+---
+
 ## 10. Close (20 s)
 
 **Say:**
