@@ -206,28 +206,43 @@ def test_unknown_case_or_action_is_404_and_owner_is_recorded():
     CaseView.model_validate(v.model_dump())
 
 
-def test_server_incident_names_culprit_and_offers_a_ttl_bound_block():
+def test_hash_split_case_adopts_its_culprit_and_closes():
     from tenantguard_common.contracts import Suspect
-    b = book(decision_window_s=120, block_s=300)
-    sid = "srv-1791815503-1"
-    cid = b.on_event(ev("detected", tenant="", iid=sid, detail="Slow servers: w1 16.9x its peers (125 ms vs 7 ms); "
-                                                                 "w3 16.8x its peers"), T0)
+    b = book()
+    sid = "srv-1791815503-2"
+    start = ev("detected", tenant=None, iid=sid, detail="Project commerce: 119 ms/s of CPU that no tenant's requests "
+                                                         "explain. Hash split test: B, J are pinned.")
+    start.report = {"project": "commerce", "suspects": ["B", "J"]}
+    cid = b.on_event(start, T0)
     v = b.get(cid)
     assert v.tenant is None and v.severity == "medium" and v.actions == []
-    assert v.title == "Servers slower than their peers: w1 16.9x its peers (125 ms vs 7 ms)"
-    b.on_event(ev("rescued", tenant="", iid=sid, ts=T0 + 1, detail="Moved 9 tenants"), T0 + 1)
-    weak = ev("named", tenant="K", iid=sid, ts=T0 + 2, detail="Named K with 40%")
-    weak.suspects = [Suspect(tenant="K", confidence=0.4)]
-    b.on_event(weak, T0 + 2)
-    assert v.actions == [] and v.tenant is None                    # below confidence_to_prove: nothing to decide
-    named = ev("named", tenant="K", iid=sid, ts=T0 + 3, detail="Named KaamKaro (K) with 100% confidence")
-    named.suspects = [Suspect(tenant="K", confidence=1.0)]
-    b.on_event(named, T0 + 3)
-    assert v.tenant == "K" and v.severity == "high" and "named as the cause" in v.title
-    assert v.context.affected == ["E", "G"]
-    (a,) = v.actions
-    assert "Approve blocking it for 300 s" in a.text and a.deadline_at == T0 + 3 + 120
-    assert v.status == "waiting_for_decision"
-    _, cmds = b.on_decision(D("A1", "approve", cid=cid), T0 + 4)
-    assert cmds[0].body == BlockCmd(tenant="K", blocked=True, ttl_s=300, incident_id=sid)
+    assert v.title == "Hidden CPU in project commerce: hash split test"
+    rnd = ev("proving", tenant=None, iid=sid, ts=T0 + 12, detail="Split round 1: kept B")
+    rnd.report = {"project": "commerce", "round": 1, "kept": ["B"]}
+    b.on_event(rnd, T0 + 12)
+    found = ev("verdict", tenant="B", iid=sid, ts=T0 + 12.5, detail="Hash split found B")
+    found.suspects = [Suspect(tenant="B", confidence=1.0)]
+    found.report = {"verdict": "costly_pattern", "project": "commerce"}
+    b.on_event(found, T0 + 12.5)
+    assert v.tenant == "B" and v.title == "BazaarKart (B) found behind project commerce's hidden CPU (100% confidence)"
+    assert v.context.verdict == "costly_pattern" and v.context.affected == ["J"]
+    assert v.actions == []                                           # the ladder's own case asks, if it escalates
+    b.on_event(ev("closed", tenant=None, iid=sid, ts=T0 + 12.5, detail="Split test over"), T0 + 12.6)
+    assert v.status == "closed"
     wire.Case.model_validate(b.to_wire(cid).model_dump())
+
+
+def test_host_wide_slowdown_case_blames_nobody():
+    b = book()
+    hid = "srv-1791815503-1"
+    first = ev("detected", tenant=None, iid=hid, detail="All 5 active projects are slow. Nobody is blamed.")
+    first.report = {"projects": ["commerce", "free", "health", "media", "mobility"]}
+    cid = b.on_event(first, T0)
+    no_blame = ev("verdict", tenant=None, iid=hid, detail="All 5 active projects are slow. Nobody is blamed.")
+    no_blame.report = {"verdict": "host_fault", "projects": ["commerce"]}
+    b.on_event(no_blame, T0 + 0.1)
+    v = b.get(cid)
+    assert v.tenant is None and v.actions == [] and v.context.verdict == "host_fault"
+    assert v.title.startswith("All active projects slowed down together")
+    b.on_event(ev("closed", tenant=None, iid=hid, ts=T0 + 40, detail="The host-wide slowdown is over."), T0 + 40)
+    assert v.status == "closed"

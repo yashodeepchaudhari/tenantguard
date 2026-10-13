@@ -189,7 +189,7 @@ def test_scorecard_table_uses_latest_run_per_scenario_and_mode():
 def test_main_only_and_speed_in_dry_run(capsys):
     assert demo.main(["--dry-run", "--only", "faulty", "--speed", "0.5"]) == 0
     out = capsys.readouterr().out
-    assert "[1/2] Calm (8 s)" in out and "[2/2] Faulty server (10 s)" in out
+    assert "[1/2] Calm (8 s)" in out and "[2/2] Faulty replica (10 s)" in out
     from tenantguard_common.config import load_settings
     svc = load_settings()["services"]
     assert svc["gateway"] in out and svc["lab"] in out

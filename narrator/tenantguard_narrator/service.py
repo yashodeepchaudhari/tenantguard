@@ -9,7 +9,7 @@ import time
 from typing import Callable, Dict, Iterable, List, Optional, Set
 
 from pydantic import ValidationError
-from tenantguard_common.contracts import IncidentEvent, ReportView, StateSnapshot, TenantConfig
+from tenantguard_common.contracts import IncidentEvent, ReportView, TenantConfig
 
 from . import template
 from .evidence import TRIGGERS, EvidenceBook, anonymise
@@ -36,12 +36,9 @@ class Narrator:
     def ingest(self, msg: dict) -> Optional[str]:
         """One brain message. Returns the incident_id if a report was (re)published. Never raises."""
         kind = msg.get("type") if isinstance(msg, dict) else None
+        if kind != "incident":                      # live state and other messages carry no case evidence
+            return None
         try:
-            if kind == "state":
-                self.book.add_snapshot(StateSnapshot.model_validate(msg))
-                return None
-            if kind != "incident":
-                return None
             ev = IncidentEvent.model_validate(msg)
         except ValidationError as e:
             log.warning("bad brain message: %s", e.errors()[:1])
