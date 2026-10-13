@@ -9,7 +9,7 @@
 ![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-UI-3178C6?logo=typescript&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-Engine%20API-2496ED?logo=docker&logoColor=white)
-![tests](https://img.shields.io/badge/tests-450%20passed-22c55e)
+![tests](https://img.shields.io/badge/tests-453%20passed-22c55e)
 
 CodeAstra 2.0 · Cloud Computing & Distributed Systems · Problem Statement 3: multi-tenant isolation and noisy-neighbour defence
 
@@ -192,10 +192,10 @@ An `ingest` call looks cheaper than a `light` call to anything that meters reque
 | Gateway | 91 passed |
 | Brain (drives the real control loop against a simulator) | 87 passed |
 | Worker | 55 passed, 1 skipped |
-| Handoff bridge | 47 passed |
+| Handoff bridge | 48 passed |
 | Traffic lab | 35 passed |
-| Tools | 16 passed |
-| Narrator | 9 passed |
+| Tools | 17 passed |
+| Narrator | 10 passed |
 | UI unit (vitest) | 82 passed |
 | UI end-to-end (Playwright, mock stack and real local stack) | 28 passed |
 

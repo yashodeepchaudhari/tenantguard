@@ -4,7 +4,7 @@
 
 **The whole demo in one command: it switches modes, launches attacks in the lab, prints live numbers from the brain and the lab at every tick, and cleans up after itself, even on Ctrl-C.**
 
-![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white) ![tests](https://img.shields.io/badge/tests-16%20passed-22c55e)
+![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white) ![tests](https://img.shields.io/badge/tests-17%20passed-22c55e)
 
 ## At a glance
 
@@ -53,7 +53,7 @@ sequenceDiagram
 | 3 | Industry + same flood | 15 | industry | `flood` K, refused with 429s |
 | 4 | Industry + heavy attack | 30 | industry | `blackbox_bomb` K, else `whale` K |
 | 5 | TenantGuard + same attack | 75 | tenantguard | same as step 4; incident stages printed as they happen |
-| 6 | Faulty server | 20 | tenantguard | `faulty_server` on `--faulty-server` (fallback: direct fault) |
+| 6 | Faulty replica | 20 | tenantguard | `faulty_server` on `--faulty-server` (fallback: a direct fault on that replica, its address taken from the brain's `GET /api/pool`) |
 | 7 | Honest spike | 20 | tenantguard | `honest_spike` J |
 | 8 | Scorecard | 25 | | table from `/lab/results` (latest run per scenario × mode) |
 | 9 | Close | 10 | | |
@@ -66,14 +66,14 @@ sequenceDiagram
 | `TENANTGUARD_BRAIN_URL` | `services.brain` (`http://127.0.0.1:8200`) | Brain |
 | `TENANTGUARD_LAB_URL` | `services.lab` (`http://127.0.0.1:8300`) | Lab |
 | `TENANTGUARD_CONTROL_TOKEN` | `dev` | Sent on `/admin/mode` |
-| `TENANTGUARD_WORKER_URLS` | empty | `name=url` pairs for the faulty-server fallback (replicas start on demand, so there is no fixed list) |
+| `TENANTGUARD_WORKER_URLS` | empty | `name=url` pairs that override the replica address from the brain's pool view for the fault fallback |
 | `TENANTGUARD_ADMIN_TOKEN` | `dev` | Sent on a replica's `/admin/fault` |
 | `--dry-run` | off | Print the plan and every HTTP call; send nothing |
 | `--step` | off | Wait for Enter before each step |
 | `--only <step>` | all | Run calm plus one step |
 | `--attacker` / `--spiker` | `K` / `J` | Tenants for the attack and the honest spike |
 | `--bomb` | `blackbox_bomb` | `blackbox_bomb` or `whale` |
-| `--faulty-server` | `w4` | Replica for step 6 |
+| `--faulty-server` | `tg-media-1` | Replica id for step 6, as shown on the Pool page |
 | `--tick` / `--speed` | 5 / 1.0 | Seconds between live lines; duration multiplier |
 
 ## Run it
@@ -92,7 +92,7 @@ The driver needs a running system. To start one on this machine without Docker: 
 
 ```
 cd tools
-PYTHONPATH=<repo>/common python -m pytest       # 16 passed (step sequencing against mocked HTTP)
+PYTHONPATH=<repo>/common python -m pytest       # 17 passed (step sequencing against mocked HTTP)
 ```
 
 ## Files

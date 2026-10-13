@@ -23,17 +23,19 @@ SEVERITY = {"normal": "low", "warn": "low", "throttle": "medium", "deprioritize"
             "quarantine": "high", "blocked": "high"}
 SEV_RANK = {"low": 0, "medium": 1, "high": 2}
 VERDICTS = set(wire.Verdict.__args__)  # type: ignore[attr-defined]
+
+
+def _finding(ev: IncidentEvent) -> str | None:
+    """'host' | 'split' for the brain's findings (incident id 'srv-...'), None for a tenant's ladder case."""
+    if not ev.incident_id.startswith("srv-"):
+        return None
+    r = ev.report or {}
+    return "host" if r.get("verdict") == "host_fault" or isinstance(r.get("projects"), list) else "split"
 HOLD_LEVELS = ("throttle", "deprioritize", "quarantine", "blocked")
 HOLD_RANK = {lvl: i for i, lvl in enumerate(HOLD_LEVELS)}
 STAGE_TEXT = {"detected": "Detected", "level_change": "Level", "rescued": "Victims rescued", "named": "Named",
               "proving": "Proving", "verdict": "Verdict", "resolved": "Resolved", "explained": "Explained",
               "closed": "Closed"}
-
-
-def _first_sentence(text: str, limit: int = 120) -> str:
-    t = (text or "").split(": ", 1)[-1]
-    t = t.split("; ")[0].split(". ")[0].strip().rstrip(".")
-    return t if len(t) <= limit else t[: limit - 3] + "..."
 
 
 @dataclass
@@ -148,12 +150,16 @@ class CaseBook:
                 self.by_incident[ev.incident_id] = case_id
                 self._cap_id_map()
             name = self._name(ev.tenant)
-            server_incident = not ev.tenant
-            title = (f"Servers slower than their peers: {_first_sentence(ev.detail)}" if server_incident
-                     else f"{name} is using more than its fair share and slowing its neighbours")
+            finding = _finding(ev)
+            if finding == "host":
+                title = "All active projects slowed down together: the cause is outside them, nobody is blamed"
+            elif finding == "split":
+                title = f"Hidden CPU in project {(ev.report or {}).get('project', '?')}: hash split test"
+            else:
+                title = f"{name} is using more than its fair share and slowing its neighbours"
             c = _Case(view=CaseView(
                 case_id=case_id, incident_id=ev.incident_id, tenant=ev.tenant or None,
-                title=title, severity="medium" if server_incident else "low", status="in_progress",
+                title=title, severity="medium" if finding else "low", status="in_progress",
                 context=CaseContext(verdict="over_plan", affected=self.neighbours(ev.tenant),
                                     evidence_link=f"{self.s.ui_url.rstrip('/')}/case/{ev.incident_id}",
                                     summary=ev.detail or f"Incident opened for {name}."),
@@ -171,12 +177,13 @@ class CaseBook:
         self._history(c, now, f"{label}: {ev.detail}" if ev.detail else label)
         if ev.detail:
             v.context.summary = ev.detail
-        if ev.verdict in VERDICTS:
-            v.context.verdict = ev.verdict
-            self._history(c, now, f"Verdict: {ev.verdict.replace('_', ' ')}")
+        verdict = ev.verdict or (ev.report or {}).get("verdict")     # findings carry it in their report
+        if verdict in VERDICTS:
+            v.context.verdict = verdict
+            self._history(c, now, f"Verdict: {verdict.replace('_', ' ')}")
 
-        if ev.stage == "named":
-            self._on_named(c, ev, now)
+        if ev.stage == "verdict" and not v.tenant and ev.suspects:
+            self._on_culprit(c, ev)
 
         if ev.level:
             prev, c.level = c.level, ev.level
@@ -218,24 +225,17 @@ class CaseBook:
             hold.state = "expired"
             self._history(c, now, f"{hold.action_id} no longer needed: {name} is back to '{level}'")
 
-    def _on_named(self, c: _Case, ev: IncidentEvent, now: float) -> None:
-        """A server incident named its culprit: adopt it, and ask the on-call whether to block it (TTL-bound)."""
-        top = max(ev.suspects, key=lambda x: x.confidence, default=None)
-        if top is None or top.confidence < self.s.confidence_to_name:
+    def _on_culprit(self, c: _Case, ev: IncidentEvent) -> None:
+        """A hash split found its culprit: adopt it. No decision is asked here: the split case closes at once,
+        and the hidden CPU is now charged to the culprit, so the ladder's own case for it asks if needed."""
+        top = max(ev.suspects, key=lambda x: x.confidence)
+        if top.confidence < self.s.confidence_to_name:
             return
         v = c.view
-        if not v.tenant:
-            v.tenant = top.tenant
-            v.title = f"{self._name(top.tenant)} named as the cause of slow servers ({top.confidence:.0%} confidence)"
-            v.context.affected = self.neighbours(top.tenant)
-        if v.severity != "high":
-            v.severity = "high"
-        if top.tenant == v.tenant and not self._pending(c, "block") and not c.block_applied:
-            d = now + self.s.decision_window_s
-            self._new_action(c, "block", f"{self._name(top.tenant)} is named ({top.confidence:.0%}) as the cause; "
-                                         f"its neighbours were already rescued. Approve blocking it for "
-                                         f"{self.s.block_s:.0f} s (TTL-bound, auto-undo)? Reject keeps the rescue only.",
-                             d)
+        v.tenant = top.tenant
+        project = (ev.report or {}).get("project", "?")
+        v.title = f"{self._name(top.tenant)} found behind project {project}'s hidden CPU ({top.confidence:.0%} confidence)"
+        v.context.affected = self.neighbours(top.tenant)
 
     def _expire_all(self, c: _Case, now: float, why: str) -> None:
         for a in c.view.actions:

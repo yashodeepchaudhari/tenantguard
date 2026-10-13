@@ -26,6 +26,10 @@ class Net(Fake):
             if host not in self.up:
                 raise httpx.ConnectError("refused", request=req)
             return httpx.Response(200, json={"ok": True, "fault": None})
+        if p == "/api/pool":
+            self.calls.append(req)
+            return httpx.Response(200, json={"projects": [{"id": "media", "replicas": [
+                {"id": "tg-media-1", "url": "http://w4:8100/"}]}]})
         if p == "/lab/attacks" and req.method == "DELETE":
             self.calls.append(req)
             return httpx.Response(self.lab_delete_status)
@@ -39,7 +43,7 @@ class Net(Fake):
         return super().__call__(req)
 
 
-WORKERS = {"w4": "http://w4:8100"}
+WORKERS = {"tg-media-1": "http://w4:8100"}
 
 
 def steps(*keys):
@@ -52,9 +56,9 @@ def test_preflight_skips_unavailable_steps_with_a_banner_and_starts_nothing():
     plan = demo.plan()
     d.run(plan)
     text = "\n".join(lines)
-    assert "[NOT AVAILABLE] step 'faulty' will be skipped" in text and "worker w4 is not reachable" in text
+    assert "[NOT AVAILABLE] step 'faulty' will be skipped" in text and "replica tg-media-1 is not reachable" in text
     assert "[NOT AVAILABLE] step 'spike' will be skipped" in text
-    assert "[6/9] [NOT AVAILABLE] Faulty server: skipped" in text
+    assert "[6/9] [NOT AVAILABLE] Faulty replica: skipped" in text
     attacks = [x[1] for x in fake.seq() if x[0] == "attack"]
     assert "faulty_server" not in attacks and "honest_spike" not in attacks
     assert clk.t == pytest.approx(sum(s.seconds for s in plan if s.key not in ("faulty", "spike")))
@@ -76,7 +80,17 @@ def test_faulty_server_falls_back_to_worker_fault_when_reachable_and_cleanup_cle
     deletes = [r for r in fake.calls if r.url.host == "w4" and r.method == "DELETE"]
     assert len(deletes) == 1 and deletes[0].url.path == "/admin/fault"
     assert d.faults == []
-    assert any("injects the fault directly on w4" in l for l in lines)
+    assert any("injects the fault directly on tg-media-1" in l for l in lines)
+
+
+def test_the_faulty_replica_is_found_through_the_brains_pool_view():
+    fake = Net(unavailable={"faulty_server"}, up={"w4"})
+    d, _, lines = make(fake)                                         # no TENANTGUARD_WORKER_URLS at all
+    d.run(steps("calm", "faulty"))
+    assert any(r.url.path == "/api/pool" for r in fake.calls)
+    posts = [r for r in fake.calls if r.url.host == "w4" and r.method == "POST"]
+    assert len(posts) == 1 and posts[0].url.path == "/admin/fault"
+    assert any("injects the fault directly on tg-media-1 (http://w4:8100/admin/fault)" in l for l in lines)
 
 
 def test_lab_that_starts_a_probe_gets_it_stopped_immediately():

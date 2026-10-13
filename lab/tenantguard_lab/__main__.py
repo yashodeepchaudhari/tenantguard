@@ -180,7 +180,7 @@ def main(argv=None) -> int:
     s.add_argument("--attack-s", type=float, default=40.0)
     s.add_argument("--local", action="store_true")
 
-    s = sub.add_parser("calibrate", help="measure calm fleet CPU via worker /stats")
+    s = sub.add_parser("calibrate", help="measure the calm pool CPU via the brain (GET /api/pool)")
     s.add_argument("--seconds", type=float, default=20.0)
 
     a = p.parse_args(argv)

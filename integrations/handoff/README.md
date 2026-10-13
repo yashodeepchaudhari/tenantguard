@@ -4,7 +4,7 @@
 
 **Every TenantGuard incident becomes a case in the Web PS3 "Digital Handoff" app, and the on-call engineer's decisions flow back and take effect live.**
 
-![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white) ![port](https://img.shields.io/badge/port-8400-0ea5e9) ![tests](https://img.shields.io/badge/tests-47%20passed-22c55e)
+![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white) ![port](https://img.shields.io/badge/port-8400-0ea5e9) ![tests](https://img.shields.io/badge/tests-48%20passed-22c55e)
 
 ## At a glance
 
@@ -45,8 +45,9 @@ flowchart LR
 | first event | new case: title, verdict `over_plan` until the brain sends one, `affected` = the culprit's project peers |
 | level throttle / deprioritize / quarantine | severity medium / medium / high (never lowered); pending **hold** action "auto-reverts at HH:MM:SS: extend or release?", deadline = `brain.ttl_s` |
 | level quarantine | an extra pending **block** action, deadline = `decision_window_s` |
-| finding without a tenant (`srv-…`) | title from the brain's detail; severity medium |
-| `named`, top suspect ≥ `brain.confidence_to_prove` | the case adopts the culprit; severity high; pending **block** action |
+| finding without a tenant (`srv-…`) | severity medium; title says which: a **hash split** of one project's hidden CPU, or a **host-wide slowdown** nobody is blamed for |
+| split `verdict`, top suspect ≥ `brain.confidence_to_prove` | the case adopts the culprit (title, affected peers); no decision is asked here: the split case closes at once, and the culprit's own ladder case asks if it escalates |
+| any event whose `verdict` (or `report.verdict`) is a known verdict | `context.verdict` set, history line added |
 | `verdict` | `context.verdict` |
 | back to warn / normal | the hold action expires |
 | resolved / closed | status resolved / closed; pending actions expire |
@@ -125,7 +126,7 @@ python tools/mock_web.py down | up                  # simulate a partner outage
 
 ```bash
 cd integrations/handoff
-python -m pytest            # 47 tests
+python -m pytest            # 48 tests
 ```
 
 ## Files

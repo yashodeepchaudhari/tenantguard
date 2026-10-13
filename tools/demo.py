@@ -6,11 +6,11 @@
     python tools/demo.py --only tenantguard        # run a single step (after calm)
 
 Targets come from env TENANTGUARD_GATEWAY_URL, TENANTGUARD_BRAIN_URL, TENANTGUARD_LAB_URL, else tenantguard.yaml
-`services`; workers for the fault fallback from TENANTGUARD_WORKER_URLS ("w4=http://.."; v2 replicas are
-created on demand, so there is no fixed list). TENANTGUARD_CONTROL_TOKEN (default "dev"),
+`services`. The faulty-replica fallback finds the replica's address in the brain's GET /api/pool (replicas are
+created on demand, so there is no fixed list); TENANTGUARD_WORKER_URLS ("tg-media-1=http://..") overrides it. TENANTGUARD_CONTROL_TOKEN (default "dev"),
 TENANTGUARD_ADMIN_TOKEN (worker fault fallback, default "dev").
 Only HTTP APIs are used: gateway POST /admin/mode, lab /lab/calm/start, /lab/attack, /lab/attacks, /lab/metrics,
-/lab/results, brain /api/state, /api/incidents, and (fallback only) worker /admin/fault.
+/lab/results, brain /api/state, /api/incidents, /api/pool, and (fallback only) replica /admin/fault.
 Before the show a preflight asks the lab which attacks it can run (without starting any); a step whose attack is
 not available is announced with a banner and skipped. On exit (normal, error or Ctrl-C) every attack and fault is
 stopped and the mode is set back to tenantguard.
@@ -63,15 +63,16 @@ class Step:
     scorecard: bool = False
 
 
-def plan(attacker: str = "K", bomb: str = "blackbox_bomb", faulty: str = "w4", spiker: str = "J") -> List[Step]:
+def plan(attacker: str = "K", bomb: str = "blackbox_bomb", faulty: str = "tg-media-1", spiker: str = "J") -> List[Step]:
     """The demo, step by step (FINAL-PLAN section 10; coordinator order for T14)."""
     label = "black-box bomb" if bomb == "blackbox_bomb" else "whale"
     what = ("cheap-looking requests that trigger hidden background work" if bomb == "blackbox_bomb"
             else "a few very heavy requests")
     return [
-        Step("calm", "Calm", 15, "12 tenants, calm traffic. Every tile green, fairness near 1.", mode="tenantguard"),
-        Step("off", "OFF + flood", 30, f"Protection OFF. {attacker} floods the fleet: everyone sharing its servers "
-             "turns red. This is the noisy-neighbour problem.", mode="off",
+        Step("calm", "Calm", 15, "12 tenants in 5 projects, calm traffic. Every tile green, one warm replica per "
+             "project, fairness near 1.", mode="tenantguard"),
+        Step("off", "OFF + flood", 30, f"Protection OFF. {attacker} floods its project: every tenant sharing its "
+             "replicas turns red. This is the noisy-neighbour problem.", mode="off",
              attacks=[Attack("flood", attacker)], attacker=attacker),
         Step("industry_flood", "Industry + same flood", 15, f"Industry-standard limits: rate, cost, fair queue. "
              f"The same flood from {attacker} is now refused with 429s; the victims stay green.", mode="industry",
@@ -79,15 +80,18 @@ def plan(attacker: str = "K", bomb: str = "blackbox_bomb", faulty: str = "w4", s
         Step("industry", f"Industry + {label}", 30, f"Now {attacker} sends {what} ... the rate limiter barely "
              "sees it, and the victims turn red. This is where rate limiting stops.",
              mode="industry", attacks=[Attack(bomb, attacker, fallback="whale")], attacker=attacker),
-        Step("tenantguard", "TenantGuard + same attack", 75, "Same attack, TenantGuard on: victims rescued in about "
-             "a second, the barcode names the culprit with a confidence, the proof follows it, then the verdict.",
+        Step("tenantguard", "TenantGuard + same attack", 75, f"Same attack, TenantGuard on: {attacker}'s share of "
+             "its project is measured against its neighbours' slowdown, and the ladder steps in (warn, throttle, "
+             "deprioritize, quarantine) while the neighbours recover; it relaxes by itself once they are safe.",
              mode="tenantguard", attacks=[Attack(bomb, attacker, fallback="whale")], attacker=attacker,
              watch_incidents=True),
-        Step("faulty", "Faulty server", 20, f"Server {faulty} turns faulty by itself: TenantGuard drains it and "
-             "blames no tenant (host fault).", mode="tenantguard", attacks=[Attack("faulty_server", server=faulty)],
+        Step("faulty", "Faulty replica", 20, f"Replica {faulty} turns slow by itself: its tenants slow down, but "
+             "nobody's share of the project grew, so TenantGuard throttles no tenant.", mode="tenantguard",
+             attacks=[Attack("faulty_server", server=faulty)],
              watch_incidents=True),
-        Step("spike", "Honest spike", 20, f"{spiker}, an Enterprise tenant, has its sale day: a genuine burst. It "
-             "gets room to grow, with no throttling.", mode="tenantguard", attacks=[Attack("honest_spike", spiker)],
+        Step("spike", "Honest spike", 20, f"{spiker}, an Enterprise tenant, has its sale day: a genuine burst. Its "
+             "project borrows idle cores from the pool and scales out, with no throttling.", mode="tenantguard",
+             attacks=[Attack("honest_spike", spiker)],
              attacker=spiker, watch_incidents=True),
         Step("scorecard", "Scorecard", 25, "OFF vs Industry vs TenantGuard, measured victim p99 per scenario.",
              scorecard=True),
@@ -147,9 +151,22 @@ class Demo:
         self.available[attack] = ok
         return ok
 
+    def replica_url(self, replica: str) -> Optional[str]:
+        """The address of a replica, from the brain's pool view (None if the brain does not know it)."""
+        r = self.call("GET", f"{self.brain}/api/pool")
+        if r is None or r.status_code != 200:
+            return None
+        for p in r.json().get("projects", []):
+            for rep in p.get("replicas", []):
+                if rep.get("id") == replica and rep.get("url"):
+                    return rep["url"].rstrip("/")
+        return None
+
     def worker_reachable(self, server: Optional[str]) -> Optional[str]:
-        url = self.workers.get(server or "")
-        if not url or self.dry_run:
+        if not server or self.dry_run:
+            return None
+        url = self.workers.get(server) or self.replica_url(server)
+        if not url:
             return None
         r = self.call("GET", f"{url}/healthz", timeout=1.0)
         return url if r is not None and r.status_code == 200 else None
@@ -170,7 +187,7 @@ class Demo:
                         self.out(f"    {a.attack}: not on this lab, step '{st.key}' injects the fault directly "
                                  f"on {a.server} ({url}/admin/fault)")
                         continue
-                    why = (f"{a.attack} is not available on this lab and worker {a.server} is not reachable "
+                    why = (f"{a.attack} is not available on this lab and replica {a.server} is not reachable "
                            f"from here")
                 else:
                     why = f"{a.attack} is not available on this lab"
@@ -365,7 +382,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--only", help="run only this step key (calm is always run first)")
     p.add_argument("--attacker", default="K")
     p.add_argument("--bomb", default="blackbox_bomb", choices=["blackbox_bomb", "whale"])
-    p.add_argument("--faulty-server", default="w4")
+    p.add_argument("--faulty-server", default="tg-media-1", help="a replica id, as shown on the Pool page")
     p.add_argument("--spiker", default="J")
     p.add_argument("--tick", type=float, default=5.0, help="seconds between live readouts")
     p.add_argument("--speed", type=float, default=1.0, help="scale every step duration (e.g. 0.5 for rehearsal)")

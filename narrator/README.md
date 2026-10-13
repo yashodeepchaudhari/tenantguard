@@ -4,7 +4,7 @@
 
 **Turns each incident into a plain-English report for the operator and an anonymised note for affected customers, built only from the brain's own evidence.**
 
-![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white) ![port](https://img.shields.io/badge/port-8700-0ea5e9) ![tests](https://img.shields.io/badge/tests-9%20passed-22c55e)
+![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white) ![port](https://img.shields.io/badge/port-8700-0ea5e9) ![tests](https://img.shields.io/badge/tests-10%20passed-22c55e)
 
 ## At a glance
 
@@ -29,13 +29,14 @@ flowchart LR
 1. **Evidence pack** (`evidence.py`), built when an incident reaches `named`, `verdict` or `closed` and rebuilt on every later event:
    - stages with IST times and the brain's own details;
    - suspects with confidence %;
-   - for findings without a tenant (`srv-…`), the slow replicas with their peak peer ratio, from the brain's own list and `StateSnapshot`;
+   - the case kind: a **tenant** case from the ladder, a **hash split** of one project's hidden CPU (with every round: the two halves, the unexplained CPU per replica, who was kept), or a **host-wide slowdown** nobody is blamed for (with the projects that slowed);
+   - the project, and the verdict (from the event or its report);
    - actions with their TTLs, the peak level and the verdict;
    - affected tenants: the other tenants of the culprit's project.
 
    Replayed events (reconnect backfill) are ignored.
-2. **Incident report** (`template.py`): `IncidentReport {headline, timeline, cause, evidence_points, action_taken, operator_recommendation}`. A finding names its culprit with the brain's confidence, or says that no tenant was blamed; a tenant (ladder) case explains the over-use with the brain's measurements.
-3. **Customer message**, built from an **anonymised** pack: times, duration, a generic cause and what was done. No tenant, no replica and no copied brain text, so nothing can leak.
+2. **Incident report** (`template.py`): `IncidentReport {headline, timeline, cause, evidence_points, action_taken, operator_recommendation}`, worded per kind: a tenant case explains the over-use of its project; a split names the tenant the hidden CPU followed, round by round, or says nobody could be tied to it; a host-wide slowdown says the cause is outside the projects and nobody was throttled.
+3. **Customer message**, built from an **anonymised** pack: times, duration, a generic cause per kind and whether the cause was limited. No tenant, no project and no copied brain text, so nothing can leak.
 4. **Versions:** a report is republished (version + 1) only when its evidence changes. The store is bounded by `max_reports`.
 
 ## API
@@ -74,7 +75,7 @@ python -m tenantguard_narrator        # binds 0.0.0.0:8700
 
 ```bash
 cd narrator
-python -m pytest            # 9 tests
+python -m pytest            # 10 tests
 ```
 
 ## Files
