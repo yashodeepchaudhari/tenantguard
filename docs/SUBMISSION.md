@@ -2,7 +2,7 @@
 
 CodeAstra 2.0 · Cloud Computing & Distributed Systems · **PS 3: Multi-Tenant Isolation and Noisy-Neighbor Defense**.
 
-Status key: **done** = merged on `master` with tests; **measured** = backed by a committed result file; **not included** = deliberately left out of this submission.
+Status key: **done** = merged on `master` with tests; **measured** = backed by a committed result file.
 
 ## PS 3 checklist → where it is implemented
 
@@ -20,13 +20,13 @@ Status key: **done** = merged on `master` with tests; **measured** = backed by a
 | **Admin API** | done | `GET/POST/DELETE /admin/tenants`, `PATCH /admin/tenants/{id}/quota`, `GET/POST /admin/mode`, `GET /admin/overrides`, `GET /admin/reference_costs`, all behind a control token (`gateway/tenantguard_gateway/app.py`) |
 | **Dashboard** | done | `ui/src/pages/`: ControlRoom (tiles, server grid, live p95 and CPU-share charts, noisy bars, incident timeline, fairness and utilization gauges, mode toggle, attack launcher), Tenants (quota edit), Cases + CaseFile, Scorecard |
 | **"Not just a rate limit"** | measured | Hidden work on the Docker host (`worker/calibration.json`): `POST /api/ingest` shows **0.066 ms** of handler CPU but causes **20.25 ms** of black-box indexer CPU. The 3-mode scorecard (OFF / Industry / TenantGuard) is in `lab/results/summary-scorecard-host.json` with 18 run files (see below) |
-| Traffic + attacks | done | 12 Poisson personas whose rates and SLA targets (`sla_p95_ms`) follow the tiers; all ten attacks in `lab/tenantguard_lab/attacks.py`: flood, whale, hog, memory, retry_storm, blackbox_bomb, background_bomb, cache_flood, honest_spike and faulty_server (injects a fault on one worker, cleared when the attack stops); run marks; the scorecard runner (`lab/tenantguard_lab/scorecard.py`). The five Wave 2 attacks are unit-tested on a mock fleet (`lab/tests/test_wave2_attacks.py`); they are not yet in the measured scorecard (whale and flood only) and their profile strengths are still to be re-checked on the Docker host |
+| Traffic + attacks | done | 12 Poisson personas whose rates and SLA targets (`sla_p95_ms`) follow the tiers; all ten attacks in `lab/tenantguard_lab/attacks.py`: flood, whale, hog, memory, retry_storm, blackbox_bomb, background_bomb, cache_flood, honest_spike and faulty_server (injects a fault on one worker, cleared when the attack stops); run marks; the scorecard runner (`lab/tenantguard_lab/scorecard.py`). The five Wave 2 attacks are unit-tested on a mock fleet (`lab/tests/test_wave2_attacks.py`); the measured scorecard covers whale and flood only, and their profile strengths are still to be re-checked on the Docker host |
 | Convergence (Web PS 3 "Digital Handoff") | done | `integrations/handoff/`: incidents become partner cases (owner, pending actions, deadlines, history); acknowledge and approve flow back as TTL-bound control. Agreed samples in `docs/convergence/` |
 | Fair billing + "Why was I slow?" | done | `billing/` (:8600): bills at calm reference prices (victims are never charged for contention), SLA credits from each tenant's `sla_p95_ms`, an "unmetered" true-cost line for a named culprit's black-box CPU, and an anonymised "why" text for victims |
 | Incident reports | done | `narrator/` (:8700): a deterministic incident report per incident and an anonymised customer message, republished whenever the evidence changes |
 | Demo | done | `tools/demo.py`: the 4-minute script, driven over HTTP, with live numbers |
 
-Tests: `python -m pytest` in `gateway/`, `worker/`, `brain/`, `lab/`, `billing/`, `integrations/handoff/`, `narrator/` and `tools/` (460 tests: gateway 94, worker 53 + 1 Linux-only skip, brain 167, lab 49, billing 25, handoff 47, narrator 9, tools 16); `npm test` in `ui/` (76 unit tests) and `npm run e2e` (27 Playwright end-to-end tests in `ui/e2e/`, 26 by default; the `@live` one needs `E2E_LIVE=1`). The gateway, handoff, narrator and demo test suites were also checked by mutation: each protected behaviour was broken on purpose, and a test failed every time.
+Tests: `python -m pytest` in `gateway/`, `worker/`, `brain/`, `lab/`, `billing/`, `integrations/handoff/`, `narrator/` and `tools/` (468 tests: gateway 94, worker 53 + 1 Linux-only skip, brain 167, lab 57, billing 25, handoff 47, narrator 9, tools 16); `npm test` in `ui/` (76 unit tests) and `npm run e2e` (27 Playwright end-to-end tests in `ui/e2e/`, 26 by default; the `@live` one needs `E2E_LIVE=1`). The gateway, handoff, narrator and demo test suites were also checked by mutation: each protected behaviour was broken on purpose, and a test failed every time.
 
 ## Measured numbers we quote
 

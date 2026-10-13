@@ -92,16 +92,16 @@ cd lab     && python -m tenantguard_lab serve                # :8300
 cd lab     && python -m tenantguard_lab scorecard            # OFF / Industry / TenantGuard, 3 runs each
 ```
 
-Every service has `python -m pytest` in its directory: 460 Python tests on master (gateway 94, worker 53 + 1 Linux-only skip, brain 167, lab 49, billing 25, handoff 47, narrator 9, tools 16). The UI has 76 unit tests (`npm test`) and 27 Playwright end-to-end tests (`ui/e2e/`; 26 run by default, the `@live` one needs `E2E_LIVE=1`). All `/admin/*` and `/control/*` calls need the header `X-TenantGuard-Control-Token` (env `TENANTGUARD_CONTROL_TOKEN`, default `dev`).
+Every service has `python -m pytest` in its directory: 468 Python tests on master (gateway 94, worker 53 + 1 Linux-only skip, brain 167, lab 57, billing 25, handoff 47, narrator 9, tools 16). The UI has 76 unit tests (`npm test`) and 27 Playwright end-to-end tests (`ui/e2e/`; 26 run by default, the `@live` one needs `E2E_LIVE=1`). All `/admin/*` and `/control/*` calls need the header `X-TenantGuard-Control-Token` (env `TENANTGUARD_CONTROL_TOKEN`, default `dev`).
 
 ## Run the demo
 ```
 python tools/demo.py --dry-run      # the plan and every HTTP call, nothing sent
 python tools/demo.py --step         # the 4-minute demo, Enter before each step
 ```
-The steps: calm → OFF + flood → Industry (flood refused, then a whale) → TenantGuard (same whale: rescue, name, proof, verdict) → faulty server → scorecard. Each step prints one narration line and live numbers from the brain and the lab. Targets come from `TENANTGUARD_{GATEWAY,BRAIN,LAB}_URL`.
+The steps: calm → OFF + flood → Industry (flood refused, then the black-box bomb) → TenantGuard (same bomb: rescue, name, proof, verdict) → faulty server → honest spike → scorecard. Each step prints one narration line and live numbers from the brain and the lab. Targets come from `TENANTGUARD_{GATEWAY,BRAIN,LAB}_URL`.
 
-The lab also runs the wave-2 attacks (`blackbox_bomb`, `background_bomb`, `cache_flood`, `faulty_server`, `honest_spike`), so the demo uses the black-box bomb, has the lab inject the faulty server, and runs the honest-spike step. Their strengths are not yet checked on the Docker host: rehearse there first, and use `--bomb whale` to keep the measured whale story.
+The lab runs all ten attacks, including the five the team wrote last (`blackbox_bomb`, `background_bomb`, `cache_flood`, `faulty_server`, `honest_spike`), so the demo uses the black-box bomb, has the lab inject the faulty server, and runs the honest-spike step. Those five are unit-tested; their strengths are sized from `worker/calibration.json` and still to be checked on the Docker host, so rehearse there first, and use `--bomb whale` to keep the measured whale story.
 
 ## "Not just a rate limit": the evidence
 
