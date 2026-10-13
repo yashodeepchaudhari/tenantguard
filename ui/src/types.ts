@@ -13,37 +13,31 @@ export type Level = 'normal' | 'warn' | 'throttle' | 'deprioritize' | 'quarantin
 export const MODES: Mode[] = ['off', 'industry', 'tenantguard']
 export const LEVELS: Level[] = ['normal', 'warn', 'throttle', 'deprioritize', 'quarantine', 'blocked']
 
-// ---------- 0. Tenancy / admin (gateway /admin/*) ----------
+// ---------- 0. Tenancy / admin ----------
+/** Per-tenant request limits from the project's tier (CPU is limited per project by its replicas). */
 export interface Quota {
   rate_rps: number // token bucket refill, requests/s
   burst: number // token bucket capacity, requests
-  cost_ms_per_s: number // cost bucket refill, CPU-ms per second
   concurrency: number // max in-flight requests
 }
 
-/** Output of GET /admin/tenants (list) and GET /admin/tenants/{id}. */
+/** Output of gateway GET /admin/tenants (list) and GET /admin/tenants/{id}. */
 export interface TenantAdminView {
   id: string
   name: string
+  project: string
   tier: Tier
-  servers: string[]
+  replicas: string[] // ready replicas of the tenant's project, in this tenant's rendezvous order
   weight: number
-  quota: Quota // configured quota (after PATCH)
+  quota: Quota
   effective_quota: Quota // quota after the active LimitsCmd factor
   factor: number // default 1.0
   weight_factor: number // default 1.0
   blocked: boolean
-  placement: string // normal | spare | quarantine | wN
+  pinned_to?: string | null // replica the tenant is pinned to during a split test
   override_expires_at?: number | null
   monthly_revenue_rs: number
   protected: boolean
-}
-
-export interface QuotaPatch {
-  rate_rps?: number | null
-  burst?: number | null
-  cost_ms_per_s?: number | null
-  concurrency?: number | null
 }
 
 export interface ModeBody {
@@ -67,26 +61,14 @@ export interface BlockCmd extends ControlBase {
   blocked: boolean
 }
 
-export interface RelocateCmd extends ControlBase {
-  tenant: string
-  cls?: string | null
-  target?: string | null
-}
-
-export interface DrainCmd extends ControlBase {
-  server: string
-  drained: boolean
-}
-
 /** Output of gateway GET /admin/overrides. */
 export interface OverridesView {
   limits: Record<string, LimitsCmd>
   blocks: Record<string, BlockCmd>
-  relocations: RelocateCmd[]
-  route_weights: Record<string, Record<string, number>>
-  drains: Record<string, DrainCmd>
-  expires_at: Record<string, number> // "<kind>:<key>" -> epoch s
-  last_heartbeat_age_s?: number | null
+  pins: Record<string, string> // tenant -> replica (split test)
+  expires_at: Record<string, number> // "<kind>:<tenant>" -> epoch s
+  snapshot_version?: number | null
+  last_snapshot_age_s?: number | null
   fail_static: boolean
 }
 
@@ -103,15 +85,17 @@ export interface TenantView {
   noisy_norm: number // 0..1, for bars
   level: Level
   factor: number // current throttle factor applied
-  placement: string // normal | spare | quarantine | wN
+  project: string
 }
 
+/** One replica. */
 export interface ServerView {
-  server: string
+  server: string // replica id
   p95_ms: number // server-side p95 over the last 2 s
-  peer_ratio: number
-  cpu_pct: number // 0..100 of the container CPU limit
-  status: 'healthy' | 'slow' | 'drained'
+  peer_ratio: number // p95 / median p95 of the project's other replicas (1.0 if alone)
+  cpu_pct: number // 0..100 of the replica's CPU cap
+  status: 'healthy' | 'slow' | 'drained' // drained = starting or draining (not taking traffic)
+  project: string
 }
 
 export interface StateSnapshot {
@@ -120,12 +104,13 @@ export interface StateSnapshot {
   mode: Mode
   tenants: TenantView[]
   servers: ServerView[]
-  utilization: number // 0..1 of fleet CPU limit
+  utilization: number // 0..1 of the pool's CPU
   fairness: number // Jain index 0..1
   status_sentence: string
   brain_ok: boolean
   /** e.g. {warn: 1.5, throttle: 2.0, quarantine: 4.0} from brain.noisy; the UI uses these, not its own copies */
   noisy_thresholds?: Record<string, number>
+  pool?: PoolView | null // v2: pool, projects, allocations, replicas
 }
 
 export type Stage =
@@ -265,7 +250,7 @@ export type ActionState = 'pending' | 'approved' | 'rejected' | 'extended' | 're
 
 export interface CaseContext {
   verdict: Verdict
-  affected: string[] // victim tenant ids (barcode neighbours), may be empty
+  affected: string[] // victim tenant ids (the other tenants of the project), may be empty
   evidence_link: string // http://<ui-host>:5173/case/<incident_id>
   summary: string
 }
@@ -312,4 +297,84 @@ export interface OperatorCmd {
   until_s: number
   by: string
   case_id?: string | null
+}
+
+// ---------- 9. v2: pool, projects, replicas (brain admin API) ----------
+export type ReplicaState = 'starting' | 'ready' | 'draining'
+export type ProjectState = 'asleep' | 'waking' | 'warm' | 'busy'
+
+/** PUT /admin/pool: real cores and MB the admin gives TenantGuard. */
+export interface PoolSpec {
+  cpu_total: number
+  mem_total_mb: number
+  headroom_ratio: number
+}
+
+/** POST /admin/projects */
+export interface ProjectSpec {
+  id: string // ^[a-z0-9-]{1,32}$
+  name: string
+  tier: Tier
+  floor_cpu: number // guaranteed cores
+  cap_cpu: number // max cores
+  warm_min: number // replicas kept while idle; 0 = may sleep
+}
+
+export type ProjectPatch = Partial<Omit<ProjectSpec, 'id'>>
+
+/** POST /admin/projects/{project}/tenants; api_key null = generated (returned once). */
+export interface TenantCreate {
+  id: string
+  name: string
+  api_key?: string | null
+  monthly_revenue_rs?: number
+  protected?: boolean
+  sla_p95_ms?: number
+}
+
+export interface TenantCreated {
+  tenant: string
+  project: string
+  api_key: string // shown once; only its sha256 is stored
+}
+
+export interface ReplicaView {
+  id: string
+  project: string
+  url: string
+  state: ReplicaState
+  borrowed: boolean // above the project's own allowance; drained first when memory is needed
+  nano_cpus: number // cpu.max (1e9 = one core); 0 = unlimited
+  cpu_shares: number
+  mem_mb: number
+  started_at: number
+  tenants: string[]
+}
+
+export interface ProjectView {
+  id: string
+  name: string
+  tier: Tier
+  weight: number
+  floor_cpu: number
+  cap_cpu: number
+  warm_min: number
+  tenants: string[]
+  demand_cpu: number
+  used_cpu: number
+  base_cpu: number
+  loan_cpu: number
+  alloc_cpu: number
+  state: ProjectState
+  replicas: ReplicaView[]
+}
+
+/** brain GET /api/pool, and StateSnapshot.pool */
+export interface PoolView {
+  pool: PoolSpec
+  usable_cpu: number
+  usable_mem_mb: number
+  floors_cpu: number
+  reserved_mem_mb: number // memory of running replicas
+  projects: ProjectView[]
 }

@@ -1,13 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { LevelBadge } from '../components/LevelBadge.tsx'
-import { ProofAnimation } from '../components/ProofAnimation.tsx'
-import { ServerGrid } from '../components/ServerGrid.tsx'
-import { barcodeMatch, CASE_STEPS, reportSections, stepTime, summarizeCase, type CaseSummary, type ReportSection } from '../lib/case.ts'
+import { ReplicaGrid } from '../components/ReplicaGrid.tsx'
+import { CASE_STEPS, reportSections, stepTime, summarizeCase, type CaseSummary, type ReportSection, type SplitRound } from '../lib/case.ts'
 import { clock } from '../lib/format.ts'
 import { useBackend, useLive, useNow } from '../lib/liveContext.ts'
 import { STATUS_HEX } from '../lib/status.ts'
-import { useBarcodes } from '../lib/useBarcodes.ts'
 import { pendingActions, useHandoff } from '../lib/useHandoff.ts'
 import type { CaseView, IncidentEvent, OverridesView, Stage } from '../types.ts'
 
@@ -51,19 +49,16 @@ function Stepper({ c }: { c: CaseSummary }) {
 }
 
 function Suspects({ c }: { c: CaseSummary }) {
-  const rows = c.suspects.length
-    ? c.suspects.map((s) => ({ label: s.tenant, value: s.confidence, kind: 'tenant' as const }))
-    : (c.decoder?.ranking ?? []).slice(0, 6)
-  if (!rows.length) return <div className="text-base text-ink-500">No suspects named yet.</div>
+  const rows = c.suspects.map((s) => ({ label: s.tenant, value: s.confidence }))
+  if (!rows.length) return <div className="text-base text-ink-500">No tenant blamed.</div>
   return (
     <ul className="space-y-2" data-testid="suspects">
-      {!c.suspects.length && <li className="text-sm text-ink-300">From the barcode decoder (no tenant blamed by the brain):</li>}
       {rows.map((s, i) => {
         const pct = Math.round(Math.max(0, Math.min(1, s.value)) * 100)
-        const colour = i === 0 ? (s.kind === 'tenant' ? STATUS_HEX.bad : STATUS_HEX.warn) : '#64748b'
+        const colour = i === 0 ? STATUS_HEX.bad : '#64748b'
         return (
           <li key={s.label} className="flex items-center gap-3">
-            <span className={`${s.kind === 'tenant' ? 'w-6 text-2xl' : 'w-24 text-base'} font-black`}>{s.label}</span>
+            <span className="w-6 text-2xl font-black">{s.label}</span>
             <div className="h-4 flex-1 rounded bg-ink-800">
               <div className="h-full rounded" style={{ width: `${pct}%`, background: colour }} />
             </div>
@@ -127,6 +122,30 @@ function Placeholder({ c, name }: { c: CaseSummary; name: string }) {
   )
 }
 
+/** The hash split's evidence: each round, the two halves, where the unexplained CPU went, what was kept. */
+function SplitPanel({ rounds }: { rounds: SplitRound[] }) {
+  return (
+    <div data-testid="split-rounds">
+      <div className="panel-title">Hash split · {rounds.length} round{rounds.length === 1 ? '' : 's'}</div>
+      <ol className="space-y-1.5">
+        {rounds.map((r) => {
+          const reps = Object.entries(r.unattributed).sort((a, b) => b[1] - a[1])
+          return (
+            <li key={r.round} className="rounded bg-ink-800/60 px-2 py-1 text-base">
+              <b>round {r.round}</b>{' '}
+              <span className="text-ink-300">
+                {r.halves.map((h) => `{${h.join(' ')}}`).join(' vs ')} · unexplained CPU{' '}
+                {reps.map(([id, v]) => `${id.replace(/^tg-/, '')} ${v.toFixed(0)} ms/s`).join(', ')}
+              </span>{' '}
+              → kept <b className="text-bad">{r.kept.join(' ')}</b>
+            </li>
+          )
+        })}
+      </ol>
+    </div>
+  )
+}
+
 function HandoffPanel({ incidentId }: { incidentId: string }) {
   const { cases, error } = useHandoff()
   const now = useNow()
@@ -183,7 +202,6 @@ export function CaseFile() {
   const { incidentId = '' } = useParams()
   const backend = useBackend()
   const { incidents, snapshot } = useLive()
-  const barcodes = useBarcodes()
   const now = useNow()
   const [fetched, setFetched] = useState<IncidentEvent[] | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -242,19 +260,9 @@ export function CaseFile() {
   }
 
   const tenantView = snapshot?.tenants.find((t) => t.tenant === c.tenant)
-  const hostSuspects = c.decoder?.hostSuspects ?? []
-  const name = tenantView
-    ? `${tenantView.name} (${c.tenant})`
-    : (c.tenant ?? (hostSuspects.length ? `host ${hostSuspects.join(' ')}` : 'no tenant blamed'))
-  const culpritServers = (c.decoder?.culprits ?? []).flatMap((t) => barcodes[t] ?? [])
-  const barcode = c.tenant ? (barcodes[c.tenant] ?? []) : [...new Set([...culpritServers, ...hostSuspects])]
-  const pSlow = c.decoder?.pSlow ?? {}
-  const annotate = Object.fromEntries(Object.entries(pSlow).filter(([, v]) => v >= 0.05).map(([k, v]) => [k, `P(slow) ${Math.round(v * 100)} %`]))
-  const proving = stepTime(c, 'proving') !== null
-  const provingNow = proving && !stepTime(c, 'verdict') && !c.closed
-  const relocation = ov?.relocations?.find((r) => r.tenant === c.tenant && r.target)
-  const slow = (snapshot?.servers ?? []).filter((s) => s.status === 'slow').map((s) => s.server)
-  const match = barcodeMatch(barcode, slow)
+  const project = tenantView?.project ?? (typeof c.report?.project === 'string' ? c.report.project : null)
+  const name = tenantView ? `${tenantView.name} (${c.tenant})` : (c.tenant ?? (project ? `project ${project}` : 'no tenant blamed'))
+  const slow = (snapshot?.servers ?? []).filter((s) => s.status === 'slow' && (!project || s.project === project)).map((s) => s.server)
   const ttl = ttlFor(ov, c.tenant)
   const duration = (c.closed ? (c.lastAt ?? now) : now) - (c.openedAt ?? now)
 
@@ -316,32 +324,25 @@ export function CaseFile() {
               {c.detail || '–'}
             </p>
           </div>
-          {c.tenant && barcode.length > 0 && (proving || relocation) && (
-            <div className="min-h-[230px] flex-1">
-              <ProofAnimation tenant={c.tenant} servers={barcode} target={relocation?.target ?? 'spare'} live={provingNow || !!relocation} />
-            </div>
-          )}
+          {c.split.length > 0 && <SplitPanel rounds={c.split} />}
         </section>
 
         <section className="panel col-span-12 flex min-h-[420px] flex-col md:col-span-6 xl:col-span-4">
-          <ServerGrid
+          <ReplicaGrid
+            pool={snapshot?.pool}
             servers={snapshot?.servers ?? []}
-            highlight={barcode}
-            highlightLabel={c.tenant ? `${c.tenant}'s barcode ${barcode.join(' ')}` : hostSuspects.length ? `host suspect ${hostSuspects.join(' ')}` : undefined}
-            title="Barcode match · live grid"
-            annotate={annotate}
+            pins={ov?.pins}
+            highlight={project}
+            highlightLabel={project ? `${c.tenant ? `${c.tenant}'s ` : ''}project ${project}` : undefined}
+            title={project ? 'Project replicas · live' : 'Projects · live'}
+            only={project ? [project] : undefined}
           />
-          <div className="mt-2 text-lg" data-testid="barcode-match">
+          <div className="mt-2 text-lg" data-testid="replica-status">
             {slow.length === 0 ? (
-              <span className="text-ink-300">No server is slow right now{c.closed ? ' (case resolved)' : ''}.</span>
+              <span className="text-ink-300">No replica{project ? ` of ${project}` : ''} is slow right now{c.closed ? ' (case resolved)' : ''}.</span>
             ) : (
               <>
-                Slow now: <b>{slow.join(' ')}</b> ·{' '}
-                <b className={match.score >= 0.99 ? 'text-bad' : 'text-warn'}>
-                  {match.matched.length} of {slow.length}
-                </b>{' '}
-                inside {c.tenant}&apos;s barcode
-                {match.missing.length > 0 && <span className="text-ink-300"> (not: {match.missing.join(' ')})</span>}
+                Slow now: <b className="text-bad">{slow.join(' ')}</b>
               </>
             )}
           </div>

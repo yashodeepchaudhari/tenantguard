@@ -20,45 +20,35 @@ export interface CaseSummary {
   action: string | null
   detail: string
   report: Record<string, unknown> | null
-  /** latest barcode-decoder output found in any report of the incident */
-  decoder: DecoderView | null
+  /** the hash split's rounds, from the latest report that has them */
+  split: SplitRound[]
   level: Level | null
   events: IncidentEvent[]
 }
 
-export interface DecoderView {
-  pSlow: Record<string, number> // server -> P(slow)
-  ranking: { label: string; kind: 'tenant' | 'host' | 'none'; value: number }[] // sorted desc
-  hostSuspects: string[]
-  culprits: string[]
+export interface SplitRound {
+  round: number
+  halves: string[][]
+  kept: string[]
+  /** replica -> unexplained CPU ms/s measured in this round */
+  unattributed: Record<string, number>
 }
 
-const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+const isMap = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+const strs = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
 
-/** Read the brain's barcode decoder report ({p_slow, confidence, host_suspects, culprits}); null if absent. */
-export function decoderView(report: Record<string, unknown> | null | undefined): DecoderView | null {
-  if (!report) return null
-  const conf = report.confidence
-  const ps = report.p_slow
-  const isMap = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
-  if (!isMap(conf) && !isMap(ps)) return null
-  const ranking = isMap(conf)
-    ? Object.entries(conf)
-        .filter((e): e is [string, number] => num(e[1]))
-        .map(([k, v]) => ({
-          label: k === 'host_fault' ? 'host fault' : k === 'none' ? 'nobody' : k,
-          kind: (k === 'host_fault' ? 'host' : k === 'none' ? 'none' : 'tenant') as 'tenant' | 'host' | 'none',
-          value: v,
-        }))
-        .sort((a, b) => b.value - a.value)
-    : []
-  const strs = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
-  return {
-    pSlow: isMap(ps) ? Object.fromEntries(Object.entries(ps).filter((e): e is [string, number] => num(e[1]))) : {},
-    ranking,
-    hostSuspects: strs(report.host_suspects),
-    culprits: strs(report.culprits),
-  }
+/** The brain's hash-split evidence ({rounds: [{round, halves, kept, unattributed_ms_per_s}]}), oldest first. */
+export function splitRounds(report: Record<string, unknown> | null | undefined): SplitRound[] {
+  const rounds = report?.rounds
+  if (!Array.isArray(rounds)) return []
+  return rounds.filter(isMap).map((r, i) => ({
+    round: typeof r.round === 'number' ? r.round : i + 1,
+    halves: Array.isArray(r.halves) ? r.halves.map(strs) : [],
+    kept: strs(r.kept),
+    unattributed: isMap(r.unattributed_ms_per_s)
+      ? Object.fromEntries(Object.entries(r.unattributed_ms_per_s).filter((e): e is [string, number] => typeof e[1] === 'number'))
+      : {},
+  }))
 }
 
 export function summarizeCase(id: string, events: IncidentEvent[]): CaseSummary {
@@ -70,7 +60,7 @@ export function summarizeCase(id: string, events: IncidentEvent[]): CaseSummary 
   let action: string | null = null
   let detail = ''
   let report: Record<string, unknown> | null = null
-  let decoder: DecoderView | null = null
+  let split: SplitRound[] = []
   let level: Level | null = null
   let tenant: string | null = null
   for (const e of evs) {
@@ -84,7 +74,8 @@ export function summarizeCase(id: string, events: IncidentEvent[]): CaseSummary 
     if (e.detail) detail = e.detail
     if (e.report && typeof e.report === 'object') {
       report = e.report
-      decoder = decoderView(e.report) ?? decoder
+      const rounds = splitRounds(e.report)
+      if (rounds.length) split = rounds
     }
     if (e.level) level = e.level
     if (e.tenant) tenant = e.tenant
@@ -102,7 +93,7 @@ export function summarizeCase(id: string, events: IncidentEvent[]): CaseSummary 
     action,
     detail,
     report,
-    decoder,
+    split,
     level,
     events: evs,
   }
@@ -117,14 +108,6 @@ export function stepTime(c: Pick<CaseSummary, 'reached'>, step: Stage): { ts: nu
   return null
 }
 
-/** How many of the slow servers are in the suspect's barcode (its 3 servers). */
-export function barcodeMatch(barcode: string[], slow: string[]): { matched: string[]; missing: string[]; score: number } {
-  const b = new Set(barcode)
-  const matched = slow.filter((s) => b.has(s))
-  const missing = slow.filter((s) => !b.has(s))
-  return { matched, missing, score: slow.length ? matched.length / slow.length : 0 }
-}
-
 /** Group incidents (newest first) into cases for the case index. */
 export function caseIndex(events: IncidentEvent[]): CaseSummary[] {
   const ids = [...new Set(events.map((e) => e.incident_id))]
@@ -136,8 +119,8 @@ export type ReportSection =
   | { title: string; kind: 'list'; items: string[] }
   | { title: string; kind: 'table'; rows: [string, string][] }
 
-// ids (w3, K, spare) stay as they are; snake_case keys become words
-const label = (k: string) => (/^[a-z]\d+$|^[A-Z]$/.test(k) ? k : k.replace(/_/g, ' ').replace(/^\w/, (c) => c.toUpperCase()))
+// ids (tg-media-1, K) stay as they are; snake_case keys become words
+const label = (k: string) => (/^tg-|^[A-Z]$/.test(k) ? k : k.replace(/_/g, ' ').replace(/^\w/, (c) => c.toUpperCase()))
 
 function scalar(v: unknown): string {
   if (v === null || v === undefined) return '–'

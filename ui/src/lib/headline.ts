@@ -4,8 +4,8 @@
 //   "No attack · 12 tenants healthy"
 //   "whale on K · K throttled 50% · 11 protected"
 //   "K watched · 11 protected"
-//   "w4 slow · 4 rerouted · no one blamed"
-import type { OverridesView, StateSnapshot, TenantView } from '../types.ts'
+//   "tg-media-1 slow · no one blamed"
+import type { StateSnapshot, TenantView } from '../types.ts'
 import type { Scenario } from './scenario.ts'
 import { tenantStatus, worst, type Status, type Thresholds } from './status.ts'
 
@@ -37,8 +37,6 @@ export function buildHeadline(
   s: StateSnapshot,
   scenario: Scenario,
   th: Thresholds,
-  barcodes: Record<string, string[]>,
-  overrides: OverridesView | null,
   /** false when a scenario badge right next to the headline already names the attack */
   opts: { includeAttack?: boolean } = {},
 ): Headline {
@@ -47,7 +45,7 @@ export function buildHeadline(
   const flaggedIds = new Set(flagged.map((t) => t.tenant))
   const others = s.tenants.filter((t) => !flaggedIds.has(t.tenant))
   const healthy = others.filter((t) => status.get(t.tenant) === 'ok').length
-  const slow = s.servers.filter((x) => x.status === 'slow' && /^w\d+$/.test(x.server)).map((x) => x.server)
+  const slow = s.servers.filter((x) => x.status === 'slow').map((x) => x.server)
   const hurt = others.filter((t) => status.get(t.tenant) === 'warn' || status.get(t.tenant) === 'bad').length
   const idle = s.tenants.filter((t) => status.get(t.tenant) === 'idle').length
   const attack = scenario.attacks[0]
@@ -64,9 +62,7 @@ export function buildHeadline(
     parts.push(`${flagged.length} acted on: ${top}${flagged.length > 3 ? ` +${flagged.length - 3}` : ''}`)
   }
   if (slow.length && !flagged.length) {
-    const moved = overrides ? Object.keys(overrides.route_weights ?? {}).length : s.tenants.filter((t) => (barcodes[t.tenant] ?? []).some((sv) => slow.includes(sv))).length
-    parts.push(`${slow.slice(0, 3).join(', ')}${slow.length > 3 ? ` +${slow.length - 3}` : ''} slow`)
-    if (moved) parts.push(`${moved} rerouted`)
+    parts.push(`${slow.slice(0, 2).join(', ')}${slow.length > 2 ? ` +${slow.length - 2}` : ''} slow`)
     parts.push('no one blamed')
   }
   // with the lab offline we cannot know whether an attack is running: say what we observe
@@ -76,9 +72,11 @@ export function buildHeadline(
 
   const tone: Status =
     hurt || (off && attack) ? worst(others.map((t) => status.get(t.tenant) ?? 'idle')) : flagged.length || slow.length || attack ? 'warn' : idle === s.tenants.length ? 'idle' : 'ok'
+  const lent = (s.pool?.projects ?? []).reduce((a, p) => a + p.loan_cpu, 0)
   const details = [
     `mode ${s.mode === 'tenantguard' ? 'TenantGuard' : s.mode === 'industry' ? 'Industry' : 'OFF'}`,
-    `fleet CPU ${Math.round(s.utilization * 100)} %`,
+    `pool CPU ${Math.round(s.utilization * 100)} %`,
+    ...(lent > 0.005 ? [`${lent.toFixed(2)} cores lent`] : []),
     `fairness ${s.fairness.toFixed(2)}`,
     ...(idle && idle < s.tenants.length ? [`${plural(idle, 'tenant')} without traffic`] : []),
   ].join(' · ')

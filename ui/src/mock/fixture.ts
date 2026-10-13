@@ -1,38 +1,49 @@
-// Fixture copied from layouts/ag23.json + tenantguard.yaml (tiers, brain.noisy) so the mock
-// runs with no backend. Only used when VITE_MOCK=1 or by scripts/mock-ws-server.mjs.
-import type { Quota, Tier } from '../types.ts'
+// Fixture copied from tenantguard.yaml (pool, tiers, projects, tenants, brain.noisy) so the mock
+// runs with no backend. Only used when VITE_MOCK=1, by scripts/mock-ws-server.mjs, and as the
+// store's fallback until the first snapshot names each tenant's project.
+import type { PoolSpec, ProjectSpec, Quota, Tier } from '../types.ts'
 
 export interface FixtureTenant {
   id: string
   name: string
-  tier: Tier
-  servers: string[]
+  project: string
   monthly_revenue_rs: number
   protected: boolean
 }
 
-export const SERVERS = ['w0', 'w1', 'w2', 'w3', 'w4', 'w5', 'w6', 'w7', 'w8']
+export const POOL: PoolSpec = { cpu_total: 5.75, mem_total_mb: 2688, headroom_ratio: 0.1 }
+
+export const PROJECTS: ProjectSpec[] = [
+  { id: 'health', name: 'Health', tier: 'enterprise', floor_cpu: 1.25, cap_cpu: 3.0, warm_min: 1 },
+  { id: 'commerce', name: 'Commerce', tier: 'enterprise', floor_cpu: 1.25, cap_cpu: 3.0, warm_min: 1 },
+  { id: 'mobility', name: 'Mobility', tier: 'pro', floor_cpu: 0.75, cap_cpu: 2.0, warm_min: 1 },
+  { id: 'media', name: 'Media', tier: 'pro', floor_cpu: 0.75, cap_cpu: 2.0, warm_min: 1 },
+  { id: 'free', name: 'Free', tier: 'free', floor_cpu: 0.5, cap_cpu: 1.0, warm_min: 1 },
+]
 
 export const TENANTS: FixtureTenant[] = [
-  { id: 'A', name: 'Aarogya Health', tier: 'enterprise', servers: ['w0', 'w1', 'w2'], monthly_revenue_rs: 900000, protected: true },
-  { id: 'B', name: 'BazaarKart', tier: 'pro', servers: ['w3', 'w4', 'w5'], monthly_revenue_rs: 250000, protected: false },
-  { id: 'C', name: 'Chitra Studio', tier: 'free', servers: ['w6', 'w7', 'w8'], monthly_revenue_rs: 0, protected: false },
-  { id: 'D', name: 'DhanSetu Payments', tier: 'enterprise', servers: ['w0', 'w3', 'w6'], monthly_revenue_rs: 1200000, protected: true },
-  { id: 'E', name: 'Ekalavya Learn', tier: 'pro', servers: ['w1', 'w4', 'w7'], monthly_revenue_rs: 200000, protected: false },
-  { id: 'F', name: 'FitZone', tier: 'free', servers: ['w2', 'w5', 'w8'], monthly_revenue_rs: 0, protected: false },
-  { id: 'G', name: 'GaadiGo', tier: 'enterprise', servers: ['w0', 'w4', 'w8'], monthly_revenue_rs: 800000, protected: false },
-  { id: 'H', name: 'HisaabBooks', tier: 'pro', servers: ['w1', 'w5', 'w6'], monthly_revenue_rs: 150000, protected: false },
-  { id: 'I', name: 'IdliExpress', tier: 'free', servers: ['w2', 'w3', 'w7'], monthly_revenue_rs: 0, protected: false },
-  { id: 'J', name: 'JhatpatMart', tier: 'enterprise', servers: ['w0', 'w5', 'w7'], monthly_revenue_rs: 1500000, protected: false },
-  { id: 'K', name: 'KaamKaro', tier: 'pro', servers: ['w1', 'w3', 'w8'], monthly_revenue_rs: 180000, protected: false },
-  { id: 'L', name: 'LokVani News', tier: 'free', servers: ['w2', 'w4', 'w6'], monthly_revenue_rs: 0, protected: false },
+  { id: 'A', name: 'Aarogya Health', project: 'health', monthly_revenue_rs: 900000, protected: true },
+  { id: 'D', name: 'DhanSetu Payments', project: 'health', monthly_revenue_rs: 1200000, protected: true },
+  { id: 'J', name: 'JhatpatMart', project: 'commerce', monthly_revenue_rs: 1500000, protected: false },
+  { id: 'B', name: 'BazaarKart', project: 'commerce', monthly_revenue_rs: 250000, protected: false },
+  { id: 'G', name: 'GaadiGo', project: 'mobility', monthly_revenue_rs: 800000, protected: false },
+  { id: 'K', name: 'KaamKaro', project: 'mobility', monthly_revenue_rs: 180000, protected: false },
+  { id: 'E', name: 'Ekalavya Learn', project: 'mobility', monthly_revenue_rs: 200000, protected: false },
+  { id: 'H', name: 'HisaabBooks', project: 'media', monthly_revenue_rs: 150000, protected: false },
+  { id: 'L', name: 'LokVani News', project: 'media', monthly_revenue_rs: 0, protected: false },
+  { id: 'C', name: 'Chitra Studio', project: 'free', monthly_revenue_rs: 0, protected: false },
+  { id: 'F', name: 'FitZone', project: 'free', monthly_revenue_rs: 0, protected: false },
+  { id: 'I', name: 'IdliExpress', project: 'free', monthly_revenue_rs: 0, protected: false },
 ]
 
 export const TIERS: Record<Tier, { weight: number; quota: Quota }> = {
-  enterprise: { weight: 4, quota: { rate_rps: 100, burst: 200, cost_ms_per_s: 600, concurrency: 16 } },
-  pro: { weight: 2, quota: { rate_rps: 50, burst: 100, cost_ms_per_s: 300, concurrency: 8 } },
-  free: { weight: 1, quota: { rate_rps: 20, burst: 40, cost_ms_per_s: 150, concurrency: 4 } },
+  enterprise: { weight: 4, quota: { rate_rps: 100, burst: 200, concurrency: 16 } },
+  pro: { weight: 2, quota: { rate_rps: 50, burst: 100, concurrency: 8 } },
+  free: { weight: 1, quota: { rate_rps: 20, burst: 40, concurrency: 4 } },
 }
+
+/** control.replica_mem in tenantguard.yaml: baseline 80 + cache 8 + 32 per tenant, rounded up to 32 MB. */
+export const replicaMemoryMb = (tenants: number) => Math.ceil((80 + 8 + 32 * tenants) / 32) * 32
 
 export const NOISY = {
   warn: 1.5,

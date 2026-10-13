@@ -33,7 +33,7 @@ function Tile({ t, latest, selected, onSelect }: { t: TenantView; latest?: Incid
       onClick={select}
       onKeyDown={onKey}
       aria-pressed={selected}
-      title="Show this tenant's servers on the grid"
+      title="Show this tenant's project on the replica grid"
       className={`flex h-[132px] min-w-0 cursor-pointer flex-col overflow-hidden rounded-xl border-2 px-3 py-1.5 text-left transition-colors ${FRAME[status]} ${
         selected ? 'outline outline-[3px] outline-offset-1 outline-accent' : ''
       }`}
@@ -44,7 +44,9 @@ function Tile({ t, latest, selected, onSelect }: { t: TenantView; latest?: Incid
         <span className="min-w-0 flex-1 truncate text-base font-semibold text-ink-100" title={t.name}>
           {t.name}
         </span>
-        <span className="text-xs uppercase tracking-wider text-ink-300">{t.tier}</span>
+        <span className="truncate text-xs uppercase tracking-wider text-ink-300" title={`project ${t.project} · ${t.tier}`}>
+          {t.project}
+        </span>
       </div>
       <div className="flex items-baseline justify-between gap-2">
         {t.p95_ms > 0 ? (
@@ -65,7 +67,6 @@ function Tile({ t, latest, selected, onSelect }: { t: TenantView; latest?: Incid
       <div className="mt-0.5 flex items-center justify-between gap-1">
         <LevelBadge level={t.level} />
         {Math.round(t.factor * 100) < 100 && <span className="whitespace-nowrap text-sm font-semibold text-ink-100">{Math.round(t.factor * 100)} % quota</span>}
-        {t.placement !== 'normal' && <span className="truncate text-sm text-ink-300">→ {t.placement}</span>}
       </div>
       {why ? (
         <div className="mt-auto flex min-w-0 items-baseline gap-1 text-xs leading-tight" data-testid={`why-${t.tenant}`} title={why.detail}>

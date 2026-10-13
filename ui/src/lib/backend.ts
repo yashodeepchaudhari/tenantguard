@@ -11,9 +11,14 @@ import type {
   ModeBody,
   OverridesView,
   CaseView,
-  QuotaPatch,
+  PoolSpec,
+  PoolView,
+  ProjectPatch,
+  ProjectSpec,
   RunResult,
   TenantAdminView,
+  TenantCreate,
+  TenantCreated,
 } from '../types.ts'
 
 export type ConnState = 'connecting' | 'open' | 'closed'
@@ -33,8 +38,16 @@ export interface Backend {
   getMode(): Promise<Mode>
   setMode(mode: Mode): Promise<Mode>
   tenants(): Promise<TenantAdminView[]>
-  patchQuota(id: string, patch: QuotaPatch): Promise<TenantAdminView>
   overrides(): Promise<OverridesView>
+  /** brain GET /api/pool */
+  pool(): Promise<PoolView>
+  /** brain admin API (control token): the registry of pool, projects and tenants */
+  setPool(spec: PoolSpec): Promise<PoolView>
+  createProject(spec: ProjectSpec): Promise<PoolView>
+  patchProject(id: string, patch: ProjectPatch): Promise<PoolView>
+  deleteProject(id: string): Promise<PoolView>
+  addTenant(project: string, req: TenantCreate): Promise<TenantCreated>
+  removeTenant(id: string): Promise<void>
   labStatus(): Promise<LabStatus>
   startAttack(req: AttackReq): Promise<AttackStatus>
   stopAttack(id: string): Promise<AttackStatus>
@@ -67,7 +80,7 @@ export function errorText(body: unknown, fallback: string): string {
   return fallback
 }
 
-/** Header required on gateway /admin/* and /control/* (contracts.H_CONTROL_TOKEN). */
+/** Header required on gateway and brain /admin/* and /control/* (contracts.H_CONTROL_TOKEN). */
 export const H_CONTROL_TOKEN = 'X-TenantGuard-Control-Token'
 const admin = (init: RequestInit = {}): RequestInit => ({ ...init, headers: { ...init.headers, [H_CONTROL_TOKEN]: config.controlToken } })
 
@@ -193,9 +206,17 @@ export const realBackend: Backend = {
     return body?.mode ?? mode
   },
   tenants: () => http<TenantAdminView[]>(config.gatewayUrl, '/admin/tenants', admin()),
-  patchQuota: (id, patch) =>
-    http<TenantAdminView>(config.gatewayUrl, `/admin/tenants/${encodeURIComponent(id)}/quota`, admin(json('PATCH', patch))),
   overrides: () => http<OverridesView>(config.gatewayUrl, '/admin/overrides', admin()),
+  pool: () => http<PoolView>(config.brainUrl, '/api/pool'),
+  setPool: (spec) => http<PoolView>(config.brainUrl, '/admin/pool', admin(json('PUT', spec))),
+  createProject: (spec) => http<PoolView>(config.brainUrl, '/admin/projects', admin(json('POST', spec))),
+  patchProject: (id, patch) => http<PoolView>(config.brainUrl, `/admin/projects/${encodeURIComponent(id)}`, admin(json('PATCH', patch))),
+  deleteProject: (id) => http<PoolView>(config.brainUrl, `/admin/projects/${encodeURIComponent(id)}`, admin({ method: 'DELETE' })),
+  addTenant: (project, req) =>
+    http<TenantCreated>(config.brainUrl, `/admin/projects/${encodeURIComponent(project)}/tenants`, admin(json('POST', req))),
+  removeTenant: async (id) => {
+    await http<unknown>(config.brainUrl, `/admin/tenants/${encodeURIComponent(id)}`, admin({ method: 'DELETE' }))
+  },
   labStatus: () => http<LabStatus>(config.labUrl, '/lab/status'),
   startAttack: (req) => http<AttackStatus>(config.labUrl, '/lab/attack', json('POST', req)),
   stopAttack: (id) => http<AttackStatus>(config.labUrl, `/lab/attack/${encodeURIComponent(id)}`, { method: 'DELETE' }),

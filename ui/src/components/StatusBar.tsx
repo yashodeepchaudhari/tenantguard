@@ -18,11 +18,11 @@ const BADGE: Record<ScenarioKind, string> = {
 
 /** Fixed-height headline: what traffic is running, what is happening, in one line each. */
 export function StatusBar({ snapshot }: { snapshot: StateSnapshot }) {
-  const { lab, labReachable, barcodes, overrides } = useLive()
+  const { lab, labReachable } = useLive()
   const now = useNow()
   const scenario = scenarioOf(lab, labReachable !== false && lab !== null, now)
   // the badge names the attack, so the headline does not repeat it (keeps the line short at 1366 px)
-  const h = buildHeadline(snapshot, scenario, config, barcodes, overrides, { includeAttack: false })
+  const h = buildHeadline(snapshot, scenario, config, { includeAttack: false })
   return (
     <div className="flex min-w-0 flex-1 items-center gap-3" data-testid="status-bar">
       <StatusDot status={h.tone} className="h-4 w-4" />

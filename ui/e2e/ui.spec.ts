@@ -1,5 +1,5 @@
 // Operator flows in the dashboard. Every effect is verified through the backend's own API,
-// not just the UI. Anything the suite changes (mode, quota) is restored afterwards.
+// not just the UI. Anything the suite changes (mode, projects, tenants) is restored afterwards.
 import type { APIRequestContext, Page } from '@playwright/test'
 import { ALLOW_WRITES, TOKEN_HEADER, URLS, until, WRITES_OFF } from './env.ts'
 import { expect, test } from './fixtures.ts'
@@ -16,26 +16,27 @@ async function openControlRoom(page: Page) {
   await expect(page.getByTestId('tile-L')).toBeVisible({ timeout: 20_000 })
 }
 
-test('Control Room renders 12 tenant tiles, the 3x3 server grid and a status sentence', async ({ page }) => {
+test('Control Room renders 12 tenant tiles, the replica grid by project and a status sentence', async ({ page, request }) => {
   await openControlRoom(page)
   await expect(page.locator('[data-testid^="tile-"]')).toHaveCount(12)
-  await expect(page.locator('[data-testid^="server-w"]')).toHaveCount(9)
+  const projects = ((await (await request.get(`${URLS.brain}/api/pool`)).json()).projects as { id: string }[]).map((p) => p.id)
+  await expect(page.locator('[data-testid^="project-"]')).toHaveCount(projects.length)
+  await expect.poll(() => page.locator('[data-testid^="replica-tg-"][data-state="ready"]').count(), { timeout: 20_000 }).toBeGreaterThanOrEqual(projects.length)
   await expect(page.getByTestId('status-sentence')).not.toBeEmpty()
   await expect(page.getByTestId('impact')).toBeVisible()
   // the header says the brain stream is live
   await expect(page.getByText('live', { exact: true })).toBeVisible()
 })
 
-test('picking a tenant tile outlines its barcode servers', async ({ page, request }) => {
+test('picking a tenant tile outlines its project on the replica grid', async ({ page, request }) => {
   await openControlRoom(page)
-  const barcode: string[] = (await (await request.get(`${URLS.gateway}/admin/tenants`, { headers: TOKEN_HEADER })).json())
-    .find((t: { id: string }) => t.id === 'E')
-    .servers.slice()
-    .sort()
+  const project: string = (await (await request.get(`${URLS.gateway}/admin/tenants`, { headers: TOKEN_HEADER })).json()).find(
+    (t: { id: string }) => t.id === 'E',
+  ).project
   await page.getByTestId('tile-E').click()
   await expect
-    .poll(async () => (await page.locator('[data-testid^="server-w"][data-lit="1"]').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')!.slice(7)))).sort())
-    .toEqual(barcode)
+    .poll(async () => page.locator('[data-testid^="project-"][data-lit="1"]').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid'))))
+    .toEqual([`project-${project}`])
 })
 
 test('mode toggle round-trip is applied by the gateway', async ({ page, request, services }) => {
@@ -85,31 +86,42 @@ test('attack launcher starts an attack, shows it running, and stops it', async (
   }
 })
 
-test('Tenants page edits a quota through PATCH and the change is restored', async ({ page, request, services }) => {
+test('Pool page creates a project and a tenant through the brain, shows the key once, and cleans up', async ({ page, request, services }) => {
   test.skip(!ALLOW_WRITES, WRITES_OFF)
-  test.skip(!!services.labRun, `lab scenario run ${services.labRun} in progress: not editing quotas`)
-  const quotaOf = async () =>
-    (await (await request.get(`${URLS.gateway}/admin/tenants`, { headers: TOKEN_HEADER })).json()).find((t: { id: string }) => t.id === 'E').quota
-  const original = await quotaOf()
-  const rate = original.rate_rps === 33 ? 34 : 33
+  test.skip(!!services.labRun, `lab scenario run ${services.labRun} in progress: not changing the registry`)
+  const pool = async () => (await (await request.get(`${URLS.brain}/api/pool`)).json()) as { projects: { id: string; tenants: string[]; replicas: unknown[] }[] }
+  const id = `e2e${Date.now() % 100000}`
   try {
-    await page.goto('/tenants')
-    const row = page.getByTestId('row-E')
-    await row.getByRole('button', { name: 'Edit quota' }).click()
-    await page.getByLabel('E Rate').fill(String(rate))
-    await row.getByRole('button', { name: 'Save' }).click()
-    await expect.poll(async () => (await quotaOf()).rate_rps).toBe(rate)
-    await expect(page.getByText(/Quota for E saved/)).toBeVisible()
-    // invalid input never reaches the gateway
-    await row.getByRole('button', { name: 'Edit quota' }).click()
-    await page.getByLabel('E Rate').fill('-4')
-    await row.getByRole('button', { name: 'Save' }).click()
-    await expect(row.getByRole('alert')).toContainText('> 0')
-    expect((await quotaOf()).rate_rps).toBe(rate)
+    await page.goto('/pool')
+    await expect(page.getByTestId('pool-bar')).toBeVisible({ timeout: 20_000 })
+    const np = page.getByTestId('new-project')
+    await np.getByLabel('Id', { exact: true }).fill(id)
+    await np.getByLabel('Name', { exact: true }).fill('E2E')
+    await np.getByLabel(/^Tier/).selectOption('free')
+    await np.getByRole('button', { name: 'Create project' }).click()
+    await expect.poll(async () => (await pool()).projects.some((p) => p.id === id)).toBe(true)
+    await expect(page.getByTestId(`pool-row-${id}`)).toBeVisible()
+    // a floor that would break the pool is refused by the brain, with its reason
+    await np.getByLabel('Id', { exact: true }).fill(`${id}x`)
+    await np.getByLabel('Name', { exact: true }).fill('Too big')
+    await np.getByLabel('Floor cores').fill('99')
+    await np.getByLabel('Cap cores').fill('99')
+    await np.getByRole('button', { name: 'Create project' }).click()
+    await expect(np.getByRole('alert')).toBeVisible()
+    expect((await pool()).projects.some((p) => p.id === `${id}x`)).toBe(false)
+    // a tenant in the new project: the key is shown once
+    const nt = page.getByTestId('new-tenant')
+    await nt.getByLabel(/^Project/).selectOption(id)
+    await nt.getByLabel('Tenant id').fill('Q9')
+    await nt.getByLabel('Name', { exact: true }).fill('Quiz')
+    await nt.getByRole('button', { name: 'Add tenant' }).click()
+    await expect(page.getByTestId('api-key')).toContainText('tk_')
+    await expect.poll(async () => (await pool()).projects.find((p) => p.id === id)?.tenants).toEqual(['Q9'])
   } finally {
-    await request.patch(`${URLS.gateway}/admin/tenants/E/quota`, { headers: TOKEN_HEADER, data: original })
+    await request.delete(`${URLS.brain}/admin/tenants/Q9`, { headers: TOKEN_HEADER })
+    await request.delete(`${URLS.brain}/admin/projects/${id}`, { headers: TOKEN_HEADER })
   }
-  expect(await quotaOf()).toEqual(original)
+  expect((await pool()).projects.some((p) => p.id === id)).toBe(false)
 })
 
 test('incident timeline opens the Case File for that incident', async ({ page, request }) => {
@@ -154,11 +166,11 @@ test('Scorecard shows lab results by scenario and mode (or says why not)', async
 test('flow view toggle draws the live request flow and toggles back', async ({ page, request, services }) => {
   await openControlRoom(page)
   await page.getByTestId('view-flow').click()
-  // during an attack the flow view says why there are (or are not) reroute lines
+  // during an attack the flow view says what the brain is doing to routing (pins, lending, refusals)
   const attackRunning =
     services.lab &&
     ((await (await request.get(`${URLS.lab}/lab/status`)).json()).attacks as { state: string }[]).some((a) => a.state === 'running')
-  if (attackRunning) await expect(page.getByTestId('reroute-hint')).toHaveAttribute('data-kind', /rerouted|refused|off/)
+  if (attackRunning) await expect(page.getByTestId('flow-hint')).toHaveAttribute('data-kind', /split|lending|refused|off/)
   const canvas = page.getByTestId('flow-view').locator('canvas')
   await expect(canvas).toBeVisible()
   await expect

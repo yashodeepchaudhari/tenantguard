@@ -2,9 +2,9 @@
 // brain owns it (proposed contract field: StateSnapshot.impact, see ui/README.md).
 //
 // Definitions (per snapshot interval dt, capped at 2 s so a stalled tab does not inflate them):
-// - a tenant is THREATENED when it shares a server with a flagged tenant (level >= warn), or when
-//   one of its barcode servers is slow with a p95 that would breach the SLO (a server that is merely
-//   1.6x its peers at 20 ms would not hurt anyone, so rerouting around it avoids no breach)
+// - a tenant is THREATENED when it shares a project (and so its replicas) with a flagged tenant
+//   (level >= warn), or when one of its project's replicas is slow with a p95 that would breach the SLO
+//   (a replica merely 1.6x its peers at 20 ms would not hurt anyone)
 // - SLO-violation time AVOIDED: a threatened tenant stays within SLO (p95 < sloMs) while TenantGuard
 //   mode is on. Each such second counts once per tenant.
 // - SLO-violation time SUFFERED: any tenant over SLO (any mode), so OFF-mode damage is visible too
@@ -19,7 +19,7 @@ import type { Level, StateSnapshot } from '../types.ts'
 export const MONTH_S = 30 * 24 * 3600
 
 export interface ImpactContext {
-  barcodes: Record<string, string[]>
+  projectOf: Record<string, string> // tenant -> project
   revenue: Record<string, number> // tenant -> monthly_revenue_rs
   warn: number // noisy warn threshold
   sloMs: number
@@ -56,13 +56,13 @@ export function updateImpact(prev: ImpactState, s: StateSnapshot, ctx: ImpactCon
   const innocents = new Set(prev.innocents)
   let revenueRs = prev.revenueRs
 
-  const slow = new Set(s.servers.filter((x) => x.status === 'slow' && x.p95_ms >= ctx.sloMs).map((x) => x.server))
-  const flaggedServers = new Set<string>()
+  const slowProjects = new Set(s.servers.filter((x) => x.status === 'slow' && x.p95_ms >= ctx.sloMs).map((x) => x.project))
+  const flaggedProjects = new Set<string>()
   const flagged = new Set<string>()
   for (const t of s.tenants) {
     if (t.level !== 'normal') {
       flagged.add(t.tenant)
-      for (const sv of ctx.barcodes[t.tenant] ?? []) flaggedServers.add(sv)
+      flaggedProjects.add(ctx.projectOf[t.tenant] ?? t.project)
     }
   }
 
@@ -70,8 +70,8 @@ export function updateImpact(prev: ImpactState, s: StateSnapshot, ctx: ImpactCon
     const id = t.tenant
     const hasData = t.p95_ms > 0 // p95 0 = nothing completed: no data, skip
     if (hasData && t.p95_ms >= ctx.sloMs) sufferedS[id] = (sufferedS[id] ?? 0) + dt
-    const barcode = ctx.barcodes[id] ?? []
-    const threatened = !flagged.has(id) && !culprit(id) && barcode.some((sv) => flaggedServers.has(sv) || slow.has(sv))
+    const project = ctx.projectOf[id] ?? t.project
+    const threatened = !flagged.has(id) && !culprit(id) && (flaggedProjects.has(project) || slowProjects.has(project))
     if (s.mode === 'tenantguard' && threatened && hasData && t.p95_ms < ctx.sloMs) {
       avoidedS[id] = (avoidedS[id] ?? 0) + dt
       revenueRs += ((ctx.revenue[id] ?? 0) * dt) / MONTH_S

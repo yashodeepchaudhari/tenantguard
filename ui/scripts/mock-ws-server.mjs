@@ -35,7 +35,7 @@ function send(res, status, body, extra = {}) {
   res.writeHead(status, {
     'Content-Type': 'application/json',
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS',
+    'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, X-TenantGuard-Control-Token',
     ...extra,
   })
@@ -111,7 +111,15 @@ const brain = serve('brain', PORTS.brain, [
     },
   ],
   ['GET', /^\/healthz$/, () => ({ ok: true })],
-])
+  // v2: the brain owns the registry (pool -> projects -> tenants)
+  ['GET', /^\/api\/pool$/, () => sim.poolView()],
+  ['PUT', /^\/admin\/pool$/, (_m, b) => sim.setPool(b)],
+  ['POST', /^\/admin\/projects$/, (_m, b) => sim.createProject(b)],
+  ['PATCH', /^\/admin\/projects\/([^/]+)$/, (m, b) => sim.patchProject(decodeURIComponent(m[1]), b)],
+  ['DELETE', /^\/admin\/projects\/([^/]+)$/, (m) => sim.deleteProject(decodeURIComponent(m[1]))],
+  ['POST', /^\/admin\/projects\/([^/]+)\/tenants$/, (m, b) => sim.addTenant(decodeURIComponent(m[1]), b)],
+  ['DELETE', /^\/admin\/tenants\/([^/]+)$/, (m) => (sim.removeTenant(decodeURIComponent(m[1])), { ok: true })],
+], { tokenPaths: ['/admin', '/control'] })
 const wss = new WebSocketServer({ server: brain, path: '/ws/events' })
 wss.on('connection', (ws, req) => {
   console.log(`brain WS connect from ${req.socket.remoteAddress} (${wss.clients.size} clients)`)
@@ -124,7 +132,6 @@ serve('gateway', PORTS.gateway, [
   ['POST', /^\/admin\/mode$/, (_m, b) => sim.setMode(b.mode)],
   ['GET', /^\/admin\/tenants$/, () => sim.tenantsAdmin()],
   ['GET', /^\/admin\/tenants\/([^/]+)$/, (m) => sim.adminView(decodeURIComponent(m[1]))],
-  ['PATCH', /^\/admin\/tenants\/([^/]+)\/quota$/, (m, b) => sim.patchQuota(decodeURIComponent(m[1]), b)],
   ['GET', /^\/admin\/overrides$/, () => sim.overrides(now())],
   ['GET', /^\/healthz$/, () => ({ ok: true })],
   // tenant traffic: identity from X-API-Key (demo keys tk_<ID>_demo), CPU header like a worker
@@ -133,10 +140,11 @@ serve('gateway', PORTS.gateway, [
     /^\/api\/(.+)$/,
     (m, _b, _u, req) => {
       const key = req.headers['x-api-key']
-      const tenant = typeof key === 'string' ? /^tk_([A-L])_demo$/.exec(key)?.[1] : undefined
-      if (!tenant) return new Reply(401, { error: 'unauthorized' })
+      const tenant = typeof key === 'string' ? /^tk_([A-Za-z0-9_-]+?)_demo$/.exec(key)?.[1] : undefined
+      if (!tenant || !sim.tenants.has(tenant)) return new Reply(401, { error: 'unauthorized' })
       const cpu = (0.4 + Math.random() * 0.6).toFixed(3)
-      return new Reply(200, { ok: true, tenant, path: `/api/${m[1]}` }, { 'X-TenantGuard-Cpu-Ms': cpu, 'X-TenantGuard-Server': 'w0' })
+      const replica = sim.adminView(tenant).replicas[0] ?? 'none'
+      return new Reply(200, { ok: true, tenant, path: `/api/${m[1]}` }, { 'X-TenantGuard-Cpu-Ms': cpu, 'X-TenantGuard-Server': replica })
     },
   ],
 ], { tokenPaths: ['/admin', '/control'] })
