@@ -275,7 +275,7 @@ Any level returns straight to `normal` (factors 1.0/1.0) through `reset` when th
 - **Holds by ratio, not a strict streak** (`tests/test_ladder.py::test_one_dip_does_not_restart_the_hold`); half-duty flapping never escalates.
 - **A move is never made on a tick that contradicts it.** `Hold.held` requires the current tick to qualify.
 - **Quarantine needs its own threshold** (`test_quarantine_needs_the_quarantine_threshold`).
-- **The ladder's quarantine rung is a limit** (factor 0.1, weight_factor 0.1). Moving work to the quarantine worker is done by the `costly_pattern` verdict (`stage3.py`), not by the ladder. The `TODO(Wave 2)` line in the module docstring refers to the ladder rung only.
+- **The ladder's quarantine rung is a limit** (factor 0.1, weight_factor 0.1). Moving work to the quarantine worker is done by the `costly_pattern` verdict (`stage3.py`), not by the ladder. The module docstring says so.
 
 ---
 

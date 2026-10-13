@@ -5,7 +5,7 @@
 # Check it against the real fleet with `python -m tenantguard_lab calibrate`, which runs
 # calm traffic, reads every worker's /stats and prints the rate_scale to use.
 
-# Calm load ~116 req/s. CPU comes from request weight (search n), not request count: an httpx client costs
+# Calm load ~121 req/s (sum of rps below). CPU comes from request weight (search n), not request count: an httpx client costs
 # ~3 ms CPU per request on the dev laptop, so one lab process tops out near 270 req/s, and a Python gateway
 # pays a similar per-request cost. est_cpu_ms below follow worker/README (search ~0.35 us/doc); the estimate
 # is ~30% of 4500 CPU-ms/s (9 x 0.5 cores). Recalibrate on the real fleet with `calibrate`.

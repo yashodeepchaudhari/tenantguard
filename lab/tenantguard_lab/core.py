@@ -83,7 +83,7 @@ class Lab(ScenarioDriver):
     # ---------- attacks ----------
     def _validate(self, req: AttackReq) -> None:
         if req.attack in WAVE2:
-            raise LabError(501, f"attack {req.attack!r} ships in Wave 2")
+            raise LabError(501, f"attack {req.attack!r} is not included in this build")
         if req.attack not in RUNNERS:  # pragma: no cover - contract and RUNNERS cover every name
             raise LabError(501, f"attack {req.attack!r} not implemented")
         if not req.tenant:

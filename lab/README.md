@@ -15,6 +15,7 @@ python -m tenantguard_lab stop <attack_id|all>
 python -m tenantguard_lab status | metrics [--window 10]
 python -m tenantguard_lab run whale tenantguard [--tenant K] [--calm-s 20] [--attack-s 40] [--local]
 python -m tenantguard_lab calibrate [--seconds 20]   # measures fleet CPU via worker /stats, suggests rate_scale
+python -m tenantguard_lab scorecard [--scenarios whale,flood] [--modes off,industry,tenantguard] [--runs 3] [--aggregate-only] [--out PATH]
 python -m pytest -q
 docker compose --profile lab up lab             # from the repo root
 ```
@@ -33,7 +34,7 @@ Env:
 | Endpoint | |
 |---|---|
 | `GET /lab/status` | `LabStatus` (attacks, calm_running, run in progress) |
-| `POST /lab/attack` | `AttackReq` → `AttackStatus`. Wave-2 attacks → 501, unknown tenant → 404, intensity outside 0.1..5 → 422 |
+| `POST /lab/attack` | `AttackReq` → `AttackStatus`. Attacks not included in this build (blackbox_bomb, background_bomb, cache_flood, faulty_server, honest_spike) → 501, unknown tenant → 404, intensity outside 0.1..5 → 422 |
 | `DELETE /lab/attack/{id}` / `DELETE /lab/attacks` | stop one / all → `AttackStatus` (`state: stopped`) |
 | `POST /lab/calm/start` `{rate_scale?}` / `POST /lab/calm/stop` | calm traffic on/off → `LabStatus` |
 | `GET /lab/metrics?window_s=10` | per tenant, client-side: p50/p95/p99, count/ok/429/503/err per second, split calm vs attack; attack counters; lab event-loop lag |
@@ -59,7 +60,7 @@ Env:
   - `hog`: 24 closed-loop `/api/export` (~1 s each).
   - `memory`: 4 rps × 24 MB held 1 s (exceeds the 32 MB tenant budget).
   - `retry_storm`: 3× persona rps of `/api/read`; each 429/503 is retried immediately, ignoring Retry-After, up to 50 times.
-  - `background_bomb`, `blackbox_bomb`, `cache_flood`, `faulty_server`, `honest_spike`: Wave 2 (501).
+  - `background_bomb`, `blackbox_bomb`, `cache_flood`, `faulty_server`, `honest_spike`: not included in this build (501). The faulty-server scene is produced with the worker's `/admin/fault` instead.
 
 ## Measurement (`RunResult`)
 - Timeline: warmup, then 10 s more if calm traffic was cold, then `calm_s` baseline, attack for `attack_s`,
@@ -74,6 +75,15 @@ Env:
 - `time_to_detect_s`: the brain's first incident event (`/api/incidents?tenant=<attacker>`) after attack start.
   Null if the brain is unreachable.
 - `attacker_429/503`: all of the attacker's responses from attack start to run end.
+
+## Scorecard (`scorecard.py`)
+`python -m tenantguard_lab scorecard` runs every scenario in every mode `--runs` times through the lab server
+(`POST /lab/run`, one at a time, `--cooldown-s` apart; scenarios the lab answers 501 for are skipped and listed),
+then writes a summary to `results/summary-<ts>.json` (or `--out`, `-` for stdout). Per scenario x mode cell: median
+and mean victim p99 (baseline / attack / after), time to detect and recover, attacker 429/503 medians, and, from the
+brain's incidents inside each run's real attack window (run marks), whether the culprit was named and which
+innocent tenants were penalised. `--aggregate-only` summarises the existing result files and runs nothing.
+The committed Docker-host summary is `results/summary-scorecard-host.json` (whale and flood, 3 runs per cell).
 
 ## Calibration
 `personas.yaml` targets ~30% of the Docker fleet (9 × 0.5 cores = 4500 CPU-ms/s). Most of that CPU comes from
