@@ -453,66 +453,6 @@ class OperatorCmd(BaseModel):
     case_id: Optional[str] = None
 
 
-# ---------- 7. Billing (billing service on :8600, read-only) ----------
-class BillLine(BaseModel):
-    kind: Literal["compute", "background", "db", "unmetered", "sla_credit"]
-    description: str                      # plain English, no other tenant named
-    cpu_ms: float = 0.0
-    rate_rs_per_cpu_s: float = 0.0
-    amount_rs: float                      # negative for credits
-    evidence: dict = Field(default_factory=dict)   # unmetered: {incident_id, confidence, servers, excess_cpu_ms}; sla_credit: {violation_s, pct}
-
-
-class BillView(BaseModel):
-    """Billing GET /bills (list) and GET /bills/{tenant}."""
-    tenant: str
-    name: str
-    tier: Tier
-    period_start: float
-    period_end: float
-    requests: int
-    measured_cpu_ms: float                # handler + bg as measured
-    billed_cpu_ms: float                  # after calm-reference pricing
-    contention_waived_cpu_ms: float       # measured - billed (>= 0): contention we did not charge
-    db_ms: float
-    sla_p95_ms: float
-    sla_violation_s: float
-    sla_credit_pct: float
-    lines: List[BillLine]
-    subtotal_rs: float
-    credits_rs: float                     # <= 0
-    total_rs: float
-    incident_refs: List[str] = Field(default_factory=list)   # own incidents: brain ids; suffered as victim: opaque "ref-<8 hex>"
-
-
-WhyCause = Literal["none", "neighbor", "host_fault", "own_usage", "unknown"]
-
-
-class WhyEpisode(BaseModel):
-    start: float
-    end: float
-    cause: WhyCause
-    servers_affected: int                 # of this tenant's servers
-    servers_total: int
-    worst_p95_ms: float
-    violation_s: float
-    mitigated_after_s: Optional[float] = None   # detected -> rescued (or -> first throttle of the culprit)
-    sentence: str
-
-
-class WhyView(BaseModel):
-    """Billing GET /why/{tenant}. Never names another tenant."""
-    tenant: str
-    window_start: float
-    window_end: float
-    slow: bool
-    sla_p95_ms: float
-    violation_s: float
-    credit_pct: float
-    episodes: List[WhyEpisode]
-    sentence: str
-
-
 # ---------- 8. Incident narrator (narrator :8700, read-only consumer of the brain) ----------
 class IncidentReport(BaseModel):
     """Operator-facing report, built deterministically from the evidence pack."""

@@ -111,10 +111,6 @@
   - scaling timeline.
 - Reuse the v1 Playwright harness.
 
-### V10: billing inputs
-- T17 `charge` reads `tenant_ms_t` from attribution and `costs.reference_cost`; adds a `borrowed_cpu_s` line.
-- **Tests:** the T17 golden invoices still pass with the new input adapter.
-
 ### V11: docs and acceptance
 - Rewrite the `prototype-docs` pack from this folder.
 - Fill §4 with measured numbers.
@@ -125,7 +121,7 @@
 | 1 | V1 | — |
 | 2 | V2, V3, V4 (code + fakes), V5, V7 | V1 |
 | 3 | V6, V4 host checks | V2, V3, V4 |
-| 4 | V8, V9, V10 | V5, V6 |
+| 4 | V8, V9 | V5, V6 |
 | 5 | V11 | All |
 
 ## 3. Scenarios (lab and sim)

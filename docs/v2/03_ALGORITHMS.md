@@ -202,8 +202,3 @@ clear pins; temporary replica drained
 **Trigger:** project p95 > 1.6 × baseline for 4 s (v1 `slow_peer_ratio`, `open_after_ticks` reused), while **every** project's container CPU ≤ its allocation.
 
 **Result:** a `Finding(kind="external_contention", project=*)` goes to the operator and the narrator. No tenant is penalised.
-
-## 8. Billing (T17 logic, new inputs)
-- Same calm-reference pricing and SLA credit table.
-- **Inputs:** `tenant_ms_t` from §7.1 instead of per-server polling, and the tier price of the tenant's project.
-- **New line:** `borrowed_cpu_s` = CPU used above the project's floor while a project floor was lent. It is priced at the tier price (no surcharge by default; it can be configured).

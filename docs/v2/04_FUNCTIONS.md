@@ -130,7 +130,7 @@ This catalog matches the code on branch `v2/main`. Differences from the first dr
 | Cost of a request class | `gateway.costs.Costs.reference_cost` | Gateway EWMA + brain reference push + unused calibration (3) |
 | Move traffic | `gateway.router.choose` (reads snapshot replicas + pins) | RouteWeights + Relocate + Drain commands (3) |
 | Lower a tenant's limits | `ladder.step` → `Brain.limits` → snapshot | Ladder sends + verdict `force_throttle` (2) |
-| Per-tenant CPU | `detector.attribute` (used by scores and views) | Worker meters + decoder ledger hints + billing unmetered line |
+| Per-tenant CPU | `detector.attribute` (used by scores and views) | Worker meters + decoder ledger hints |
 | Find a hidden culprit | `detector.split_step` | Decoder + prover + verdicts (3) |
 | Slowness outside the projects | `detector.contention` | `health.py` + HostProver (2) |
 | Publish policy | `ControlLoop.snapshot` + `Runtime.push_snapshot` | 7 control endpoints with separate TTLs |

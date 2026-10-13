@@ -5,7 +5,6 @@ services:
   brain: http://127.0.0.1:8200
   lab: http://127.0.0.1:8300
   handoff: http://127.0.0.1:8400
-  billing: http://127.0.0.1:8600
   narrator: http://127.0.0.1:8700
 
 # What the admin gives TenantGuard: real cores and MB (no credits). Seed value; PUT /admin/pool changes it.
@@ -147,17 +146,6 @@ handoff:
   history_wire_max: 50         # history items sent to the partner per case (+ "N earlier events")
   history_keep: 500            # history items kept in memory per case
   id_map_max: 2000             # persisted incident->case id map cap (live cases never dropped)
-
-billing:
-  poll_s: 5                      # worker /stats + brain /api/incidents poll
-  bucket_s: 60                   # metering bucket
-  retention_h: 24
-  price_rs_per_cpu_s: {enterprise: 0.40, pro: 0.60, free: 0.80}
-  db_price_rs_per_s: 0.0
-  ref_alpha: 0.2                 # EWMA weight of a calm bucket in the reference cost
-  sla_default_p95_ms: 100
-  sla_credit_table: [{min_violation_s: 2, pct: 2}, {min_violation_s: 10, pct: 4}, {min_violation_s: 60, pct: 10}, {min_violation_s: 300, pct: 25}]   # pct of the period's usage subtotal
-  unmetered_min_confidence: 0.6
 
 narrator:
   max_reports: 200            # reports kept in memory (newest first)

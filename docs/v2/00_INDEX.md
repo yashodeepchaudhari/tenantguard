@@ -6,7 +6,7 @@
 - The surplus is shaped by tier weight.
 - Tenants are placed by rendezvous hashing.
 - A hash split runs on demand to find hidden work.
-- v1's ladder, DRR, retry budget, Gradient2 window, worker, handoff, narrator and billing are reused.
+- v1's ladder, DRR, retry budget, Gradient2 window, worker, handoff and narrator are reused (billing is not part of v2).
 
 **Status of this folder:**
 - This is an analysis only; nothing in the TenantGuard repo has changed.

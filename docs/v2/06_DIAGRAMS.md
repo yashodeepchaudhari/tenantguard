@@ -22,7 +22,6 @@ flowchart LR
     BR["Brain: control loop"]
     REP["Project replicas<br/>(created on demand)"]
     UI["Dashboard"]
-    BILL["Billing"]
   end
   DOCK[("Docker Engine<br/>pool cgroup tg-pool.slice")]
   ADM -->|"Admin API"| BR
@@ -34,7 +33,6 @@ flowchart LR
   DOCK --- REP
   BR -->|snapshot| GW
   GW -->|"telemetry 250 ms, wake"| BR
-  BILL -->|"/stats"| REP
 ```
 
 ## 2. Hierarchy
@@ -132,7 +130,6 @@ flowchart TD
   S7 --> S11["11. Detect inside projects:<br/>attribute → score → ladder;<br/>split test if CPU unattributed"]
   S10 & S11 --> S12["12. New snapshot (replicas, overrides, pins)"]
   S12 --> S6
-  S7 --> S13["13. Billing: per-tenant CPU × tier price,<br/>calm reference, SLA credits"]
 ```
 
 ## 6. Gateway request flow
@@ -509,7 +506,5 @@ flowchart LR
   V2 & V3 & V4 --> V6["V6 control loop + detector + publisher"]
   V5 & V6 --> V8["V8 lab v2 + scorecard"]
   V6 --> V9["V9 UI"]
-  V6 --> V10["V10 billing inputs"]
   V8 --> V11["V11 docs + acceptance"]
-  V9 & V10 --> V11
 ```

@@ -134,7 +134,6 @@ detector:
   contention: {ratio: 1.6, open_ticks: 4}             # v1 health values
 
 worker: {}                        # v1 block unchanged (cache_mb, tenant_mem_budget_mb, ...)
-billing: {}                       # T17 block unchanged
 ```
 
 ## 3. Example registry (same 12 tenants, grouped into 5 projects)

@@ -44,7 +44,6 @@ Pool (admin sets cpu_total, mem_total_mb, headroom_ratio)
 | **Detector** | Control | Attribution, intra-project score, split test | Baselines, split state | ControlLoop |
 | **Policy** | Control | Ladder (from v1) | Ladder per tenant | ControlLoop → Snapshot |
 | **Publisher** | Control | Builds and pushes the immutable `Snapshot` | Snapshot version | Gateway |
-| **Billing** (T17) | Side | Charges per tenant/class, SLA credits | 60 s buckets | Replicas `/stats`, Snapshot |
 | **Lab / UI / Narrator / Handoff** | Side | Load, dashboard, reports, operator cases | — | Gateway, brain |
 
 ## 4. Timing

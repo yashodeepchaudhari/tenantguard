@@ -44,7 +44,7 @@ Source: `codeAstra-T5/lab/results/20261012-19{3643,3839,4007}-whale-*.json`. The
 | **Memory reserved** | 9 × 256 + 256 + 128 = 2688 MB (compose limits) | Example: 864 MB warm (05 §3; computed from config, not measured) | **v2** *(computed, not measured)* |
 | **Finding the culprit across projects** | Barcode decoder + relocation prover, 25.3 s to detect in the one whale run | Not needed: per-container CPU is exact | **v2** |
 | **Finding the culprit inside a project** | Score + ladder | Same score + ladder, scoped to the project, plus an on-demand hash split for unattributed CPU | Equal; v2 adds the split |
-| **Request cost estimate** | 3 places: gateway EWMA, billing EWMA, `calibration.json` (unused) | 1 function: `costs.reference_cost` (seeded from calibration) | **v2** |
+| **Request cost estimate** | 2 places: gateway EWMA, brain reference push; `calibration.json` unused | 1 function: `costs.reference_cost` (seeded from calibration) | **v2** |
 | **Traffic movement** | 3 commands: RouteWeights, Relocate, Drain | 1 function: `route()` over the replica map | **v2** |
 | **Cold start** | None | Only for scale-to-zero projects: queue up to 5 s *(est.)*; paid tiers stay warm | v1 |
 | **Single-replica fragility** | A tenant spans 3 servers | ≥ 2 replicas while busy; 1 when calm | v1 slightly |
@@ -65,7 +65,7 @@ Source: `codeAstra-T5/lab/results/20261012-19{3643,3839,4007}-whale-*.json`. The
 | `brain/ladder.py`, `score.py` | Unchanged formula; the neighbour set becomes the same-project tenants |
 | `brain/incidents.py`, operator endpoint | Unchanged |
 | T12 `DockerControl` (Engine API over the unix socket, NanoCpus) | Extended with create/start/stop/update(CpuShares, Memory) |
-| `integrations/handoff`, `narrator`, `billing` (T17) | Unchanged logic; the replica list comes from the snapshot |
+| `integrations/handoff`, `narrator` | Unchanged logic; a tenant's neighbours are its project peers |
 
 ## 5. What v2 deletes
 - `layouts/ag23.json`
