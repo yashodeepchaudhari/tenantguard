@@ -37,9 +37,11 @@ Every gateway and brain `/admin/*` call sends `X-TenantGuard-Control-Token: $VIT
 - **Pool** (`/pool`): the v2 admin screen.
   - **Two bars:** guaranteed floors (each project's floor, free room, headroom) and allocated now (base solid, lent cores striped), with measured use as a white line.
   - **Project table:** tier and weight, floor, cap, warm replicas, demand, used, allocated = base + lent, replicas (cores, MB, loan), tenants (× removes one), Edit / Delete.
-  - **Forms:** set the pool, create a project (a floor above the free cores is refused before sending), add a tenant. The API key is shown once.
+  - **Forms:** set the pool, create a project (a floor above the free cores is refused before sending), add a tenant. The API key is shown once, and the page hands it to the lab at once (`POST /lab/tenants`), so the new tenant gets calm traffic and can be picked in the attack launcher.
+  - **Deleting:** × next to a tenant removes it (and stops its lab traffic). A project's **Delete** works once it has no tenants and asks for a confirmation. The pool itself cannot be deleted, only resized: it is the capacity of the machine.
 - **Cases** (`/case`) and **Case File** (`/case/:incident_id`):
   - **Case story:** steps, suspects with confidence, verdict, last action and override TTL, the latest detail, the report as sections, and the full event log.
+  - **Three kinds of case, each with its own steps:** a tenant case from the ladder (Detected → Rescued → Named → Proving → Verdict → Resolved → Explained); a hash split of one project (Hidden CPU → Split rounds → Verdict → Closed); a host-wide slowdown nobody is blamed for (Slowdown → No blame → Recovered).
   - **Hash split:** for an unattributed-work verdict, the split rounds: the two halves, the unexplained CPU on each replica, and what was kept.
   - **Live replicas:** the case's project replicas, live.
 - **Scorecard** (`/scorecard`): `RunResult`s grouped by scenario × mode.
@@ -103,7 +105,7 @@ E2E_LIVE=1 ...                       # also the @live scenario: calm -> whale on
 | Spec | Covers |
 |---|---|
 | `e2e/api.spec.ts` | gateway healthz, 401 without API key, 401 on admin without token, 200 + `X-TenantGuard-Cpu-Ms`, 12 admin tenants each in one project; brain `/api/state` shape (replicas with a project, pool), `/api/pool` invariants, brain admin 401 without token, `/api/incidents`; lab, handoff and narrator shapes (skipped cleanly when unreachable) |
-| `e2e/ui.spec.ts` | 12 tiles + replica grid (one row per project) + status sentence; tile → its project outlined; mode toggle round-trip (verified via `GET /admin/mode`, restored); launcher offers exactly flood, whale, hog, memory, retry_storm; attack launch → running → Stop (verified via `/lab/status`); Pool page: create a project, an oversized floor refused, add a tenant, key shown once (verified via `GET /api/pool`, removed afterwards); timeline → Case File vs `GET /api/incidents?incident_id=`; Scorecard vs `/lab/results`; flow view paints; Cases handoff column |
+| `e2e/ui.spec.ts` | a tile per tenant + replica grid (one row per project) + status sentence; tile → its project outlined; mode toggle round-trip (verified via `GET /admin/mode`, restored); launcher offers exactly flood, whale, hog, memory, retry_storm; attack launch → running → Stop (verified via `/lab/status`); Pool page: create a project, an oversized floor refused, add a tenant, key shown once and handed to the lab (verified via `/lab/personas`), then the tenant (×) and the project (Delete → Yes) deleted from the page; timeline → Case File vs `GET /api/incidents?incident_id=`; Scorecard vs `/lab/results`; flow view paints; Cases handoff column |
 | `e2e/live.spec.ts` | `@live`, host only: the real detection loop end to end |
 
 Every UI test fails on an uncaught page error or a console error (`e2e/fixtures.ts`); only failed loads to an optional service that is known to be down are tolerated. Writes are skipped while the lab reports a scenario run in progress, and anything changed is restored.

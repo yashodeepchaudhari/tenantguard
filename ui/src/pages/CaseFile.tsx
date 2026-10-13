@@ -2,30 +2,25 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { LevelBadge } from '../components/LevelBadge.tsx'
 import { ReplicaGrid } from '../components/ReplicaGrid.tsx'
-import { CASE_STEPS, reportSections, stepTime, summarizeCase, type CaseSummary, type ReportSection, type SplitRound } from '../lib/case.ts'
+import { caseSteps, reportSections, stepTime, summarizeCase, type CaseSummary, type ReportSection, type SplitRound } from '../lib/case.ts'
 import { clock } from '../lib/format.ts'
 import { useBackend, useLive, useNow } from '../lib/liveContext.ts'
 import { STATUS_HEX } from '../lib/status.ts'
 import { pendingActions, useHandoff } from '../lib/useHandoff.ts'
-import type { CaseView, IncidentEvent, OverridesView, Stage } from '../types.ts'
+import type { CaseView, IncidentEvent, OverridesView } from '../types.ts'
 
-const STEP_LABEL: Partial<Record<Stage, string>> = {
-  detected: 'Detected',
-  rescued: 'Rescued',
-  named: 'Named',
-  proving: 'Proving',
-  verdict: 'Verdict',
-  resolved: 'Resolved',
-  explained: 'Explained',
-}
+/** The split rounds have their own panel (SplitPanel); the report shows the rest. */
+const withoutRounds = (r: Record<string, unknown>) => Object.fromEntries(Object.entries(r).filter(([k]) => k !== 'rounds'))
+
+const COLS: Record<number, string> = { 3: 'grid-cols-3', 4: 'grid-cols-4', 7: 'grid-cols-7' }
 
 const key = (e: IncidentEvent) => `${e.stage}|${e.ts}|${e.level ?? ''}`
 
 function Stepper({ c }: { c: CaseSummary }) {
   const t0 = c.openedAt ?? 0
   return (
-    <ol className="grid grid-cols-7 gap-2" data-testid="case-steps">
-      {CASE_STEPS.map((s, i) => {
+    <ol className={`grid gap-2 ${COLS[caseSteps(c.kind).length] ?? 'grid-cols-7'}`} data-testid="case-steps" data-kind={c.kind}>
+      {caseSteps(c.kind).map(({ stage: s, label }, i) => {
         const hit = stepTime(c, s)
         const done = hit !== null
         const ts = hit?.ts ?? 0
@@ -37,7 +32,7 @@ function Stepper({ c }: { c: CaseSummary }) {
           >
             <div className="text-xs font-semibold uppercase tracking-wider text-ink-300">step {i + 1}</div>
             <div className={`text-lg font-bold ${done ? 'text-ink-100' : ''}`}>
-              {STEP_LABEL[s]}
+              {label}
               {hit && hit.via !== s && <span className="ml-1 text-sm font-normal text-ink-300">({hit.via})</span>}
             </div>
             <div className="font-mono text-sm">{done ? `${clock(ts)} · +${(ts - t0).toFixed(1)} s` : 'not reached'}</div>
@@ -106,7 +101,9 @@ function Report({ sections }: { sections: ReportSection[] }) {
 
 /** What the template narrator would say when the brain has not written a report yet. */
 function Placeholder({ c, name }: { c: CaseSummary; name: string }) {
-  const steps = CASE_STEPS.filter((s) => c.reached[s] !== undefined).map((s) => STEP_LABEL[s]?.toLowerCase())
+  const steps = caseSteps(c.kind)
+    .filter((s) => c.reached[s.stage] !== undefined)
+    .map((s) => s.label.toLowerCase())
   return (
     <div className="space-y-2 text-lg leading-snug text-ink-300" data-testid="report-placeholder">
       <p>
@@ -350,7 +347,7 @@ export function CaseFile() {
 
         <section className="panel col-span-12 md:col-span-6 xl:col-span-4">
           <div className="panel-title">Report</div>
-          {c.report ? <Report sections={reportSections(c.report)} /> : <Placeholder c={c} name={name} />}
+          {c.report ? <Report sections={reportSections(withoutRounds(c.report))} /> : <Placeholder c={c} name={name} />}
           <div className="mt-4 border-t border-ink-700 pt-3">
             <div className="panel-title">Handoff · Web PS3 case</div>
             <HandoffPanel incidentId={c.id} />

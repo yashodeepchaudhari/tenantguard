@@ -27,6 +27,8 @@ import type {
   TenantAdminView,
   TenantCreate,
   TenantCreated,
+  LabTenantJoin,
+  LabTenantJoined,
   TenantView,
   Tier,
 } from '../types.ts'
@@ -279,6 +281,16 @@ export class MockPlatform {
     if (!this.tenants.has(id)) throw new SimError(404, `unknown tenant ${id}`)
     this.tenantDefs = this.tenantDefs.filter((t) => t.id !== id)
     this.tenants.delete(id)
+  }
+
+  /** The simulated lab already drives every tenant the sim knows; this only checks the tenant and reports a rate. */
+  labAddTenant(j: LabTenantJoin): LabTenantJoined {
+    if (!this.tenants.has(j.tenant)) throw new SimError(404, `unknown tenant ${j.tenant}`)
+    return { tenant: j.tenant, rps: 1, effective_rps: 1, calm_running: true }
+  }
+
+  labRemoveTenant(id: string): void {
+    if (this.tenants.has(id)) throw new SimError(409, `tenant ${id} still exists in the platform`)
   }
 
   // ---------------- gateway /admin ----------------

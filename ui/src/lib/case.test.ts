@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { IncidentEvent } from '../types.ts'
-import { caseIndex, reportSections, splitRounds, stepTime, summarizeCase } from './case.ts'
+import { caseIndex, caseSteps, reportSections, splitRounds, stepTime, summarizeCase } from './case.ts'
 
 const ev = (o: Partial<IncidentEvent>): IncidentEvent => ({
   type: 'incident',
@@ -87,5 +87,25 @@ describe('case file', () => {
     expect(s.map((x) => x.kind)).toEqual(['table', 'text', 'list', 'table'])
     expect(s[3]).toMatchObject({ title: 'Numbers', rows: [['Victim p95 before ms', '240'], ['Victim p95 after ms', '31']] })
     expect(reportSections({ unattributed_ms_per_s: { 'tg-free-2': 590, K: 0.1 } })[0]).toMatchObject({ title: 'Unattributed ms per s', rows: [['tg-free-2', '590'], ['K', '0.10']] })
+  })
+})
+
+describe('case kinds', () => {
+  it('tells a tenant case, a hash split and a host-wide slowdown apart, each with its own steps', () => {
+    expect(summarizeCase('inc-1', [ev({ tenant: 'K' })]).kind).toBe('tenant')
+    const split = summarizeCase('srv-1-3', [
+      ev({ incident_id: 'srv-1-3', stage: 'detected', report: { project: 'health', suspects: ['A', 'D'] } }),
+      ev({ incident_id: 'srv-1-3', stage: 'proving', ts: 9, report: { project: 'health', round: 1, kept: ['D'] } }),
+    ])
+    expect(split.kind).toBe('split')
+    expect(caseSteps(split.kind).map((s) => s.label)).toEqual(['Hidden CPU', 'Split rounds', 'Verdict', 'Closed'])
+    const host = summarizeCase('srv-1-1', [
+      ev({ incident_id: 'srv-1-1', stage: 'detected', report: { projects: ['health', 'media'] } }),
+      ev({ incident_id: 'srv-1-1', stage: 'verdict', report: { verdict: 'host_fault', projects: ['health', 'media'] } }),
+      ev({ incident_id: 'srv-1-1', stage: 'closed', ts: 40 }),
+    ])
+    expect(host.kind).toBe('host')
+    expect(host.verdict).toBe('host_fault')
+    expect(caseSteps(host.kind).every((s) => stepTime(host, s.stage) !== null)).toBe(true)   // a finished story
   })
 })

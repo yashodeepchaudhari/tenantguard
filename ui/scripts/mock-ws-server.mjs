@@ -152,6 +152,9 @@ serve('gateway', PORTS.gateway, [
 // ---- lab ----
 serve('lab', PORTS.lab, [
   ['GET', /^\/lab\/status$/, () => sim.labStatus(now())],
+  ['POST', /^\/lab\/tenants$/, (_m, b) => sim.labAddTenant(b)],
+  ['GET', /^\/lab\/personas$/, () => ({ personas: sim.tenantsAdmin().map((t) => ({ tenant: t.id })) })],
+  ['DELETE', /^\/lab\/tenants\/([^/]+)$/, (m) => (sim.labRemoveTenant(decodeURIComponent(m[1])), { ok: true })],
   ['POST', /^\/lab\/attack$/, (_m, b) => sim.startAttack(b, now())],
   ['DELETE', /^\/lab\/attack\/([^/]+)$/, (m) => sim.stopAttack(decodeURIComponent(m[1]), now())],
   ['GET', /^\/lab\/results$/, () => RESULTS_FIXTURE],

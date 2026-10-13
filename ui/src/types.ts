@@ -338,6 +338,22 @@ export interface TenantCreated {
   api_key: string // shown once; only its sha256 is stored
 }
 
+/** lab POST /lab/tenants: a tenant created at runtime, handed to the lab with its key so it gets calm traffic */
+export interface LabTenantJoin {
+  tenant: string
+  api_key: string
+  name: string
+  project: string
+  tier: Tier
+}
+
+export interface LabTenantJoined {
+  tenant: string
+  rps: number // persona rate (median of the configured personas of the tier)
+  effective_rps: number // rps × the lab's rate_scale
+  calm_running: boolean
+}
+
 export interface ReplicaView {
   id: string
   project: string

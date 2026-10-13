@@ -17,6 +17,7 @@ Branch `v2/main`. Each change below was found while building against the simulat
 | D10 | Separate `publisher`, `collect`, `policy`, `docker_adapter` modules | `ControlLoop.snapshot` + `Runtime.push_snapshot`; `Brain.replica_usage` / `demand_signals`; the ladder and limits in `Brain`; `backends.py` | Fewer modules, each with one owner (catalog in `04_FUNCTIONS.md`). |
 | D11 | Heartbeat for fail-static | The snapshot's arrival time | One message instead of two. |
 | D12 | `off` mode = one shared project | `off` = unlimited replicas with equal shares, a static fleet, gateway FIFO; `industry` = static floor split evenly, no lending | Same tenants and projects in all three modes, so the scorecard compares like with like. |
+| D13 | Each finding (hash split, host-wide slowdown) as one-event `srv-` incidents | One case per finding: a split is `detected` (hidden CPU, who is pinned) → `proving` per round → `verdict` (culprit or nobody) → `closed`; a host-wide slowdown is `detected` + `verdict` (host_fault) → `closed` when it clears. The culprit's own tenant case is opened by the ladder only if its score crosses `warn` | On the local stack every round and every verdict was its own case, so the Case File showed seven steps with one reached, and those cases never closed. |
 
 ## 2. Simulated scenarios (simulator, not measurements)
 | Scenario | Outcome in the simulator | Test |
@@ -52,10 +53,10 @@ These numbers come from the simulator's latency model (`sim.py`), not from the h
 | brain | 87 passed |
 | worker | 55 passed, 1 skipped |
 | handoff | 47 passed |
-| lab | 33 passed |
+| lab | 35 passed |
 | tools | 16 passed |
 | narrator | 9 passed |
-| UI unit (vitest) | 81 passed (plus tsc, eslint, vite build) |
+| UI unit (vitest) | 82 passed (plus tsc, eslint, vite build) |
 | UI end-to-end (Playwright), mock stack | 28 passed |
 | UI end-to-end (Playwright), real local stack | 28 passed (brain, gateway, replicas as processes, lab, handoff + mock web, narrator) |
 
@@ -78,13 +79,14 @@ cd <repo>
 PYTHONPATH=<repo>/common TENANTGUARD_ROOT=<repo> python brain/tools/local_stack.py   # Ctrl+C stops everything
 python brain/tools/local_stack.py --stop                                             # stop one started in the background
 ```
-Then open http://127.0.0.1:5180. Logs, the registry and the handoff state go to `brain/.stack-logs/` (git-ignored).
+Then open http://127.0.0.1:5180. Logs, the registry and the handoff state go to `brain/.stack-logs/` (git-ignored). The registry survives restarts; tenants added on the Pool page get lab traffic because the page hands their key to the lab (in memory only, so after a restart remove such a tenant and add it again).
 
 Observed on the laptop (single runs, not scorecard measurements; laptop timing, not the host):
 - calm traffic: one warm replica per project, 12 tenants normal;
 - whale on K: only K got an incident and was throttled (about 11 s after the attack started); mobility borrowed idle cores and scaled to 2 replicas, then back to 1; the other projects' caps did not change;
 - incident → handoff case pushed to the mock Web app → narrator report, end to end;
 - while a browser test run loaded the laptop (about 550 MB free), mobility's tenants slowed together and G reached `warn` for 15 s (no action, closed). A shared-host slowdown should be a no-blame contention finding; on the laptop it is not. Check this on the host before trusting `warn` on small, uneven projects.
+- in calm traffic the hash split found a "culprit" several times (B, D, E, L): replicas run as plain processes here, so their CPU includes runtime noise that no request explains. The ladder did not act on it (no score reached `warn`). Measure the unexplained CPU of a calm replica on the host (cgroups) before trusting a split verdict; until then, treat these verdicts as laptop noise.
 
 ## 6. Before v2 can replace v1 (07 §5 gate)
 1. Run the V4 host checks: does a pool slice exist, do CpuShares split 3:1, and what are the container start p50/p95. Then replace the estimates in `tenantguard.yaml`.

@@ -138,6 +138,7 @@ const draftOf = (p: ProjectView): Omit<ProjectDraft, 'id'> => ({
 function ProjectRow({ p, i }: { p: ProjectView; i: number }) {
   const backend = useBackend()
   const [edit, setEdit] = useState<Omit<ProjectDraft, 'id'> | null>(null)
+  const [confirming, setConfirming] = useState(false)
   const { busy, msg, run } = useAction()
 
   const save = () =>
@@ -153,7 +154,13 @@ function ProjectRow({ p, i }: { p: ProjectView; i: number }) {
       return `${p.id} updated`
     })
   const remove = () => run(async () => (await backend.deleteProject(p.id), `${p.id} deleted`))
-  const dropTenant = (t: string) => run(async () => (await backend.removeTenant(t), `tenant ${t} removed`))
+  const dropTenant = (t: string) =>
+    run(async () => {
+      await backend.removeTenant(t)
+      // stop its lab traffic too (a configured tenant or an unreachable lab is fine: nothing to stop)
+      await backend.labRemoveTenant(t).catch(() => undefined)
+      return `tenant ${t} removed`
+    })
 
   const cell = 'px-2 py-2 align-top'
   return (
@@ -235,17 +242,28 @@ function ProjectRow({ p, i }: { p: ProjectView; i: number }) {
                 Cancel
               </button>
             </>
+          ) : confirming ? (
+            <>
+              <span className="self-center text-sm text-ink-100">Delete {p.id}?</span>
+              <button className="btn-ghost px-2 py-0.5 text-bad" disabled={busy} onClick={() => (setConfirming(false), remove())}>
+                Yes, delete
+              </button>
+              <button className="btn-ghost px-2 py-0.5" onClick={() => setConfirming(false)}>
+                No
+              </button>
+            </>
           ) : (
             <>
               <button className="btn-ghost px-2 py-0.5" onClick={() => setEdit(draftOf(p))} data-testid={`edit-${p.id}`}>
                 Edit
               </button>
-              <button className="btn-ghost px-2 py-0.5" disabled={busy || p.tenants.length > 0} title={p.tenants.length ? 'remove its tenants first' : 'delete project'} onClick={remove}>
+              <button className="btn-ghost px-2 py-0.5" disabled={busy || p.tenants.length > 0} onClick={() => setConfirming(true)}>
                 Delete
               </button>
             </>
           )}
         </div>
+        {!edit && !confirming && p.tenants.length > 0 && <div className="mt-0.5 text-xs text-ink-500">to delete: remove its tenants (×) first</div>}
         <Note msg={msg} />
       </td>
     </tr>
@@ -339,6 +357,7 @@ function NewTenant({ projects }: { projects: ProjectView[] }) {
   const backend = useBackend()
   const [d, setD] = useState({ project: projects[0]?.id ?? '', id: '', name: '', revenue: '' })
   const [created, setCreated] = useState<TenantCreated | null>(null)
+  const [traffic, setTraffic] = useState<string>('')
   const { busy, msg, run } = useAction()
   const add = () =>
     run(async () => {
@@ -347,6 +366,13 @@ function NewTenant({ projects }: { projects: ProjectView[] }) {
       const c = await backend.addTenant(d.project, r.req)
       setCreated(c)
       setD({ ...d, id: '', name: '', revenue: '' })
+      // the key is shown only now, so hand it to the lab at once: the new tenant gets calm traffic
+      const tier = projects.find((p) => p.id === c.project)?.tier ?? 'free'
+      setTraffic('handing the key to the lab…')
+      backend
+        .labAddTenant({ tenant: c.tenant, api_key: c.api_key, name: r.req.name, project: c.project, tier })
+        .then((j) => setTraffic(`Lab: calm traffic for ${j.tenant} at ${j.effective_rps} req/s${j.calm_running ? '' : ' (starts with calm traffic)'}`))
+        .catch((e: unknown) => setTraffic(`Lab did not take the key (${e instanceof Error ? e.message : String(e)}): ${c.tenant} gets no lab traffic; send requests with this key yourself`))
       return `tenant ${c.tenant} added to ${c.project}`
     })
   return (
@@ -383,6 +409,11 @@ function NewTenant({ projects }: { projects: ProjectView[] }) {
         <div className="rounded-lg border-2 border-accent bg-accent/10 px-3 py-2" data-testid="api-key">
           <div className="text-sm text-ink-300">API key for {created.tenant} (shown once; only its SHA-256 is stored):</div>
           <code className="select-all break-all text-lg text-accent">{created.api_key}</code>
+          {traffic && (
+            <div className="text-sm text-ink-300" data-testid="lab-traffic">
+              {traffic}
+            </div>
+          )}
           <button className="btn-ghost ml-3 px-2 py-0.5 text-sm" onClick={() => setCreated(null)}>
             Done
           </button>

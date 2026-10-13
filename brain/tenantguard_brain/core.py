@@ -326,19 +326,32 @@ class Brain:
                    now: float) -> List[IncidentEvent]:
         """Turn a control-loop finding into incident events. The ladder still decides any throttling: a
         split-test culprit is charged the unexplained CPU, which raises its score."""
-        if kind == "external_contention":
-            inc = self.book.open_server(now)
-            return [self.book.emit(inc, now, "detected", detail=detail, report={"verdict": "host_fault", **evidence})]
-        if tenant is None or tenant not in self.tenants:
-            inc = self.book.open_server(now)
-            verdict = "mitigated_no_blame" if kind == "split_aborted" else None
-            stage = "verdict" if verdict else "proving"
-            return [self.book.emit(inc, now, stage, detail=detail, report={"project": project, "verdict": verdict,
-                                                                            **evidence})]
-        inc = self.book.open_for(tenant, now)
-        return [self.book.emit(inc, now, "verdict", detail=detail, confidence=1.0,
-                               action=f"unexplained CPU of project {project} charged to {tenant}",
-                               report={"verdict": "costly_pattern", "project": project, **evidence})]
+        if kind in ("external_contention", "contention_cleared"):
+            inc = self.book.open_finding("contention", now)
+            if kind == "contention_cleared":
+                ev = self.book.emit(inc, now, "closed", detail=detail)
+                self.book.close(inc, now)
+                return [ev]
+            return [self.book.emit(inc, now, "detected", detail=detail, report=dict(evidence)),
+                    self.book.emit(inc, now, "verdict", action="nobody throttled", detail=detail,
+                                   report={"verdict": "host_fault", **evidence})]
+        inc = self.book.open_finding(f"split:{project}", now)
+        if kind == "split_started":
+            return [self.book.emit(inc, now, "detected", detail=detail, report={"project": project, **evidence})]
+        if kind == "split_round":
+            return [self.book.emit(inc, now, "proving", detail=detail, report={"project": project, **evidence})]
+        if tenant is None or tenant not in self.tenants:   # split_aborted, or the culprit left meanwhile
+            out = [self.book.emit(inc, now, "verdict", action="nobody throttled", detail=detail,
+                                  report={"project": project, "verdict": "mitigated_no_blame", **evidence})]
+        else:
+            out = [self.book.emit(inc, now, "verdict", detail=detail, confidence=1.0, tenant=tenant,
+                                  action=f"unexplained CPU of project {project} charged to {tenant}",
+                                  report={"verdict": "costly_pattern", "project": project, **evidence})]
+        out.append(self.book.emit(inc, now, "closed", detail="Split test over: pins removed. "
+                                  + (f"The ladder now judges {tenant} with the hidden CPU counted as its own."
+                                     if out[0].tenant else "Nobody was blamed.")))
+        self.book.close(inc, now)
+        return out
 
     # ------------------------------------------------------------------ operator decisions
     def operator(self, cmd: OperatorCmd, now: float) -> List[IncidentEvent]:

@@ -7,7 +7,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import httpx
 
@@ -17,7 +17,7 @@ from .attacks import RUNNERS, WAVE2, AttackCtx
 from .engine import Engine
 from .isolation import ProcessAttack
 from .scenario import Marks, ScenarioDriver, Timeline, compute_result, run_timeline
-from .settings import LabConfig
+from .settings import LabConfig, Persona
 from .stats import Recorder, summarize
 
 log = logging.getLogger("tenantguard_lab.core")
@@ -70,6 +70,7 @@ class Lab(ScenarioDriver):
         self.current_run: Optional[RunInfo] = None
         self._run_task: Optional[asyncio.Task] = None
         self._admin = httpx.AsyncClient(timeout=5.0, transport=transport)
+        self.added: Set[str] = set()
 
     # ---------- calm ----------
     def start_calm(self) -> bool:
@@ -77,6 +78,24 @@ class Lab(ScenarioDriver):
 
     async def stop_calm(self) -> bool:
         return await self.engine.stop_calm()
+
+    # ---------- tenants added at runtime (the admin API created them; their key comes with the call) ----------
+    def add_tenant(self, persona: Persona) -> None:
+        if persona.id in self.cfg.personas and persona.id not in self.added:
+            raise LabError(409, f"tenant {persona.id!r} is configured in tenantguard.yaml")
+        self.cfg.personas[persona.id] = persona
+        self.added.add(persona.id)
+        self.engine.start_tenant(persona.id)
+
+    async def remove_tenant(self, tid: str) -> None:
+        if tid not in self.added:
+            raise LabError(404 if tid not in self.cfg.personas else 409,
+                           f"tenant {tid!r} was not added at runtime" if tid in self.cfg.personas else f"unknown tenant {tid!r}")
+        for a in [a for a in self.attacks.values() if a.status.tenant == tid and a.status.state == "running"]:
+            await self.stop_attack(a.status.attack_id)
+        await self.engine.stop_tenant(tid)
+        del self.cfg.personas[tid]
+        self.added.discard(tid)
 
     # ---------- attacks ----------
     def _validate(self, req: AttackReq) -> None:

@@ -77,6 +77,8 @@ export function createMockBackend(opts: { script?: boolean } = {}): Backend {
     addTenant: (project, req) => call(() => sim.addTenant(project, req)),
     removeTenant: (id) => call(() => sim.removeTenant(id)),
     labStatus: () => call(() => sim.labStatus(now())),
+    labAddTenant: (j) => call(() => sim.labAddTenant(j)),
+    labRemoveTenant: (id) => call(() => sim.labRemoveTenant(id)),
     startAttack: (req) => call(() => sim.startAttack(req, now())),
     stopAttack: (id) => call(() => sim.stopAttack(id, now())),
   }

@@ -1,4 +1,4 @@
-import type { KeyboardEvent } from 'react'
+import type { CSSProperties, KeyboardEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { config } from '../config.ts'
 import { ms, rps } from '../lib/format.ts'
@@ -103,8 +103,14 @@ export function TenantTiles({
   selected?: string | null
   onSelect?: (id: string) => void
 }) {
+  // wide screens: two rows whatever the tenant count (three above 16), so the Control Room stays on one screen
+  const cols = Math.max(6, Math.ceil(tenants.length / (tenants.length > 16 ? 3 : 2)))
   return (
-    <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-6">
+    <div
+      className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:[grid-template-columns:repeat(var(--tile-cols),minmax(0,1fr))]"
+      style={{ '--tile-cols': cols } as CSSProperties}
+      data-testid="tiles"
+    >
       {tenants.map((t) => (
         <Tile key={t.tenant} t={t} latest={latest?.get(t.tenant)} selected={selected === t.tenant} onSelect={onSelect} />
       ))}

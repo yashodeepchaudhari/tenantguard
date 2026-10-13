@@ -4,11 +4,52 @@ import type { IncidentEvent, Level, Stage, Suspect } from '../types.ts'
 /** The story the Case File tells, in order. level_change / closed are shown in the log, not as steps. */
 export const CASE_STEPS: Stage[] = ['detected', 'rescued', 'named', 'proving', 'verdict', 'resolved', 'explained']
 
+/** tenant: the ladder's case about one tenant; split: a hash split test of one project (hidden CPU);
+ *  host: a host-wide slowdown nobody is blamed for. The brain gives the last two `srv-` ids. */
+export type CaseKind = 'tenant' | 'split' | 'host'
+
+export interface CaseStep {
+  stage: Stage
+  label: string
+}
+
+const STEPS: Record<CaseKind, CaseStep[]> = {
+  tenant: [
+    { stage: 'detected', label: 'Detected' },
+    { stage: 'rescued', label: 'Rescued' },
+    { stage: 'named', label: 'Named' },
+    { stage: 'proving', label: 'Proving' },
+    { stage: 'verdict', label: 'Verdict' },
+    { stage: 'resolved', label: 'Resolved' },
+    { stage: 'explained', label: 'Explained' },
+  ],
+  split: [
+    { stage: 'detected', label: 'Hidden CPU' },
+    { stage: 'proving', label: 'Split rounds' },
+    { stage: 'verdict', label: 'Verdict' },
+    { stage: 'resolved', label: 'Closed' },
+  ],
+  host: [
+    { stage: 'detected', label: 'Slowdown' },
+    { stage: 'verdict', label: 'No blame' },
+    { stage: 'resolved', label: 'Recovered' },
+  ],
+}
+
+export const caseSteps = (kind: CaseKind): CaseStep[] => STEPS[kind]
+
+export function caseKind(id: string, events: IncidentEvent[]): CaseKind {
+  if (!id.startsWith('srv-')) return 'tenant'
+  const host = events.some((e) => e.report?.verdict === 'host_fault' || Array.isArray(e.report?.projects))
+  return host ? 'host' : 'split'
+}
+
 /** Stages whose suspect list is the investigation's answer (later stages may carry a post-recovery score). */
 const NAMING = new Set<Stage>(['detected', 'named', 'proving', 'verdict'])
 
 export interface CaseSummary {
   id: string
+  kind: CaseKind
   tenant: string | null
   openedAt: number | null
   lastAt: number | null
@@ -70,6 +111,7 @@ export function summarizeCase(id: string, events: IncidentEvent[]): CaseSummary 
       if (NAMING.has(e.stage)) namedSuspects = e.suspects
     }
     if (e.verdict) verdict = e.verdict
+    else if (typeof e.report?.verdict === 'string') verdict = e.report.verdict // findings carry it in the report
     if (e.action) action = e.action
     if (e.detail) detail = e.detail
     if (e.report && typeof e.report === 'object') {
@@ -83,6 +125,7 @@ export function summarizeCase(id: string, events: IncidentEvent[]): CaseSummary 
   if (!tenant && suspects.length) tenant = [...suspects].sort((a, b) => b.confidence - a.confidence)[0].tenant
   return {
     id,
+    kind: caseKind(id, evs),
     tenant,
     openedAt: evs[0]?.ts ?? null,
     lastAt: evs[evs.length - 1]?.ts ?? null,

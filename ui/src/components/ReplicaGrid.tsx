@@ -35,13 +35,13 @@ function Replica({ r, s, pinned }: { r: ReplicaView; s: ServerView | undefined; 
             pin {pinned.join(' ')}
           </span>
         )}
-        <span className="ml-auto whitespace-nowrap text-[11px] text-ink-300">{s ? `${s.cpu_pct.toFixed(0)} %` : '–'}</span>
+        <span className="ml-auto truncate whitespace-nowrap text-[10px] text-ink-300">
+          {cores(r.nano_cpus)} · {r.mem_mb} MB
+        </span>
+        <span className="shrink-0 whitespace-nowrap text-[11px] font-semibold text-ink-100">{s ? `${s.cpu_pct.toFixed(0)} %` : '–'}</span>
       </div>
       <div className="h-1 rounded bg-ink-800">
         <div className={`h-full rounded ${BAR[st]}`} style={{ width: `${Math.min(100, s?.cpu_pct ?? 0)}%` }} />
-      </div>
-      <div className="whitespace-nowrap text-[10px] leading-tight text-ink-300">
-        {cores(r.nano_cpus)} · {r.mem_mb} MB
       </div>
     </div>
   )
@@ -54,7 +54,7 @@ function ProjectRow({ p, servers, lit, pins }: { p: ProjectView; servers: Map<st
       data-testid={`project-${p.id}`}
       data-lit={lit ? '1' : '0'}
       data-state={p.state}
-      className={`flex min-h-0 min-w-0 flex-1 items-stretch gap-2 rounded-md px-1 py-px ${lit ? 'outline outline-[3px] outline-offset-0 outline-accent' : ''}`}
+      className={`flex min-h-[2.1rem] min-w-0 flex-1 items-stretch gap-2 rounded-md px-1 py-px ${lit ? 'outline outline-[3px] outline-offset-0 outline-accent' : ''}`}
     >
       <div
         className="flex w-36 shrink-0 flex-col justify-center gap-0.5"
@@ -110,7 +110,7 @@ export function ReplicaGrid({ pool, servers, highlight, highlightLabel, pins = {
         <div className="panel-title">{title}</div>
         {highlightLabel && <span className="truncate text-sm font-semibold text-accent">{highlightLabel}</span>}
       </div>
-      <div className="mt-1 flex min-h-0 flex-1 flex-col gap-1 overflow-hidden" data-testid="replica-grid">
+      <div className="mt-1 flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overflow-x-hidden" data-testid="replica-grid">
         {projects.length ? (
           projects.map((p) => <ProjectRow key={p.id} p={p} servers={by} lit={highlight === p.id} pins={pins} />)
         ) : (

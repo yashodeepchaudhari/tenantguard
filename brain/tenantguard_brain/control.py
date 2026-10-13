@@ -43,7 +43,8 @@ class Observation:
 
 @dataclass
 class Finding:
-    kind: str                  # split_round | unattributed_work | split_aborted | external_contention
+    kind: str                  # split_started | split_round | unattributed_work | split_aborted |
+                               # external_contention | contention_cleared
     project: Optional[str]
     tenant: Optional[str]
     detail: str
@@ -236,7 +237,12 @@ class ControlLoop:
                 self.split = det.Split(p, sorted(active), ("", ""), started_at=obs.now)
                 self.split_waiting_since = obs.now
                 self.unexplained_since.pop(p, None)
-                return out
+                return out + [Finding("split_started", p, None,
+                                      f"Project {p}: {un:.0f} ms/s of CPU that no tenant's requests explain, for "
+                                      f"{self.cfg.detect.unattributed_hold_s:.0f} s, while its tenants are slowed. "
+                                      f"Hash split test: {', '.join(sorted(active))} are pinned to two replicas, "
+                                      "half each, to see which half the hidden CPU follows.",
+                                      {"suspects": sorted(active), "unattributed_ms_per_s": round(un, 1)})]
         return out
 
     def _advance_split(self, obs: Observation) -> List[Finding]:
@@ -274,8 +280,10 @@ class ControlLoop:
                 slow[p] = sum(sd) / len(sd) >= self.cfg.detect.contention_ratio - 1.0
                 over[p] = self.used.get(p, 0.0) > 1.05 * self.allocs[p].total + 0.05
         if not det.contention(slow, over):
+            was_open = self.contention_open
             self.contention_since, self.contention_open = None, False
-            return []
+            return [Finding("contention_cleared", None, None, "The host-wide slowdown is over: projects are back to "
+                            "their calm latency. Nobody was blamed or throttled.", {})] if was_open else []
         self.contention_since = self.contention_since or obs.now
         if self.contention_open or obs.now - self.contention_since < self.cfg.detect.contention_open_s:
             return []

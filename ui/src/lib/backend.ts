@@ -19,6 +19,8 @@ import type {
   TenantAdminView,
   TenantCreate,
   TenantCreated,
+  LabTenantJoin,
+  LabTenantJoined,
 } from '../types.ts'
 
 export type ConnState = 'connecting' | 'open' | 'closed'
@@ -48,6 +50,9 @@ export interface Backend {
   deleteProject(id: string): Promise<PoolView>
   addTenant(project: string, req: TenantCreate): Promise<TenantCreated>
   removeTenant(id: string): Promise<void>
+  /** give a new tenant's key to the lab so it sends calm traffic for it */
+  labAddTenant(j: LabTenantJoin): Promise<LabTenantJoined>
+  labRemoveTenant(id: string): Promise<void>
   labStatus(): Promise<LabStatus>
   startAttack(req: AttackReq): Promise<AttackStatus>
   stopAttack(id: string): Promise<AttackStatus>
@@ -218,6 +223,10 @@ export const realBackend: Backend = {
     await http<unknown>(config.brainUrl, `/admin/tenants/${encodeURIComponent(id)}`, admin({ method: 'DELETE' }))
   },
   labStatus: () => http<LabStatus>(config.labUrl, '/lab/status'),
+  labAddTenant: (j) => http<LabTenantJoined>(config.labUrl, '/lab/tenants', json('POST', j)),
+  labRemoveTenant: async (id) => {
+    await http<unknown>(config.labUrl, `/lab/tenants/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  },
   startAttack: (req) => http<AttackStatus>(config.labUrl, '/lab/attack', json('POST', req)),
   stopAttack: (id) => http<AttackStatus>(config.labUrl, `/lab/attack/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 }

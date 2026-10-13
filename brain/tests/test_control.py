@@ -63,6 +63,8 @@ def test_hidden_work_is_found_by_the_hash_split_and_charged(cfg):
     assert {e.tenant for e in ev if e.tenant} == {"F"}                  # nobody else blamed
     assert any(c.tenant == "F" for s in h.snapshots for c in s.limits)  # the ladder acted on the evidence
     assert any(s.pins for s in h.snapshots) and h.snapshots[-1].pins == {}   # pins only during the test
+    case = [e for e in ev if e.incident_id == verdict[0].incident_id]     # the whole split is one case
+    assert [e.stage for e in case] == ["detected", "proving", "proving", "verdict", "closed"]
 
 
 def test_a_slow_host_is_reported_without_blame(cfg):
@@ -71,6 +73,8 @@ def test_a_slow_host_is_reported_without_blame(cfg):
     contention = [e for e in ev if e.report and e.report.get("verdict") == "host_fault"]
     assert len(contention) == 1 and contention[0].tenant is None and 33 <= contention[0].ts - T0 <= 37
     assert all(s.limits == [] for s in h.snapshots)                      # nobody throttled
+    case = [e for e in ev if e.incident_id == contention[0].incident_id]  # one case, closed when the host recovers
+    assert [e.stage for e in case] == ["detected", "verdict", "closed"] and case[-1].ts - T0 >= 60
 
 
 def test_a_new_tenant_replaces_its_projects_replicas(cfg):

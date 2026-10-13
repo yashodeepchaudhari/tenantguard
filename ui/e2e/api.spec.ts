@@ -33,11 +33,11 @@ test.describe('gateway', () => {
     expect(Number(cpu)).toBeGreaterThanOrEqual(0)
   })
 
-  test('admin tenants list has 12 tenants, each in one project, with tier quotas', async ({ request }) => {
+  test('admin tenants list has the 12 seeded tenants (plus any added), each in one project, with tier quotas', async ({ request }) => {
     const r = await request.get(`${URLS.gateway}/admin/tenants`, { headers: TOKEN_HEADER })
     expect(r.status()).toBe(200)
     const list = await r.json()
-    expect(list).toHaveLength(12)
+    expect((list as { id: string }[]).map((t) => t.id)).toEqual(expect.arrayContaining('ABCDEFGHIJKL'.split('')))
     for (const t of list) {
       expect(typeof t.project).toBe('string')
       expect(Array.isArray(t.replicas)).toBe(true)
@@ -56,7 +56,7 @@ test.describe('brain', () => {
     expect(s.type).toBe('state')
     expect(isNum(s.ts)).toBe(true)
     expect(MODES).toContain(s.mode)
-    expect(s.tenants).toHaveLength(12)
+    expect((s.tenants as { tenant: string }[]).map((t) => t.tenant)).toEqual(expect.arrayContaining('ABCDEFGHIJKL'.split('')))
     for (const t of s.tenants) {
       for (const k of ['p95_ms', 'rps', 'rejected_rps', 'cpu_share', 'noisy_score', 'noisy_norm', 'factor']) expect(isNum(t[k]), `${t.tenant}.${k}`).toBe(true)
       expect(LEVELS).toContain(t.level)

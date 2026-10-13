@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-from tenantguard_common.config import load_settings, load_tenants
+from tenantguard_common.config import load_settings, load_tenants, tier_quota
 from tenantguard_common.contracts import TenantConfig
 
 LAB_DIR = Path(__file__).resolve().parents[1]
@@ -52,6 +52,8 @@ class LabConfig:
     autostart: bool = True
     default_attacker: str = "K"
     target_fleet_util: float = 0.30
+    default_mix: Dict[str, float] = field(default_factory=dict)
+    quotas: Dict[str, Any] = field(default_factory=dict)    # tier -> Quota, for tenants added at runtime
 
     def persona(self, tenant: str) -> Persona:
         if tenant not in self.personas:
@@ -105,7 +107,19 @@ def load_config(personas_path: Optional[Path] = None) -> LabConfig:
         autostart=_env_bool("TENANTGUARD_LAB_AUTOSTART", bool(raw.get("autostart", True))),
         default_attacker=raw.get("default_attacker", "K"),
         target_fleet_util=float(raw.get("target_fleet_util", 0.30)),
+        default_mix=dict(default_mix),
+        quotas={tier: tier_quota(settings, tier) for tier in settings.get("tiers", {})},
     )
+
+
+def new_persona(cfg: LabConfig, tenant: str, name: str, project: str, tier: str, api_key: str,
+                rps: Optional[float] = None) -> Persona:
+    """A calm persona for a tenant added at runtime (its key comes from whoever created it).
+    Rate: the given rps, else the median of the configured personas of the same tier, else 5 rps."""
+    same = sorted(p.rps for p in cfg.personas.values() if p.tenant.tier == tier)
+    rate = rps if rps is not None else (same[len(same) // 2] if same else 5.0)
+    t = TenantConfig(id=tenant, name=name, project=project, tier=tier, api_key=api_key, quota=cfg.quotas[tier])
+    return Persona(tenant=t, rps=float(rate), mix=dict(cfg.default_mix), note="added at runtime")
 
 
 def estimated_fleet_cpu_ms_per_s(cfg: LabConfig) -> float:

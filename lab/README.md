@@ -38,6 +38,8 @@ Env:
 | `POST /lab/calm/start` `{rate_scale?}` / `POST /lab/calm/stop` | calm traffic on/off → `LabStatus` |
 | `GET /lab/metrics?window_s=10` | per tenant, client-side: p50/p95/p99, count/ok/429/503/err per second, split calm vs attack; attack counters; lab event-loop lag |
 | `GET /lab/personas` | personas with effective rates and the CPU estimate |
+| `POST /lab/tenants` `{tenant, api_key, name, project, tier, rps?}` | 201. A tenant created through the brain admin API: its key is shown once, so the creator (the Pool page) hands it over here. It gets a calm persona (rps = the median of the configured personas of its tier unless given) and can be attacked. Kept in memory only: after a lab restart, remove the tenant and add it again. 409 for a tenant configured in `tenantguard.yaml` |
+| `DELETE /lab/tenants/{id}` | 204. Stops its calm traffic and attacks. 409 for a configured tenant, 404 for an unknown one |
 | `POST /lab/run` (`RunReq`) | 202 + run view. Sets the gateway mode, then runs calm → attack → calm. 409 if a run is in progress |
 | `GET /lab/run/{id}`, `DELETE /lab/run` | run progress (phase, result) / cancel (attack stopped, calm restored) |
 | `GET /lab/results?scenario=&mode=` | every `RunResult` in `lab/results/`, newest first (the Scorecard reads this) |

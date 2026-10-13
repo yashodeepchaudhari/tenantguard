@@ -22,6 +22,7 @@ class Incident:
 class IncidentBook:
     def __init__(self, keep_events: int = 1000, keep_closed: int = 200):
         self.open: Dict[str, Incident] = {}             # tenant -> incident
+        self.findings: Dict[str, Incident] = {}         # finding key ("split:<project>", "contention") -> its case
         self.by_id: Dict[str, Incident] = {}
         self.log: Deque[IncidentEvent] = deque(maxlen=keep_events)
         self._closed: Deque[str] = deque()
@@ -38,20 +39,27 @@ class IncidentBook:
             self.by_id[iid] = inc
         return inc
 
-    def open_server(self, now: float) -> Incident:
-        """A fleet-level incident (slow servers), not tied to one tenant: id 'srv-...'."""
-        self._seq += 1
-        inc = Incident(incident_id=f"srv-{int(now)}-{self._seq}", tenant="", opened_at=now)
-        self.by_id[inc.incident_id] = inc
+    def open_finding(self, key: str, now: float) -> Incident:
+        """The open case of a control-loop finding (a hash split of one project, a host-wide slowdown), not
+        tied to one tenant: id 'srv-...'. Every event of the same finding goes into the same case until it closes."""
+        inc = self.findings.get(key)
+        if inc is None:
+            self._seq += 1
+            inc = Incident(incident_id=f"srv-{int(now)}-{self._seq}", tenant="", opened_at=now)
+            self.findings[key] = inc
+            self.by_id[inc.incident_id] = inc
         return inc
 
     def emit(self, inc: Incident, now: float, stage: str, *, level: Optional[str] = None,
              prev_level: Optional[str] = None, action: Optional[str] = None, detail: str = "",
-             confidence: Optional[float] = None, report: Optional[dict] = None) -> IncidentEvent:
+             confidence: Optional[float] = None, report: Optional[dict] = None,
+             tenant: Optional[str] = None) -> IncidentEvent:
+        """`tenant` names the suspect of a finding case (which has no tenant of its own)."""
+        who = tenant or inc.tenant
         ev = IncidentEvent(
-            incident_id=inc.incident_id, stage=stage, ts=now, tenant=inc.tenant or None,
+            incident_id=inc.incident_id, stage=stage, ts=now, tenant=who or None,
             level=level, prev_level=prev_level, action=action, detail=detail, report=report,
-            suspects=[Suspect(tenant=inc.tenant, confidence=round(confidence, 3))] if confidence is not None else [],
+            suspects=[Suspect(tenant=who, confidence=round(confidence, 3))] if confidence is not None else [],
         )
         if level is not None:
             inc.level = level
@@ -63,6 +71,8 @@ class IncidentBook:
         inc.closed_at = now
         if self.open.get(inc.tenant) is inc:
             self.open.pop(inc.tenant, None)
+        for key in [k for k, v in self.findings.items() if v is inc]:
+            del self.findings[key]
         self._closed.append(inc.incident_id)
         while len(self._closed) > self._keep_closed:
             self.by_id.pop(self._closed.popleft(), None)

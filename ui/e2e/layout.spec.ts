@@ -79,7 +79,7 @@ for (const size of SIZES) {
       const tiles = await page.locator('[data-testid^="tile-"]').evaluateAll((els) =>
         els.map((el) => ({ id: el.getAttribute('data-testid')!.slice(5), badge: el.querySelector('span.uppercase.tracking-wide')?.textContent?.trim() ?? '' })),
       )
-      expect(tiles).toHaveLength(12)
+      expect(tiles.length).toBeGreaterThanOrEqual(12) // 12 seeded tenants, plus any added on the Pool page
       for (const t of tiles) {
         if (t.badge && t.badge.toLowerCase() !== 'normal') await expect(page.getByTestId(`why-${t.id}`), `tile ${t.id} (${t.badge}) explains why`).toBeVisible()
       }

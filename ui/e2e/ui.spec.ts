@@ -16,9 +16,12 @@ async function openControlRoom(page: Page) {
   await expect(page.getByTestId('tile-L')).toBeVisible({ timeout: 20_000 })
 }
 
-test('Control Room renders 12 tenant tiles, the replica grid by project and a status sentence', async ({ page, request }) => {
+test('Control Room renders a tile per tenant, the replica grid by project and a status sentence', async ({ page, request }) => {
   await openControlRoom(page)
-  await expect(page.locator('[data-testid^="tile-"]')).toHaveCount(12)
+  // 12 seeded tenants, plus any added on the Pool page
+  const tenants = ((await (await request.get(`${URLS.brain}/api/state`)).json()).tenants as unknown[]).length
+  expect(tenants).toBeGreaterThanOrEqual(12)
+  await expect(page.locator('[data-testid^="tile-"]')).toHaveCount(tenants)
   const projects = ((await (await request.get(`${URLS.brain}/api/pool`)).json()).projects as { id: string }[]).map((p) => p.id)
   await expect(page.locator('[data-testid^="project-"]')).toHaveCount(projects.length)
   await expect.poll(() => page.locator('[data-testid^="replica-tg-"][data-state="ready"]').count(), { timeout: 20_000 }).toBeGreaterThanOrEqual(projects.length)
@@ -86,7 +89,7 @@ test('attack launcher starts an attack, shows it running, and stops it', async (
   }
 })
 
-test('Pool page creates a project and a tenant through the brain, shows the key once, and cleans up', async ({ page, request, services }) => {
+test('Pool page creates a project and a tenant, hands the key to the lab, and deletes both from the page', async ({ page, request, services }) => {
   test.skip(!ALLOW_WRITES, WRITES_OFF)
   test.skip(!!services.labRun, `lab scenario run ${services.labRun} in progress: not changing the registry`)
   const pool = async () => (await (await request.get(`${URLS.brain}/api/pool`)).json()) as { projects: { id: string; tenants: string[]; replicas: unknown[] }[] }
@@ -117,6 +120,25 @@ test('Pool page creates a project and a tenant through the brain, shows the key 
     await nt.getByRole('button', { name: 'Add tenant' }).click()
     await expect(page.getByTestId('api-key')).toContainText('tk_')
     await expect.poll(async () => (await pool()).projects.find((p) => p.id === id)?.tenants).toEqual(['Q9'])
+    // the page hands the key to the lab at once, so the new tenant gets calm traffic
+    const labTenants = async () =>
+      ((await (await request.get(`${URLS.lab}/lab/personas`)).json()) as { personas: { tenant: string }[] }).personas.map((x) => x.tenant)
+    if (services.lab) {
+      await expect(page.getByTestId('lab-traffic')).toContainText('calm traffic for Q9')
+      expect(await labTenants()).toContain('Q9')
+    } else {
+      await expect(page.getByTestId('lab-traffic')).toContainText('Lab did not take the key')
+    }
+    // delete from the page: the tenant (×), then the project (Delete -> Yes, delete)
+    const row = page.getByTestId(`pool-row-${id}`)
+    await expect(row.getByRole('button', { name: 'Delete' })).toBeDisabled()
+    await row.getByRole('button', { name: 'remove tenant Q9' }).click()
+    await expect.poll(async () => (await pool()).projects.find((p) => p.id === id)?.tenants).toEqual([])
+    if (services.lab) await expect.poll(labTenants).not.toContain('Q9')
+    await row.getByRole('button', { name: 'Delete' }).click()
+    await row.getByRole('button', { name: 'Yes, delete' }).click()
+    await expect.poll(async () => (await pool()).projects.some((p) => p.id === id)).toBe(false)
+    await expect(row).toHaveCount(0)
   } finally {
     await request.delete(`${URLS.brain}/admin/tenants/Q9`, { headers: TOKEN_HEADER })
     await request.delete(`${URLS.brain}/admin/projects/${id}`, { headers: TOKEN_HEADER })
