@@ -6,16 +6,17 @@ TenantGuard is a set of small services around a shared contract. Inside each ser
 flowchart TB
   subgraph shell["I/O shell (thin)"]
     A["app.py<br/>FastAPI routes, WS, CORS, token check"]
-    C["core.py / runtime.py / bridge.py / service.py<br/>orchestration, HTTP clients, timers"]
+    C["core.py / runtime.py / prover.py / bridge.py / service.py / billing main.py<br/>orchestration, HTTP clients, Docker socket, timers"]
   end
   subgraph pure["Pure logic (no I/O, now passed in)"]
     P1["buckets · admission · scheduler · limiter · router · overrides · retry · security"]
-    P2["score · ladder · health · rescue · decoder · fairness"]
+    P2["score · ladder · health · rescue · decoder · verdicts · stage3 · fairness · impact"]
     P3["cases · evidence · template · timefmt"]
+    P4["billing: meter · pricing · timeline · bill"]
   end
   K["common/contracts.py<br/>Pydantic models"]
-  A --> C --> P1 & P2 & P3
-  P1 & P2 & P3 --> K
+  A --> C --> P1 & P2 & P3 & P4
+  P1 & P2 & P3 & P4 --> K
   C --> K
 ```
 
@@ -34,6 +35,9 @@ Each module has one reason to change.
 | `gateway/.../retry.py` | Detect retries and enforce the budget |
 | `gateway/.../security.py` | Validate paths and request ids |
 | `brain/.../score.py`, `ladder.py`, `decoder.py`, `rescue.py` | Score, throttle ladder, culprit decoding, route-around planning |
+| `brain/.../verdicts.py` | Proof evaluation (R and "did the harm follow"), the five verdicts, the action budget, repeat-offender memory |
+| `brain/.../prover.py` | Run a relocation test or a drain test; resize the spare through the Docker Engine API |
+| `billing/.../meter.py` / `pricing.py` / `timeline.py` / `bill.py` | Diff worker counters into buckets / calm reference prices / incident and latency history / build the bill and the "Why was I slow?" answer |
 | `integrations/handoff/.../wire.py` / `cases.py` / `outbox.py` | Partner format / case logic / delivery |
 | `narrator/.../evidence.py` / `template.py` | Collect evidence / write the report |
 
@@ -65,7 +69,9 @@ Anything that satisfies an interface can replace the real thing, and the tests r
 
 - The gateway's upstream is any `httpx.AsyncClient`. Tests pass a `MockTransport` that behaves like a worker (`gateway/tests/test_api.py`), and production passes a pooled real client.
 - The narrator's and bridge's brain feed is "a stream of dicts" given to `ingest()`, whether it comes from the live WebSocket, the `/api/incidents` backfill or a test list.
-- The brain's relocation prover is defined as an interface (`brain/.../prover.py`, `Prover` protocol) with a `NullProver` used until the Docker-host implementation lands (**in progress**, T12). The rest of Stage 3 works unchanged with either.
+- The brain's relocation prover is an interface (`brain/.../prover.py`, `Prover` protocol) with two implementations: `DockerProver` (resizes the spare and relocates the suspect) and `NullProver` (no Docker socket: culprits are named but not proved). `make_prover()` picks one from `brain.prover` / `TENANTGUARD_PROVER`. Stage 3 works unchanged with either.
+- `DockerProver` talks to Docker only through a `DockerControl` protocol (`get_cpus`, `set_cpus`). Production passes `EngineDocker`, which calls `POST /containers/{id}/update` on the mounted socket with `NanoCpus` (what compose's `cpus:` sets), or `CpuQuota` when the container has one; tests pass a fake.
+- Both provers read the rest of the brain only through a `ProveEnv` protocol (`readings`, `send`, `sleep`), so the tests drive them with scripted readings and a virtual clock.
 
 ## I: Interface Segregation
 
@@ -91,14 +97,14 @@ High-level policy depends on abstractions (contracts, callables, injected client
 
 - **Contracts:** every service depends on `common/tenantguard_common/contracts.py`, not on another service's code. The gateway, brain, UI, lab, bridge and narrator never import each other.
 - **Injected clients and clocks:** `Gateway(settings, tenants, workers, client=..., rng=...)`, `Overrides(clock=...)`, `Bridge(settings, tenants, control_client=..., web_client=...)`, `Narrator(tenants, clock=...)`, and `Demo(..., client=..., sleep=..., clock=..., out=...)`. Production wiring happens once, in each `create_app()` / `main()`.
-- **Configuration:** values come from `tenantguard.yaml` through `common/config.py` into a settings dataclass per service (`GatewaySettings`, `HandoffSettings`, `NarratorSettings`); the logic receives the dataclass.
+- **Configuration:** values come from `tenantguard.yaml` through `common/config.py` into a settings dataclass per service (`GatewaySettings`, `BrainSettings`, `BillingSettings`, `HandoffSettings`, `NarratorSettings`); inside the brain each part gets its own parameter object (`LadderParams`, `HealthParams`, `DecoderParams`, `VerdictParams`, `ProverParams`, `ActionBudget`, each with a `from_yaml`). The logic receives the dataclass.
 
 ## Design patterns used
 
 | Pattern | Where | Why |
 |---|---|---|
 | **Functional core, imperative shell** | gateway pure modules vs `core.py`/`app.py`; brain `score`/`ladder`/`decoder` vs `runtime.py`; bridge `cases.py` vs `bridge.py`; narrator `evidence`/`template` vs `service.py` | Decisions are testable without I/O; the risky parts have no side effects |
-| **Strategy** | three DRR `Scheduler` lanes; FIFO vs DRR in `Scheduler.pop`; `Prover` / `NullProver` | Swap behaviour by mode or lane without branching everywhere |
+| **Strategy** | three DRR `Scheduler` lanes; FIFO vs DRR in `Scheduler.pop`; `DockerProver` / `NullProver` behind `Prover` | Swap behaviour by mode, lane or deployment without branching everywhere |
 | **Token bucket / leaky bucket** | `buckets.py` | Rate and CPU-cost admission with burst |
 | **Deficit round robin** | `scheduler.py` | O(1)-amortised weighted fairness with variable request cost |
 | **Gradient concurrency limit** | `limiter.py` | Adaptive window from latency (minRTT / sampleRTT on excess latency) |
@@ -108,7 +114,8 @@ High-level policy depends on abstractions (contracts, callables, injected client
 | **Event-driven dispatch** | `Gateway._pump()` called on enqueue and on slot release | No polling loop; dispatch happens exactly when capacity appears |
 | **Latest-wins outbox** | `integrations/handoff/.../outbox.py` | Never block on a slow partner; only the newest version of each case is sent |
 | **Adapter / anti-corruption layer** | `integrations/handoff/.../wire.py` + `timefmt.py` | The partner's format (HH:MM:SS, `INC-NNNN`) never leaks into TenantGuard's contracts |
-| **Idempotency keys** | `charge_id` in the gateway; case-id persistence in the bridge; event dedupe in the bridge and narrator | Safe resends and reconnect backfills |
+| **Idempotency keys** | `charge_id` on every brain `ChargeCmd` (the gateway remembers the last 1024; a failed charge is folded into the next one under a new id); case-id persistence in the bridge; event dedupe in the bridge, narrator and billing | Safe resends and reconnect backfills |
+| **Budget / rate limit on the controller itself** | `ActionBudget` in `verdicts.py` | The brain cannot relocate, quarantine or drain faster than the yaml allows |
 | **Repository with implicit tenant** | `worker/app/store.py` + `tenancy.py` (tenant from a `ContextVar`) | Code cannot pass the wrong tenant to the data layer |
 
 ## Refactorings done during the build
@@ -122,6 +129,8 @@ High-level policy depends on abstractions (contracts, callables, injected client
 | Monotonic clock → `perf_counter` | coarse Windows ticks (15.6 ms) → fine-grained timing | Latency and wait measurements became accurate |
 | Wire / internal split in the bridge | one model set → `wire.py` (partner) + `CaseView` (contracts) | Partner format changes cannot leak inward |
 | Narrator: external writer removed | async writer + grounding check → deterministic `template.py` only | Fewer moving parts, no external dependency, same contract |
+| Brain tuning into the yaml | health, victim, decoder and verdict settings that existed only as code defaults → written out in `tenantguard.yaml` (`brain.health`, `brain.noisy`, `brain.decoder`, `brain.verdicts`); the code keeps its defaults as a fallback | Calibration on the host is a config change, not a code change |
+| Spare lookup by compose labels | one compose label → both labels `com.docker.compose.project` and `com.docker.compose.service` (never the service alone), or an exact name in `TENANTGUARD_SPARE_CONTAINER` | Two stacks on one host never resize each other's spare |
 
 ## Refactorings still possible
 

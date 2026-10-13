@@ -169,7 +169,7 @@ The orchestrator. `Narrator` accepts raw brain messages, keeps the evidence book
 | `Narrator.listing` | `listing(self) -> List[ReportView]` | All reports, newest `updated_at` first | `app` routes `/reports` and `/ws/reports` |
 
 **Key decisions**
-- **Republish only on changed evidence (digest).** A replayed or irrelevant event never bumps the version, so the UI and any consumer see one version per real change.
+- **Republish only on changed evidence (digest).** A replayed or irrelevant event never bumps the version, so every consumer sees one version per real change.
 - **Once an incident has a report, every later event refreshes it** (for example `resolved` → `closed`), so the report tracks the incident to its end.
 - **A slow WebSocket client cannot block the service:** its bounded queue drops its own oldest message.
 - **Malformed input never crashes the service:** validation errors are logged and the message is skipped.
@@ -186,8 +186,8 @@ FastAPI wiring. It runs the background consumer that follows the brain, and serv
 | `create_app` | `create_app(narrator: Optional[Narrator] = None, settings: Optional[NarratorSettings] = None, follow_brain: bool = True) -> FastAPI` | Builds settings and a `Narrator` (from the yaml and the layout unless injected), the app with CORS, and all routes below. `follow_brain=False` lets tests run without a brain | `app_factory`; tests |
 | `lifespan` (closure) | `async lifespan(_: FastAPI)` | Starts the `consume_brain` task on start-up (if `follow_brain`); cancels it and waits on shutdown | FastAPI lifespan |
 | `healthz` (route) | `GET /healthz` → dict | `ok`, `brain_connected`, `reports` (count) and the service counters (`events`, `reports_published`) | Docker `HEALTHCHECK`, operators; tests |
-| `reports` (route) | `GET /reports?limit=50` → `List[ReportView]` | The newest reports, with `limit` clamped to 1..500 | UI, operators; tests |
-| `report` (route) | `GET /reports/{incident_id}` → `ReportView` | One report; 404 JSON `{"detail": "no report for ..."}` if none | UI case file; tests |
+| `reports` (route) | `GET /reports?limit=50` → `List[ReportView]` | The newest reports, with `limit` clamped to 1..500 | operators; the UI Playwright API spec (`ui/e2e/api.spec.ts`, shape check); tests |
+| `report` (route) | `GET /reports/{incident_id}` → `ReportView` | One report; 404 JSON `{"detail": "no report for ..."}` if none | operators; tests (no UI page reads reports on this branch) |
 | `ws_reports` (route) | `WS /ws/reports` | Registers a bounded queue (64) as a subscriber, then runs `sender` and `watcher` until either ends; always unregisters and cancels both | UI; tests |
 | `sender` (closure in `ws_reports`) | `async sender()` | Sends the latest 50 reports oldest-first (backfill), then every new message from the queue | `ws_reports` |
 | `watcher` (closure in `ws_reports`) | `async watcher()` | Reads from the socket until a disconnect frame, which is how a silent client's departure is noticed | `ws_reports` |

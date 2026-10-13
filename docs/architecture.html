@@ -49,7 +49,7 @@ even when the expensive work is invisible to a rate limiter."</p>
 <pre class="arch">
 ╔══════════════════════════════════════════════════════════════════════════════════════════╗
 ║  TRAFFIC  (laptop B)         Traffic lab :8300: 12 Poisson tenant personas + attacks     ║
-║                             (flood, whale, hog, memory, retry storm, black-box bomb ...) ║
+║                             (flood, whale, hog, memory, retry storm)                     ║
 ╚═════════════════════════════════════════════╤════════════════════════════════════════════╝
                                               │ HTTP + X-API-Key
 ╔═════════════════════════════════════════════▼════════════════════════════════════════════╗
@@ -82,14 +82,15 @@ even when the expensive work is invisible to a rate limiter."</p>
 ║  CONTROL PLANE   BRAIN :8200  (Python asyncio, pure-logic modules)                       ║
 ║   Stage 2: noisy score = usage share ÷ fair share × victim impact → throttle ladder      ║
 ║   Stage 3: server health (peer ratio) → RESCUE (route-around) → barcode DECODER → NAME   ║
-║            → PROVE by relocation (in progress) → verdict                                 ║
-║   every action: TTL, renewed while needed · operator holds (POST /api/operator)          ║
+║            → PROVE by relocation to the spare (R = 1 − post/pre) → one of 5 VERDICTS     ║
+║   held host: a hot tenant is judged before its server · bg CPU charged 1/s (ChargeCmd)   ║
+║   operator holds (POST /api/operator) · docker.sock: resize + relocate to the spare      ║
 ║   → POST /control/* to the gateway          → WS /ws/events: StateSnapshot + incidents   ║
 ╚══════════════════════════════════════════════════════╤═══════════════════════════════════╝
                                                        │
 ╔══════════════════════════════════════════════════════▼═══════════════════════════════════╗
 ║  MANAGEMENT PLANE   UI :5173 (React)  Control Room · Tenants · Cases · Scorecard         ║
-║                     Admin API (gateway /admin/*) · Handoff bridge :8400 → Web PS3 app    ║
+║                     Admin API · Handoff :8400 · Billing :8600 · Narrator :8700           ║
 ╚══════════════════════════════════════════════════════════════════════════════════════════╝
 </pre>
 
@@ -97,8 +98,8 @@ even when the expensive work is invisible to a rate limiter."</p>
 <table>
   <tr><th style="width:18%">Plane</th><th style="width:30%">Components</th><th>Job</th></tr>
   <tr><td><b>Data</b></td><td>gateway, w0..w8, spare, quarantine</td><td>Serve every tenant request: identify, admit, queue fairly, route by barcode, measure</td></tr>
-  <tr><td><b>Control</b></td><td>brain</td><td>Watch telemetry + worker stats; rescue victims, name the culprit, throttle with TTLs, explain every action</td></tr>
-  <tr><td><b>Management</b></td><td>admin API, UI, handoff bridge, lab, demo driver</td><td>Operators see and steer it: modes, quotas, cases, attacks, scorecard</td></tr>
+  <tr><td><b>Control</b></td><td>brain</td><td>Watch telemetry + worker stats; rescue victims, name the culprit, prove it by relocation, give a verdict, throttle with TTLs, charge background CPU, explain every action</td></tr>
+  <tr><td><b>Management</b></td><td>admin API, UI, handoff bridge, billing, narrator, lab, demo driver</td><td>Operators see and steer it: modes, quotas, cases, attacks, scorecard, fair bills, incident reports</td></tr>
 </table>
 
 <h3>The 5 Layers of Isolation (not just a rate limit)</h3>
@@ -109,7 +110,7 @@ even when the expensive work is invisible to a rate limiter."</p>
   <tr><td>L3</td><td>Scheduler</td><td>Weighted DRR in 3 lanes behind an adaptive per-worker window: cheap requests never wait behind a whale</td><td><code>gateway/scheduler.py</code>, <code>limiter.py</code></td></tr>
   <tr><td>L4</td><td>Kernel</td><td>cgroup CPU / memory / pids limits per worker container; spare and quarantine pools</td><td><code>docker-compose.yml</code></td></tr>
   <tr><td>L5</td><td>Data</td><td>One SQLite file per tenant; namespaced cache with a guaranteed share; per-tenant memory budget</td><td><code>worker/app/store.py</code>, <code>cache.py</code></td></tr>
-  <tr><td colspan="2"><b>+ Adaptive loop</b></td><td colspan="2">The brain: rescue, name, throttle, recover. It works even when the harm is invisible to L1 and L2.</td></tr>
+  <tr><td colspan="2"><b>+ Adaptive loop</b></td><td colspan="2">The brain: rescue, name, prove, judge, throttle, recover. It works even when the harm is invisible to L1 and L2.</td></tr>
 </table>
 
 <div>
@@ -118,10 +119,12 @@ even when the expensive work is invisible to a rate limiter."</p>
   <tr><th style="width:17%">Component</th><th style="width:9%">Port</th><th style="width:37%">Built with</th><th>Notes</th></tr>
   <tr><td>Gateway</td><td>8000</td><td>Python 3.12, FastAPI, httpx (pooled), uvicorn</td><td>All state in memory (one gateway); Prometheus <code>/metrics</code></td></tr>
   <tr><td>Workers ×9 + 2</td><td>8100</td><td>Python, FastAPI (sync handlers), SQLite, psutil</td><td><code>time.thread_time()</code> per request = exact handler CPU</td></tr>
-  <tr><td>Brain</td><td>8200</td><td>Python asyncio, websockets, httpx, Pydantic</td><td>Pure-logic modules (score, ladder, health, rescue, decoder) tested without I/O</td></tr>
+  <tr><td>Brain</td><td>8200</td><td>Python asyncio, websockets, httpx, Pydantic</td><td>Pure-logic modules (score, ladder, health, rescue, decoder, verdicts) tested without I/O; the prover talks to the Docker socket</td></tr>
   <tr><td>Traffic lab</td><td>8300</td><td>Python asyncio + httpx keep-alive pools</td><td>Writes <code>lab/results/*.json</code>: the only source of scorecard numbers</td></tr>
   <tr><td>UI</td><td>5173</td><td>React 18, Vite, TypeScript, Tailwind, Recharts</td><td>WS from the brain at 2 Hz; mock mode for offline development</td></tr>
   <tr><td>Handoff bridge</td><td>8400</td><td>Python, FastAPI, websockets</td><td>Web PS3 convergence: incidents ↔ cases</td></tr>
+  <tr><td>Billing</td><td>8600</td><td>Python, FastAPI, httpx</td><td>Fair bills at calm reference prices, SLA credits, "Why was I slow?"</td></tr>
+  <tr><td>Narrator</td><td>8700</td><td>Python, FastAPI, templates</td><td>Deterministic incident report + anonymised customer message</td></tr>
   <tr><td>Contracts + config</td><td></td><td>Pydantic models in <code>common/</code>, <code>tenantguard.yaml</code></td><td>One shared schema; every tunable in YAML</td></tr>
   <tr><td>Infra</td><td></td><td>Docker Compose, cgroup v2, two laptops over Tailscale</td><td>No external network at runtime</td></tr>
 </table>
@@ -132,7 +135,7 @@ even when the expensive work is invisible to a rate limiter."</p>
 <table>
   <tr><th style="width:16%">Level</th><th style="width:32%">Enters when</th><th>Action (always with a TTL)</th></tr>
   <tr><td>normal</td><td>-</td><td>Full plan</td></tr>
-  <tr><td>warn</td><td>noisy score ≥ 1.5 and neighbours hurt, held 2 s</td><td>Incident opened, nothing throttled</td></tr>
+  <tr><td>warn</td><td>noisy score ≥ 1.5, use ≥ 1.6× fair share and ≥ 4 neighbours hurt, held 5 s</td><td>Incident opened, nothing throttled</td></tr>
   <tr><td>throttle</td><td>score ≥ 2.0, held 2 s</td><td>Quota × 0.5 per step (AIMD), via LimitsCmd</td></tr>
   <tr><td>deprioritize</td><td>still noisy, held 4 s</td><td>Scheduler weight × 0.25</td></tr>
   <tr><td>quarantine</td><td>score ≥ 4.0, held 6 s</td><td>Quota × 0.1 and weight × 0.1; a block needs human approval (handoff case)</td></tr>
@@ -144,12 +147,12 @@ even when the expensive work is invisible to a rate limiter."</p>
 <div class="keep">
 <h3>Stage 3: Rescue, Name, Prove</h3>
 <table>
-  <tr><th style="width:16%">Step</th><th>How</th><th style="width:14%">Status</th></tr>
-  <tr><td>Health</td><td>Each server's p95 compared with its peers (median over its tenants, so a whale's own slow requests don't count)</td><td>done</td></tr>
-  <tr><td>Rescue</td><td>Route weights move victims off slow servers onto their healthy ones, keeping every server under 70% CPU</td><td>done</td></tr>
-  <tr><td>Name</td><td>AG(2,3) barcodes: any two tenants share at most one server, so the set of slow servers decodes to the culprit (with a confidence) or to a host fault with no tenant blamed</td><td>done</td></tr>
-  <tr><td>Prove</td><td>Move the suspect to the spare: the original servers recover and the slowdown follows it (R = 1 − post/pre slowdown)</td><td>in progress</td></tr>
-  <tr><td>Verdict</td><td>costly pattern · over plan · honest growth · host fault · mitigated / no blame</td><td>in progress</td></tr>
+  <tr><th style="width:16%">Step</th><th>How</th></tr>
+  <tr><td>Health</td><td>Each server's p95 compared with its peers (median over its tenants, so a whale's own slow requests don't count). Calibrated on the Docker host: the signal must be sustained over a 5 s window, and a server is never "slow" below the larger of 25 ms and half the strictest SLA on it</td></tr>
+  <tr><td>Rescue</td><td>Route weights move victims off slow servers onto their healthy ones, keeping every server under 70% CPU</td></tr>
+  <tr><td>Name</td><td>AG(2,3) barcodes: any two tenants share at most one server, so the set of slow servers decodes to the culprit (with a confidence) or to a host fault with no tenant blamed. A slow server where a hot tenant runs is <i>held</i>: that tenant is judged before the server is suspected</td></tr>
+  <tr><td>Prove</td><td>Move the suspect to the spare: the original servers recover and the slowdown follows it (R = 1 − post/pre slowdown). <code>DockerProver</code> sizes the spare through the Docker socket; a suspect host is drained and measured idle</td></tr>
+  <tr><td>Verdict</td><td><code>mitigated_no_blame</code> (not proven: nobody penalised) · <code>over_plan</code> (the ladder tightens limits) · <code>costly_pattern</code> (only the class that grew goes to quarantine) · <code>honest_growth</code> (keeps the spare as a burst lane, no penalty) · <code>host_fault</code> (host stays drained). TTL-bound, limited by an action budget</td></tr>
 </table>
 </div>
 
@@ -172,7 +175,24 @@ even when the expensive work is invisible to a rate limiter."</p>
   <tr><td><code>POST /api/write</code></td><td>0.185 ms</td><td>1.429 ms</td><td>0</td></tr>
   <tr><td><b><code>POST /api/ingest</code></b></td><td><b>0.066 ms</b></td><td>0</td><td><b>20.25 ms</b></td></tr>
 </table>
-<p class="note">Source: <code>worker/calibration.json</code>. Docker host, one worker limited to 0.5 CPU, sequential client, mean per request. The OFF / Industry / TenantGuard scorecard (victim p99 per attack) is to be measured; it will come only from <code>lab/results/*.json</code>.</p>
+<p class="note">Source: <code>worker/calibration.json</code>. Docker host, one worker limited to 0.5 CPU, sequential client, mean per request.</p>
+</div>
+
+<div class="keep">
+<h3>Measured: the 3-mode scorecard</h3>
+<table>
+  <tr><th>Scenario</th><th>OFF</th><th>Industry</th><th>TenantGuard</th></tr>
+  <tr><td>whale</td><td>149 → <b>691</b> → 254</td><td>157 → 176 → 165</td><td>158 → 183 → 154</td></tr>
+  <tr><td>flood</td><td>200 → 162 → 186</td><td>166 → 164 → 163</td><td>143 → 144 → 175</td></tr>
+</table>
+<p class="note">Median victim p99 in ms, baseline → attack → after; 3 runs per cell on the Docker host (<code>lab/results/summary-scorecard-host.json</code> + 18 run files). No innocent tenant was penalised in any run. Both attacks are contained by the gateway limits that Industry and TenantGuard share, so the two are about equal here. One OFF flood run recorded 1,522 refused requests, most likely carried over from a mode switch.</p>
+<table>
+  <tr><th style="width:28%">Host acceptance run (2026-10-13)</th><th>What the brain did</th></tr>
+  <tr><td>Idle, then calm traffic</td><td>0 events; 0 ladder moves (2 real slowdowns on w7 routed around, no tenant blamed)</td></tr>
+  <tr><td>Big-plan whale K</td><td>Named at 99%, proved by relocation with R = 0.88, verdict <code>honest_growth</code>; held hosts w1/w8 judged first; victims rerouted</td></tr>
+  <tr><td>Faulty server w4</td><td><code>host_fault</code> at 5.1× idle latency, no tenant blamed</td></tr>
+  <tr><td>End</td><td>0 overrides left</td></tr>
+</table>
 </div>
 
 <div class="page-break"></div>
@@ -221,11 +241,15 @@ even when the expensive work is invisible to a rate limiter."</p>
    └─────────────┬──────────────┘
                  ▼
    ┌────────────────────────────┐
-   │ 4. ACT  (with a timer)     │  warn → throttle → lower priority → quarantine; a block needs a human OK
+   │ 4. PROVE + JUDGE           │  Move the suspect to the spare: does the slowdown follow it? Then a verdict
    └─────────────┬──────────────┘
                  ▼
    ┌────────────────────────────┐
-   │ 5. RECOVER                 │  Behaving again? Give back its plan step by step; timers undo everything
+   │ 5. ACT  (with a timer)     │  warn → throttle → lower priority → quarantine; a block needs a human OK
+   └─────────────┬──────────────┘
+                 ▼
+   ┌────────────────────────────┐
+   │ 6. RECOVER                 │  Behaving again? Give back its plan step by step; timers undo everything
    └─────────────┬──────────────┘
                  └──────► repeat, and explain every step on the dashboard and in the on-call case
 </pre>
@@ -236,10 +260,12 @@ even when the expensive work is invisible to a rate limiter."</p>
   <tr><th style="width:18%">Box</th><th>In one sentence</th></tr>
   <tr><td><b>Gateway</b></td><td>The front door: knows every tenant, enforces its plan, keeps the queue fair, and obeys the brain's timed orders.</td></tr>
   <tr><td><b>Workers</b></td><td>The shared app: does the work, keeps each tenant's data apart, and measures exactly what each tenant costs.</td></tr>
-  <tr><td><b>Brain</b></td><td>The detective: spots slow servers, rescues victims, names the culprit, and turns the throttle up or down.</td></tr>
+  <tr><td><b>Brain</b></td><td>The detective: spots slow servers, rescues victims, names the culprit, proves it, decides the verdict, and turns the throttle up or down.</td></tr>
   <tr><td><b>Dashboard</b></td><td>The control room: every tenant, every server, every incident and the reason for every action, live.</td></tr>
   <tr><td><b>Lab</b></td><td>The crowd: 12 realistic tenants plus attacks, and the measured scorecard.</td></tr>
   <tr><td><b>Handoff bridge</b></td><td>Turns each incident into a case for the on-call engineer and carries their decision back.</td></tr>
+  <tr><td><b>Billing</b></td><td>Bills each tenant fairly: victims never pay for contention, SLA misses earn credits, and each tenant can ask "Why was I slow?".</td></tr>
+  <tr><td><b>Narrator</b></td><td>Writes the incident report and a customer message that names nobody.</td></tr>
 </table>
 </div>
 
@@ -249,11 +275,10 @@ even when the expensive work is invisible to a rate limiter."</p>
   <tr><th style="width:24%">Act</th><th>What the judges see</th></tr>
   <tr><td>Calm</td><td>12 green tiles, fairness near 1</td></tr>
   <tr><td>OFF + flood</td><td>Everyone sharing K's servers turns red: the noisy-neighbour problem</td></tr>
-  <tr><td>Industry</td><td>The flood is refused (429). Then the black-box bomb: the rate limiter sees nothing and the victims turn red</td></tr>
-  <tr><td>TenantGuard</td><td>Same bomb: victims rescued, K named with a confidence, the case appears for the on-call engineer</td></tr>
-  <tr><td>Faulty server</td><td>One server goes bad by itself: host fault, no tenant blamed</td></tr>
-  <tr><td>Honest spike</td><td>An Enterprise tenant's sale day: a genuine burst, not throttled</td></tr>
-  <tr><td>Scorecard</td><td>OFF vs Industry vs TenantGuard victim p99 (to be measured; from <code>lab/results</code>)</td></tr>
+  <tr><td>Industry</td><td>The flood is refused (429). Then a whale: a few very heavy requests</td></tr>
+  <tr><td>TenantGuard</td><td>Same whale: victims rescued, K named with a confidence, proved by relocation, a verdict; the case appears for the on-call engineer</td></tr>
+  <tr><td>Faulty server</td><td>One server goes bad by itself (fault injected on the worker): host fault, no tenant blamed</td></tr>
+  <tr><td>Scorecard</td><td>OFF vs Industry vs TenantGuard victim p99, measured on the Docker host (from <code>lab/results</code>)</td></tr>
 </table>
 </div>
 

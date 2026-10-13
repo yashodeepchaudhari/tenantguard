@@ -72,7 +72,7 @@ FastAPI wiring. It builds the `Bridge` (unless one is injected for tests), runs 
 | `create_app.lifespan` | `async lifespan(_: FastAPI)` | Async context manager: on startup calls `bridge.start()` if `start`; on shutdown always awaits `bridge.stop()` | FastAPI lifespan |
 | `create_app.healthz` | `async healthz()` → `GET /healthz` | Returns `bridge.health()`: brain connection, mode, counters, outbox stats | monitoring, Docker healthcheck |
 | `create_app.list_cases` | `async list_cases()` → `GET /cases` | All cases as `CaseView`, newest first (`created_at` descending) | UI, `prove_handoff.py` |
-| `create_app.get_case` | `async get_case(case_id: str)` → `GET /cases/{case_id}` | One `CaseView`, or 404 JSON `unknown case` | UI, `prove_handoff.py` |
+| `create_app.get_case` | `async get_case(case_id: str)` → `GET /cases/{case_id}` | One `CaseView`, or 404 JSON `unknown case` | `prove_handoff.py` (the UI reads the list only) |
 | `create_app.get_case_wire` | `async get_case_wire(case_id: str)` → `GET /cases/{case_id}/wire` | Exactly the partner payload (`CaseBook.to_wire(...).model_dump()`), or 404 | debugging, tests |
 | `create_app._update` | `async _update(request: Request)` → `POST /control/case-update` and `POST /cases/update` | Inbound owner/decision update. 503 if no partner token is configured. 401 if the `X-Handoff-Token` header is wrong (compared with `hmac.compare_digest`). 400 if the body is not JSON, or on a validation/`ValueError`. Otherwise delegates to `bridge.case_update(body)` and maps `DecisionError` to its status (404/409). | the partner app; `mock_web.py`; tests |
 | `app` | module attribute | The app instance uvicorn serves | `__main__.main` |
