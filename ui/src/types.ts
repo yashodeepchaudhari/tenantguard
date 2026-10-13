@@ -187,9 +187,19 @@ export const ATTACKS: AttackName[] = [
   'honest_spike',
 ]
 
-/** The attacks the operator can launch. The contract still lists the dropped Wave 2 names
- *  (background_bomb, blackbox_bomb, cache_flood, faulty_server, honest_spike); the UI never offers them. */
-export const LAUNCHABLE_ATTACKS: AttackName[] = ['flood', 'whale', 'hog', 'memory', 'retry_storm']
+/** The attacks the operator can launch: every contract name. faulty_server targets a server, not a tenant. */
+export const LAUNCHABLE_ATTACKS: AttackName[] = [
+  'flood',
+  'whale',
+  'hog',
+  'memory',
+  'retry_storm',
+  'blackbox_bomb',
+  'background_bomb',
+  'cache_flood',
+  'honest_spike',
+  'faulty_server',
+]
 
 /** Valid intensity range for AttackReq / RunReq (lab returns 422 outside). */
 export const INTENSITY_MIN = 0.1

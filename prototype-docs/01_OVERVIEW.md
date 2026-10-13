@@ -43,7 +43,7 @@ Everything in this table is merged on `master` and covered by tests.
 | Tiers and per-tenant SLA (`sla_p95_ms`) in the layout; tiers balanced so no server carries more than two enterprise tenants | done | `layouts/ag23.json`, `tenantguard.yaml` |
 | Lab: 12 Poisson personas; flood, whale, hog, memory, retry_storm attacks; scenario runner with run marks; results files | done | `lab/` |
 | Lab: scorecard runner (OFF / Industry / TenantGuard, several runs per cell, brain alignment) | done | `lab/tenantguard_lab/scorecard.py` |
-| Lab: black-box bomb, background bomb, cache flood, faulty server, honest spike | **not included** (a decision; the lab answers 501). The faulty-server scene is triggered through the worker's `/admin/fault` instead | `lab/tenantguard_lab/attacks.py` (`WAVE2`) |
+| Lab: black-box bomb, background bomb, cache flood, faulty server, honest spike (written by the team; `faulty_server` targets a server and injects the worker's `/admin/fault`) | done; tested against a mock fleet, profiles sized from `worker/calibration.json`, still to be measured on the Docker host | `lab/tenantguard_lab/attacks.py`, `lab/personas.yaml` |
 | UI: Control Room (status bar headline, scenario badge, tile reasons), Tenants, Cases, Case File, Scorecard, impact panel, flow view with reroute hint | done | `ui/` |
 | Handoff bridge (Web PS3 convergence) | done | `integrations/handoff/` |
 | Incident narrator (deterministic reports) | done | `narrator/` |
@@ -67,6 +67,8 @@ Everything in this table is merged on `master` and covered by tests.
 - The brain named no culprit in these runs: the gateway limits contained the attacker first.
 
 How to read it honestly: whale and flood are contained by the gateway limits that both protected modes share, so Industry and TenantGuard are about equal here. Both are far better than OFF on the whale. One OFF-mode flood run (`20261012-222805-flood-off.json`) recorded 1,522 attacker 429s, which OFF (no admission) should not produce; it is most likely a carry-over from the previous mode switch. Another OFF flood run (`20261012-222323-flood-off.json`) recorded 6,415 attacker 503s; that is expected, because the bounded queue wait applies in every mode.
+
+The scorecard covers whale and flood only. The five second-wave attacks have not been measured on the Docker host yet; their `personas.yaml` profiles are sized from `worker/calibration.json` and are to be re-checked there.
 
 ### Host acceptance run (the brain's own value)
 
@@ -122,4 +124,4 @@ flowchart LR
 | 8 | The OFF / Industry / TenantGuard table, from the measured runs above |
 | 9 | "Every tenant gets its fair share. Every slowdown gets a name." |
 
-The driver preflights the lab and skips any attack the lab cannot run. The second-wave attacks are not included, so the black-box bomb in steps 4 and 5 falls back to the whale attack, the faulty server in step 6 is injected through the worker's `/admin/fault`, and the honest spike in step 7 is skipped. Each step prints live numbers from the brain and the lab, and every attack and fault is cleared on exit.
+The driver preflights the lab and skips any attack the lab cannot run. The lab runs every attack in the script: the black-box bomb in steps 4 and 5, the faulty server in step 6 (the lab injects the fault on `w4` and clears it when the step ends) and the honest spike in step 7. The fallbacks (whale for the bomb, a direct worker `/admin/fault` for the faulty server) are only a safety net for an older lab that answers 501. Each step prints live numbers from the brain and the lab, and every attack and fault is cleared on exit.

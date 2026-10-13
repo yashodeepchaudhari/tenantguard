@@ -498,7 +498,7 @@ A slow host with no tenant behind it: TenantGuard rescues the victims, the decod
 ```mermaid
 sequenceDiagram
     autonumber
-    participant OP as Operator (docker exec or tools/demo.py)
+    participant OP as Lab faulty_server (or operator)
     participant WK as Worker wN
     participant GW as Gateway
     participant S3 as brain Stage3
@@ -537,7 +537,7 @@ sequenceDiagram
             S3->>HUB: verdict mitigated_no_blame "it was load, not the host, undrained"
         end
     end
-    WK->>WK: fault expires after duration_s (FaultInjector.current auto-clears)
+    OP->>WK: DELETE /admin/fault when the attack stops (else it expires after duration_s, FaultInjector.current auto-clears)
     S3->>S3: wN canary back within peers, healthy after 2 s
     S3->>GW: RouteWeightsCmd equal weights (ttl 5 s), DrainCmd(wN, drained false)
     S3->>HUB: resolved, closed "Host suspects: wN."
@@ -545,7 +545,7 @@ sequenceDiagram
 
 **Notes**
 - Peer comparison means a fleet-wide slowdown accuses no single server. The canary keeps a routed-away or drained server measurable, so it can be judged healed, but the canary alone never opens an incident.
-- The lab's `faulty_server` attack is not included (the lab answers 501 for it), so the faulty-server scene is triggered with the worker's `/admin/fault` (a `docker exec` on the host, or `tools/demo.py inject_fault`).
+- The lab's `faulty_server` attack (written by the team) sends this `POST /admin/fault` itself, with the `X-Admin-Token` from `TENANTGUARD_ADMIN_TOKEN`, and the `DELETE` when the attack stops. The fault's `duration_s` (attack duration + 5 s) is a backstop if the lab dies. `intensity` scales the latency and the CPU burn. A `docker exec` on the host, or the demo driver's direct fault fallback for an older lab, triggers the same scene.
 - At most one server is drained at a time (`action_budget.max_drained` 1). In the host acceptance run, a w4 fault gave `host_fault` at 5.1x idle and no tenant was blamed.
 - `ServerView.status` in the brain snapshot is `healthy` or `slow`; the drain shows in the gateway's `/admin/overrides`.
 
@@ -758,4 +758,4 @@ sequenceDiagram
 | gateway `POST /control/relocate` (`RelocateCmd`) | brain `DockerProver` and `Stage3._verdict` (flows 7 and 8); also `gateway/tools/prove.py` |
 | gateway `POST /control/drain` (`DrainCmd`) | brain `HostProver`, `Stage3.on_host`, `_renew_drains`, `_close` (flow 9) |
 | gateway `POST /control/reference_costs` (`ReferenceCostsCmd`) | implemented, no sender on this branch |
-| lab wave-2 attacks (`background_bomb`, `blackbox_bomb`, `cache_flood`, `faulty_server`, `honest_spike`) | not included; the lab answers 501 for them |
+| worker `POST` / `DELETE /admin/fault` (`FaultReq`) | lab `faulty_server` attack (flow 9); demo driver fallback for an older lab; `docker exec` on the host |

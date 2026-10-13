@@ -12,7 +12,7 @@ flowchart LR
   loop --> GW["gateway /admin/mode"]
   loop --> LAB["lab /lab/attack, /lab/attacks, /lab/metrics, /lab/results"]
   loop --> BR["brain /api/state, /api/incidents"]
-  loop -. "fallback" .-> WK["worker /healthz, /admin/fault"]
+  loop -. "fallback (older lab only)" .-> WK["worker /healthz, /admin/fault"]
   cfg["tenantguard_common<br/>config + contracts"] --> main & Demo
 ```
 
@@ -23,12 +23,12 @@ The demo driver. `plan()` defines the steps as data, and `Demo` executes them. E
 
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
-| `PROBE` | constant `"__probe__"` | A tenant/server id no lab knows. A probe with it makes a shipped attack fail validation (4xx) and an unshipped one answer 501, so nothing starts. | `Demo.probe`; tests |
-| `FAULT` | constant `{"latency_ms": 150.0, "cpu_burn_pct": 30.0}` | The fault injected directly on a worker when the lab cannot run `faulty_server` | `Demo.inject_fault` |
+| `PROBE` | constant `"__probe__"` | A tenant/server id no lab knows. A probe with it makes a shipped attack fail validation (4xx; the current lab answers 404 for all ten) and an unshipped one answer 501 (an older lab), so nothing starts. | `Demo.probe`; tests |
+| `FAULT` | constant `{"latency_ms": 150.0, "cpu_burn_pct": 30.0}` | The fault injected directly on a worker when the lab cannot run `faulty_server` (an older lab only; the same values as the lab's own `faulty_server` profile) | `Demo.inject_fault` |
 | `Attack` | dataclass `(attack, tenant=None, server=None, intensity=1.0, fallback=None)` | One lab attack in a step, with an optional fallback attack name | `plan`, `Demo` |
 | `Attack.body` | `body(duration_s, attack=None) -> dict` | The `POST /lab/attack` JSON (attack or override name, intensity, duration, tenant/server when set) | `Demo.launch` |
 | `Step` | dataclass `(key, title, seconds, narration, mode=None, attacks=[], attacker=None, watch_incidents=False, scorecard=False)` | One demo step | `plan`, `Demo.run` |
-| `plan` | `plan(attacker="K", bomb="blackbox_bomb", faulty="w4", spiker="J") -> List[Step]` | The 9 steps: calm 15 s; OFF + flood 30 s; industry + flood 15 s; industry + bomb 30 s (whale fallback); tenantguard + bomb 75 s (incidents printed); faulty server 20 s; honest spike 20 s; scorecard 25 s; close 10 s | `main`; tests |
+| `plan` | `plan(attacker="K", bomb="blackbox_bomb", faulty="w4", spiker="J") -> List[Step]` | The 9 steps: calm 15 s; OFF + flood 30 s; industry + flood 15 s; industry + bomb 30 s (whale fallback for an older lab); tenantguard + bomb 75 s (incidents printed); faulty server 20 s; honest spike 20 s; scorecard 25 s; close 10 s | `main`; tests |
 | `Demo` | class | Holds the target URLs, tokens, worker URLs, HTTP client, injectable `sleep`/`clock`/`out`, and run state (started attack ids, injected faults, attack availability, fault URLs, skipped steps, seen incidents) | `main`; tests |
 | `Demo.__init__` | `(gateway, brain, lab, token, client=None, sleep=time.sleep, clock=time.monotonic, out=print, tick_s=5.0, dry_run=False, wait_enter=None, workers=None, admin_token="dev")` | Stores configuration and empties the state | `main`; tests (`make`) |
 | `Demo.call` | `call(method, url, **kw) -> Optional[Response]` | In dry run, prints the call and returns `None`. Otherwise sends it; a transport error is printed and returns `None` (never raises). | every HTTP call |
@@ -53,15 +53,17 @@ Key decisions:
 - **Preflight instead of failing mid-show:** unavailable steps are announced up front and skipped, and the total time is reported without them.
 - **Robust cleanup:** retries, per-id stops, loud leftovers, and immunity to a second Ctrl-C.
 - **No hard-coded host address:** defaults come from `tenantguard.yaml` (a test checks the old IP is absent).
-- The fault fallback is TTL-bound (`duration_s`), so even a crashed driver cannot leave a worker faulty.
+- The fault fallback is TTL-bound (`duration_s`), so even a crashed driver cannot leave a worker faulty. The lab's own `faulty_server` has the same backstop.
 
-What the demo does against the lab on this branch, where the Wave 2 attacks are not included (the lab answers 501 for `blackbox_bomb`, `faulty_server` and `honest_spike`):
+What the demo does against the lab on this branch. The lab runs all five second-wave attacks (written by the team), so every preflight probe gets a 4xx, the preflight prints "every step can run" and no fallback is used:
 
-| Step | Plan | What runs |
-|---|---|---|
-| industry + bomb, tenantguard + bomb | `blackbox_bomb` on the attacker | the `whale` fallback (announced in the preflight, or used on a late 501) |
-| faulty server | `faulty_server` on `w4` | a TTL-bound `POST {worker}/admin/fault` when the worker answers from the driver's machine; otherwise the step is skipped with a `[NOT AVAILABLE]` banner |
-| honest spike | `honest_spike` on `J` | skipped with a `[NOT AVAILABLE]` banner (no fallback) |
+| Step | Plan | What runs on the current lab | On an older lab that answers 501 |
+|---|---|---|---|
+| industry + bomb, tenantguard + bomb | `blackbox_bomb` on the attacker | `blackbox_bomb`, through the lab | the `whale` fallback (announced in the preflight, or used on a late 501) |
+| faulty server | `faulty_server` on `w4` | `faulty_server`, through the lab: the lab puts the fault on `w4` and clears it when the next step stops the attacks | a TTL-bound `POST {worker}/admin/fault` when the worker answers from the driver's machine; otherwise the step is skipped with a `[NOT AVAILABLE]` banner |
+| honest spike | `honest_spike` on `J` | `honest_spike`, through the lab | skipped with a `[NOT AVAILABLE]` banner (no fallback) |
+
+The fallbacks stay in the driver only as a safety net for an older lab. The second-wave attacks have not been measured on the Docker host yet, so rehearse these steps there.
 
 `--bomb whale` asks for the whale directly.
 
@@ -78,7 +80,7 @@ Sequencing tests against a fake HTTP backend (`httpx.MockTransport`) and a fake 
 | `make` | `make(fake, **kw)` | A `Demo` wired to the fake, the clock and a line collector | tests |
 | `test_full_sequence_modes_attacks_durations_and_cleanup` | | Exact modes and attacks with durations; each attack is preceded by a stop and a mode change; cleanup at the end; total simulated time equals the script; token header sent | pytest |
 | `test_attack_is_preceded_by_stop_and_mode_in_each_step` | | Stop → mode off → flood ordering | pytest |
-| `test_unshipped_attack_falls_back_to_whale` | | An unavailable black-box bomb runs as whale, with a note | pytest |
+| `test_unshipped_attack_falls_back_to_whale` | | Against a fake older lab that answers 501, the black-box bomb runs as whale, with a note | pytest |
 | `test_failed_attack_does_not_abort_the_demo` | | A 500 on attacks is reported and the timing is unchanged | pytest |
 | `test_cleanup_runs_when_interrupted` (+ inner `boom`) | | A Ctrl-C mid-show still stops attacks and restores the mode | pytest |
 | `test_dry_run_sends_nothing_and_prints_every_call` | | No request is sent and no time passes; calls are printed | pytest |
@@ -87,7 +89,7 @@ Sequencing tests against a fake HTTP backend (`httpx.MockTransport`) and a fake 
 | `test_main_only_and_speed_in_dry_run` | | `--only` and `--speed` work; targets come from yaml `services`; the old hard-coded IP is gone; a bad `--only` exits | pytest |
 
 ### tools/tests/test_demo_t20.py
-Tests for the T20 fixes: preflight banners, the faulty-server fallback, and robust cleanup.
+Tests for the T20 fixes: preflight banners, the faulty-server fallback (for an older lab), and robust cleanup.
 
 | Function / class | Signature | What it does / proves | Called by |
 |---|---|---|---|
@@ -111,7 +113,7 @@ Sets `testpaths = tests`. The tests add `tools/` to `sys.path` themselves to imp
 | (no functions) | | Test configuration | `python -m pytest tools` |
 
 ### tools/README.md
-Usage of the demo driver: the commands, targets and tokens, the preflight and fallback rules, cleanup behaviour, the step table, the live readout, and the options.
+Usage of the demo driver: the commands, targets and tokens, the preflight and fallback rules (the current lab runs all five second-wave attacks, so no fallback is used; the fallbacks are for an older lab), cleanup behaviour, the step table, the live readout, and the options.
 
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|

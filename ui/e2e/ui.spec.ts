@@ -55,10 +55,25 @@ test('mode toggle round-trip is applied by the gateway', async ({ page, request,
   }
 })
 
-test('attack launcher offers exactly the five supported attacks', async ({ page }) => {
+test('attack launcher offers exactly the ten attacks, and a server picker for faulty_server', async ({ page }) => {
   await openControlRoom(page)
-  const values = await page.locator('select[title] option').evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value))
-  expect(values).toEqual(['flood', 'whale', 'hog', 'memory', 'retry_storm'])
+  const attack = page.locator('select[title]')
+  const values = await attack.locator('option').evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value))
+  expect(values).toEqual([
+    'flood', 'whale', 'hog', 'memory', 'retry_storm',
+    'blackbox_bomb', 'background_bomb', 'cache_flood', 'honest_spike', 'faulty_server',
+  ])
+  const target = page.locator('select').nth(1)
+  const options = () => target.locator('option').evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value))
+  expect(await options()).toContain('K')                     // a tenant attack targets a tenant
+  await attack.selectOption('faulty_server')
+  const servers = await options()                           // every server the brain reports (fleet + spare, quarantine)
+  expect(servers).toEqual(expect.arrayContaining(['w0', 'w1', 'w2', 'w3', 'w4', 'w5', 'w6', 'w7', 'w8']))
+  expect(servers.filter((v) => /^[A-L]$/.test(v))).toEqual([])  // no tenant to pick
+  await expect(page.getByRole('button', { name: /^Launch on w4$/ })).toBeVisible()
+  await attack.selectOption('whale')
+  expect(await options()).toContain('K')
+  await expect(page.getByRole('button', { name: /^Launch on K$/ })).toBeVisible()
 })
 
 test('attack launcher starts an attack, shows it running, and stops it', async ({ page, request, services }) => {

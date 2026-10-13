@@ -49,7 +49,8 @@ even when the expensive work is invisible to a rate limiter."</p>
 <pre class="arch">
 ╔══════════════════════════════════════════════════════════════════════════════════════════╗
 ║  TRAFFIC  (laptop B)         Traffic lab :8300: 12 Poisson tenant personas + attacks     ║
-║                             (flood, whale, hog, memory, retry storm)                     ║
+║                             (flood, whale, hog, memory, retry storm, black-box bomb,     ║
+║                              background bomb, cache flood, honest spike, faulty server)  ║
 ╚═════════════════════════════════════════════╤════════════════════════════════════════════╝
                                               │ HTTP + X-API-Key
 ╔═════════════════════════════════════════════▼════════════════════════════════════════════╗
@@ -262,7 +263,7 @@ even when the expensive work is invisible to a rate limiter."</p>
   <tr><td><b>Workers</b></td><td>The shared app: does the work, keeps each tenant's data apart, and measures exactly what each tenant costs.</td></tr>
   <tr><td><b>Brain</b></td><td>The detective: spots slow servers, rescues victims, names the culprit, proves it, decides the verdict, and turns the throttle up or down.</td></tr>
   <tr><td><b>Dashboard</b></td><td>The control room: every tenant, every server, every incident and the reason for every action, live.</td></tr>
-  <tr><td><b>Lab</b></td><td>The crowd: 12 realistic tenants plus attacks, and the measured scorecard.</td></tr>
+  <tr><td><b>Lab</b></td><td>The crowd: 12 realistic tenants plus ten attacks, and the measured scorecard.</td></tr>
   <tr><td><b>Handoff bridge</b></td><td>Turns each incident into a case for the on-call engineer and carries their decision back.</td></tr>
   <tr><td><b>Billing</b></td><td>Bills each tenant fairly: victims never pay for contention, SLA misses earn credits, and each tenant can ask "Why was I slow?".</td></tr>
   <tr><td><b>Narrator</b></td><td>Writes the incident report and a customer message that names nobody.</td></tr>
@@ -275,10 +276,11 @@ even when the expensive work is invisible to a rate limiter."</p>
   <tr><th style="width:24%">Act</th><th>What the judges see</th></tr>
   <tr><td>Calm</td><td>12 green tiles, fairness near 1</td></tr>
   <tr><td>OFF + flood</td><td>Everyone sharing K's servers turns red: the noisy-neighbour problem</td></tr>
-  <tr><td>Industry</td><td>The flood is refused (429). Then a whale: a few very heavy requests</td></tr>
-  <tr><td>TenantGuard</td><td>Same whale: victims rescued, K named with a confidence, proved by relocation, a verdict; the case appears for the on-call engineer</td></tr>
-  <tr><td>Faulty server</td><td>One server goes bad by itself (fault injected on the worker): host fault, no tenant blamed</td></tr>
-  <tr><td>Scorecard</td><td>OFF vs Industry vs TenantGuard victim p99, measured on the Docker host (from <code>lab/results</code>)</td></tr>
+  <tr><td>Industry</td><td>The flood is refused (429). Then the black-box bomb: cheap-looking ingest calls that trigger heavy hidden indexer CPU; the rate limiter barely sees it</td></tr>
+  <tr><td>TenantGuard</td><td>Same bomb: victims rescued, K named with a confidence, proved by relocation, a verdict; the case appears for the on-call engineer</td></tr>
+  <tr><td>Faulty server</td><td>One server goes bad by itself (the lab's <code>faulty_server</code> attack injects the fault): host fault, no tenant blamed</td></tr>
+  <tr><td>Honest spike</td><td>An Enterprise tenant's sale day: a genuine burst that hurts nobody, so it is not throttled</td></tr>
+  <tr><td>Scorecard</td><td>OFF vs Industry vs TenantGuard victim p99, measured on the Docker host for whale and flood (from <code>lab/results</code>)</td></tr>
 </table>
 </div>
 

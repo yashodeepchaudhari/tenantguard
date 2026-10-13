@@ -31,13 +31,6 @@ def test_status_starts_idle(client):
     assert s == {"attacks": [], "calm_running": False, "run": None}
 
 
-def test_wave2_attacks_are_501(client):
-    for name in ["background_bomb", "blackbox_bomb", "cache_flood", "faulty_server", "honest_spike"]:
-        r = client.post("/lab/attack", json={"attack": name, "tenant": "K"})
-        assert r.status_code == 501, name
-    assert client.post("/lab/run", json={"scenario": "blackbox_bomb", "mode": "off"}).status_code == 501
-
-
 def test_attack_validation(client):
     assert client.post("/lab/attack", json={"attack": "whale", "tenant": "K", "intensity": 6}).status_code == 422
     assert client.post("/lab/attack", json={"attack": "whale", "tenant": "K", "intensity": 0.05}).status_code == 422

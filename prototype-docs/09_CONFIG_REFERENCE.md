@@ -223,10 +223,17 @@ Read by `billing/tenantguard_billing/settings.py` (code defaults in `DEFAULTS` a
 | `attacks.hog` | concurrency 24, `/api/export` rows 1000, chunk 50, pause_ms 50 | Closed-loop long exports |
 | `attacks.memory` | rps 4.0, mb 24, hold_ms 1000, max_inflight 32 | Overlapping holds over the 32 MB tenant budget |
 | `attacks.retry_storm` | multiplier 3, endpoint read, max_retries 50 | Retries at once on 429/503, ignoring `Retry-After` |
+| `attacks.blackbox_bomb` | rps 10, docs 60 | `POST /api/ingest`: a cheap metered handler, about 120 ms of unmetered black-box CPU each |
+| `attacks.background_bomb` | rps 8, index_rounds 20000 | `POST /api/write`: cheap handler, about 140 ms of background indexing each (charged as `bg_cpu_ms`) |
+| `attacks.cache_flood` | multiplier 4, keyspace 10000000 | 4× persona rps of `/api/read`, every key new (all cache misses) |
+| `attacks.honest_spike` | multiplier 3 | 3× the tenant's own request mix: busy but within its plan |
+| `attacks.faulty_server` | latency_ms 150, cpu_burn_pct 30 | Fault put on `AttackReq.server` through `/admin/fault`, cleared when the attack stops |
 | `run.warmup_s` / `.cold_start_s` | 3 / 10 | Discarded warm-up; extra warm-up if calm traffic was off |
 | `run.recover_ratio` / `.recover_hold_s` | 1.5 / 5 | Recovered when victim p99 ≤ 1.5× baseline for 5 s |
 | `run.bucket_s` | 1.0 | Latency bucket for the run timeline |
 | `run.victim_kinds` | `[light, read]` | Request kinds whose latency counts as the victims' SLO (`[]` = every calm request) |
+
+The five second-wave profiles (`blackbox_bomb` to `faulty_server`) are starting points sized from `worker/calibration.json` (2 ms CPU per black-box doc, about 7 µs per index round). They have not been measured on the Docker host yet; re-check them there. The bombs should push the attacker's servers past about 80% CPU while its request rate and metered cost stay inside the pro quota (50 req/s, 300 cost-ms/s).
 
 ## 2. Environment variables
 
@@ -253,7 +260,7 @@ Read by `billing/tenantguard_billing/settings.py` (code defaults in `DEFAULTS` a
 | `WORKER_DATA_DIR` | worker | `./data/<server>` (`/data` in Docker) | Per-tenant SQLite directory |
 | `CPU_LIMIT_CORES` | worker | cgroup `cpu.max`, else yaml `worker.cpus` | CPU limit reported for `cpu_pct` |
 | `MALLOC_ARENA_MAX` / `MALLOC_MMAP_THRESHOLD_` | worker image (glibc) | `2` / `131072` (set in `worker/Dockerfile`) | Allocator settings so memory freed by request threads goes back to the OS; the worker also applies them at start with `mallopt`, and the env covers the black-box child process |
-| `TENANTGUARD_ADMIN_TOKEN` | worker, `tools/demo.py` | `dev` | `X-Admin-Token` for worker `/admin/fault` (the demo's faulty-server scene) and `/admin/memory` |
+| `TENANTGUARD_ADMIN_TOKEN` | worker, lab, `tools/demo.py` | `dev` | `X-Admin-Token` for worker `/admin/fault` (the lab's `faulty_server` attack, and the demo's direct fault fallback) and `/admin/memory` |
 | `TENANTGUARD_LAB_PERSONAS` | lab | `lab/personas.yaml` | Persona file |
 | `TENANTGUARD_LAB_RATE_SCALE` | lab | yaml `rate_scale` (1.0) | Multiplies every persona's rate |
 | `TENANTGUARD_LAB_AUTOSTART` | lab | yaml `autostart` (true) | `0` / `false` / `no` / `off` = do not start calm traffic on boot |

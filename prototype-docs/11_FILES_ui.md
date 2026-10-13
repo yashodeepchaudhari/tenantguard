@@ -147,7 +147,7 @@ TypeScript mirror of `common/tenantguard_common/contracts.py`, kept field-for-fi
 | `TenantView`, `ServerView`, `StateSnapshot` (incl. optional `noisy_thresholds`) | interfaces | brain → UI snapshot | store, all pages |
 | `Stage`, `Suspect`, `IncidentEvent`, `BrainMessage` | types | incident stream | store, `lib/case.ts`, timeline |
 | `AttackName`, `ATTACKS`, `INTENSITY_MIN` (0.1), `INTENSITY_MAX` (5), `DURATION_MAX_S` (600) | types / consts | lab attack names (all ten contract literals) and the 422 bounds | `AttackLauncher`, `mock/sim.ts` |
-| `LAUNCHABLE_ATTACKS` | `const` array | the five attacks the operator can launch: `flood`, `whale`, `hog`, `memory`, `retry_storm`. The Wave 2 names (`background_bomb`, `blackbox_bomb`, `cache_flood`, `faulty_server`, `honest_spike`) stay in the contract but are not included in the UI | `AttackLauncher` |
+| `LAUNCHABLE_ATTACKS` | `const` array | the ten attacks the operator can launch, in menu order: `flood`, `whale`, `hog`, `memory`, `retry_storm`, `blackbox_bomb`, `background_bomb`, `cache_flood`, `honest_spike`, `faulty_server` (every contract name). `faulty_server` targets a server, not a tenant | `AttackLauncher` |
 | `AttackReq`, `AttackStatus`, `LabStatus`, `RunReq`, `PhaseP99`, `RunResult` | interfaces | lab models | launcher, Scorecard |
 | `Verdict`, `Severity`, `CaseStatus`, `CaseDecision`, `ActionState`, `CaseContext`, `CaseAction`, `CaseHistoryItem`, `CaseView`, `OperatorCmd` | types | handoff (contracts §6) | `useHandoff`, Cases, Case File, `mock/handoff.ts` |
 
@@ -508,14 +508,15 @@ Launch and stop lab attacks. Reads the lab status from the store (`LiveProvider`
 
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
-| `FALLBACK_TENANTS`, `ABOUT` (private) | constants | tenant ids before the first snapshot; one-line description for each of the five launchable attacks | form |
-| `AttackLauncher` | `() => JSX.Element` | attack select over `LAUNCHABLE_ATTACKS` only (flood, whale, hog, memory, retry_storm; the Wave 2 attacks are not included), tenant select, duration (≤ 600 s), intensity slider 0.1–5×; running attacks with countdown and Stop; "lab unreachable" state when `labReachable === false` | `ControlRoom` |
+| `FALLBACK_TENANTS`, `FALLBACK_SERVERS`, `ABOUT` (private) | constants | tenant ids (A–L) and server ids (`w0`–`w8`) before the first snapshot; one-line description for each of the ten attacks (for example `blackbox_bomb`: "cheap ingest calls, heavy hidden indexer CPU"; `faulty_server`: "a server turns slow by itself (no tenant)") | form |
+| `AttackLauncher` | `() => JSX.Element` | attack select over `LAUNCHABLE_ATTACKS` (all ten); a target select that is a tenant picker (default K), or a server picker (default `w4`, every server in the brain snapshot) when `faulty_server` is chosen; duration (≤ 600 s), intensity slider 0.1–5×; the button reads "Launch on <target>" (for example "Launch on K", "Launch on w4"); running attacks with countdown and Stop; "lab unreachable" state when `labReachable === false` | `ControlRoom` |
 | `refresh` (inner) | `() => Promise<void>` | `backend.labStatus()` → `store.setLab` (`null` on error) | after launch / stop |
-| `launch` (inner) | `() => Promise<void>` | builds `AttackReq` (`tenant` set, `server: null`) and `backend.startAttack` | Launch button |
+| `launch` (inner) | `() => Promise<void>` | builds `AttackReq` (`tenant` set and `server: null`, or for `faulty_server` `tenant: null` and `server` set) and `backend.startAttack` | Launch button |
 | `stop` (inner) | `(id: string) => Promise<void>` | `backend.stopAttack` | Stop button |
 
 **Key decisions**
-- The faulty-server scene is not launched from the UI: it is triggered with the worker's `/admin/fault` (docker exec on the host).
+- The faulty-server scene is launched from the UI like any other attack: the lab injects the fault on the chosen server and clears it when the attack stops.
+- One form serves both kinds of target. Only the target select changes, so the operator never sends a tenant with `faulty_server` or a server with a tenant attack.
 
 ### ui/src/components/ImpactPanel.tsx
 | Function / class | Signature | What it does | Called by |
@@ -624,7 +625,7 @@ Copy of `layouts/ag23.json` tenants (id, name, tier, barcode servers, monthly re
 | Function / class | Signature | What it does | Called by |
 |---|---|---|---|
 | `SERVER_CAP_MS`, `BASE_LAT_MS`, `CPU_PER_REQ_MS`, `BASE_RPS`, `TTL_S` (private) | 500, 6, 7, per tier, 60 | model constants | `tick` |
-| `AttackProfile`, `PROFILES` (private) | per attack: rps, CPU per request, bypasses the cost bucket, legit | attack shapes (whale = few 400 ms requests; blackbox bypasses the cost bucket; honest_spike is legit). The simulation keeps a profile for all ten contract names; the UI launches only the five in `LAUNCHABLE_ATTACKS` | `tick` |
+| `AttackProfile`, `PROFILES` (private) | per attack: rps, CPU per request, bypasses the cost bucket, legit | attack shapes (whale = few 400 ms requests; blackbox bypasses the cost bucket; honest_spike is legit). The simulation keeps a profile for all ten contract names, and the UI can launch all ten. `faulty_server` needs a server `w0`..`w8` (422 otherwise) and slows that server | `tick` |
 | `SimError` | `class SimError extends Error { status }` | HTTP-like error (404/422) | validators; mapped to `ApiError` / HTTP status |
 | `TState` (private) | per-tenant state (quota, level, factor, weight factor, smoothed p95/rps/rejected, score, hold timers, incident id, override expiry, story) | simulation state | methods |
 | `mulberry32` (private) | `(seed: number) => () => number` | seeded PRNG (stable screenshots) | constructor |
@@ -749,7 +750,7 @@ On a real stack, state-changing tests (mode, quota, attacks) are skipped unless 
 | File | Tests | Covers |
 |---|---|---|
 | `e2e/api.spec.ts` | 10 | gateway: healthz; 401 without an API key; 401 on admin without the token; 200 with `X-TenantGuard-Cpu-Ms`; 12 admin tenants with barcodes and quotas. Brain: `/api/state` is a valid `StateSnapshot`; `/api/incidents` is a list of `IncidentEvent`s. Optional services: lab status, handoff `CaseView`s, narrator `ReportView`s (skipped cleanly when unreachable) |
-| `e2e/ui.spec.ts` | 10 | 12 tiles + 3×3 grid + status sentence; tile → barcode highlight (vs `GET /admin/tenants`); mode toggle round-trip (vs `GET /admin/mode`, restored); launcher offers exactly flood, whale, hog, memory, retry_storm; attack launch → running → Stop (vs `/lab/status`); quota PATCH and client-side validation (restored); timeline → Case File (vs `GET /api/incidents?incident_id=`); Scorecard vs `/lab/results` (or says why not); flow view paints and toggles back; Cases handoff column (or "not reachable") |
+| `e2e/ui.spec.ts` | 10 | 12 tiles + 3×3 grid + status sentence; tile → barcode highlight (vs `GET /admin/tenants`); mode toggle round-trip (vs `GET /admin/mode`, restored); launcher offers exactly the ten attacks, switches to a server picker (w0–w8 present, no tenant) and "Launch on w4" for `faulty_server`, and back to tenants and "Launch on K" for whale; attack launch → running → Stop (vs `/lab/status`); quota PATCH and client-side validation (restored); timeline → Case File (vs `GET /api/incidents?incident_id=`); Scorecard vs `/lab/results` (or says why not); flow view paints and toggles back; Cases handoff column (or "not reachable") |
 | `e2e/layout.spec.ts` | 6 (3 × 2 sizes) | at 1366×768 and 1920×1080: panels never overlap and nothing spills out of its box (no sideways page scroll); the status bar keeps its height and the headline is shown in full (at most two lines, not clipped, no ellipsis, badge not empty); every tile with a non-normal badge shows `why`, and the screen is captured |
 | `e2e/live.spec.ts` | 1 (`@live`) | real detection loop on the host: calm → whale on K → a K incident within 60 s → stop → K back to normal at full quota within 90 s. Skipped without writes allowed, without the lab, or during a lab scenario run |
 

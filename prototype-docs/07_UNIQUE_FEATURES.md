@@ -108,5 +108,13 @@ The billing service turns worker counters and brain incidents into per-tenant bi
 
 Where: `billing/tenantguard_billing/` (`meter.py`, `pricing.py`, `timeline.py`, `bill.py`, `main.py`).
 
-## Not included
-- **Second-wave lab attacks** (black-box bomb, background bomb, cache flood, faulty server, honest spike) are not included: the lab answers 501 for them. The demo uses flood, whale, hog, memory and retry storm, and triggers the faulty-server scene through the worker's `/admin/fault`.
+## 17. A lab that attacks the blind spots
+The lab runs ten attacks. Besides flood, whale, hog, memory and retry storm, the team wrote five that aim at what a rate limiter cannot see:
+- **Black-box bomb:** cheap `POST /api/ingest` calls that make the worker's black-box indexer burn CPU nobody meters.
+- **Background bomb:** cheap writes that each queue heavy background indexing (charged to the tenant as `bg_cpu_ms`, not to the request).
+- **Cache flood:** reads of keys that never repeat, so every read misses the cache.
+- **Honest spike:** a tenant's own mix at 3× its rate. The right answer is room to grow, not a throttle.
+- **Faulty server:** a fault injected on one worker through `/admin/fault`, cleared when the attack stops. No tenant is behind it, so none should be blamed.
+
+These five are tested against a mock fleet. They have not been measured on the Docker host yet; their profiles are sized from `worker/calibration.json` and are to be re-checked there.
+Where: `lab/tenantguard_lab/attacks.py`, `lab/personas.yaml`.

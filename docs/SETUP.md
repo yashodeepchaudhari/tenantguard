@@ -82,7 +82,7 @@ cd ui && npm install && npm run dev     # or npm run dev:mock: no backend at all
 ```
 - Local worker ports are w0..w8 → 8100..8108, spare → 8109, quarantine → 8110.
 - Without the real gateway and workers, `brain/tools/fake_gateway.py` streams a scripted whale scenario, and `gateway/tools/stub_worker.py` is a minimal echo worker.
-- Tests: `python -m pytest` in each service directory (460 tests in all); `npm test` in `ui/` for the unit tests and `npm run e2e` for the Playwright end-to-end suite (see `ui/README.md` for running it against the mock or a live stack).
+- Tests: `python -m pytest` in each service directory (468 tests in all); `npm test` in `ui/` for the unit tests and `npm run e2e` for the Playwright end-to-end suite (see `ui/README.md` for running it against the mock or a live stack).
 
 ## Ports
 | Service | Port | Exposed in compose |

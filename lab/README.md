@@ -34,7 +34,7 @@ Env:
 | Endpoint | |
 |---|---|
 | `GET /lab/status` | `LabStatus` (attacks, calm_running, run in progress) |
-| `POST /lab/attack` | `AttackReq` → `AttackStatus`. Attacks not included in this build (blackbox_bomb, background_bomb, cache_flood, faulty_server, honest_spike) → 501, unknown tenant → 404, intensity outside 0.1..5 → 422 |
+| `POST /lab/attack` | `AttackReq` → `AttackStatus`. Unknown tenant (or server, for `faulty_server`) → 404, missing one → 422, intensity outside 0.1..5 → 422 |
 | `DELETE /lab/attack/{id}` / `DELETE /lab/attacks` | stop one / all → `AttackStatus` (`state: stopped`) |
 | `POST /lab/calm/start` `{rate_scale?}` / `POST /lab/calm/stop` | calm traffic on/off → `LabStatus` |
 | `GET /lab/metrics?window_s=10` | per tenant, client-side: p50/p95/p99, count/ok/429/503/err per second, split calm vs attack; attack counters; lab event-loop lag |
@@ -60,7 +60,17 @@ Env:
   - `hog`: 24 closed-loop `/api/export` (~1 s each).
   - `memory`: 4 rps × 24 MB held 1 s (exceeds the 32 MB tenant budget).
   - `retry_storm`: 3× persona rps of `/api/read`; each 429/503 is retried immediately, ignoring Retry-After, up to 50 times.
-  - `background_bomb`, `blackbox_bomb`, `cache_flood`, `faulty_server`, `honest_spike`: not included in this build (501). The faulty-server scene is produced with the worker's `/admin/fault` instead.
+  - `blackbox_bomb`: 10 rps of `POST /api/ingest {docs: 60}`: a cheap, metered handler; ~120 ms of unmetered
+    black-box indexer CPU each. Inside the rate and cost quotas, so a rate limiter lets it through.
+  - `background_bomb`: 8 rps of `POST /api/write {index_rounds: 20000}`: cheap handler, ~140 ms of background
+    indexing each (charged to the tenant as `bg_cpu_ms`, not to the request).
+  - `cache_flood`: 4× persona rps of `/api/read` with keys from a 10M keyspace: every read misses the cache.
+  - `honest_spike`: 3× the tenant's own request mix: busy but legitimate (should get room, not a throttle).
+  - `faulty_server` (needs `server`, no tenant): `POST /admin/fault {latency_ms: 150, cpu_burn_pct: 30}` on that
+    worker (header `X-Admin-Token`, env `TENANTGUARD_ADMIN_TOKEN`, default `dev`), `DELETE` when the attack stops;
+    the fault's `duration_s` is a backstop if the lab dies. Runs inline (no process, no traffic). In `/lab/run`
+    it has no attacker, so every tenant counts as a victim.
+  - Wave 2 profiles are starting points sized from `worker/calibration.json`; re-check them on the real fleet.
 
 ## Measurement (`RunResult`)
 - Timeline: warmup, then 10 s more if calm traffic was cold, then `calm_s` baseline, attack for `attack_s`,
