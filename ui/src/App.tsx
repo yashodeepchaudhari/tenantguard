@@ -5,6 +5,7 @@ import { CaseFile } from './pages/CaseFile.tsx'
 import { Cases } from './pages/Cases.tsx'
 import { ControlRoom } from './pages/ControlRoom.tsx'
 import { Pool } from './pages/Pool.tsx'
+import { Challenge } from './pages/Challenge.tsx'
 import { Scorecard } from './pages/Scorecard.tsx'
 import { Tenants } from './pages/Tenants.tsx'
 
@@ -20,6 +21,7 @@ export default function App() {
             <Route path="case" element={<Cases />} />
             <Route path="case/:incidentId" element={<CaseFile />} />
             <Route path="scorecard" element={<Scorecard />} />
+            <Route path="challenge" element={<Challenge />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>
